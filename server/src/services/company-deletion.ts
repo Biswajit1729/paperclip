@@ -1,5 +1,6 @@
 import { notifyCompanyRetentionWork } from "./retention-work-notifications.js";
 import { notifyDecisionTargetWork } from "./decision-target-work.js";
+import { notifyToolReviewChange } from "./tool-review-work-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { agentObservabilityService } from "./agent-observability.js";
 import { withAccountHomeSecretMutationLock } from "@paperclipai/adapter-codex-local/server";
@@ -64,6 +65,7 @@ export async function deleteCompany(db: Db, id: string) {
         if (!existing) return null;
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.secretProposalExpiry, id);
+        await notifyToolReviewChange(tx, id);
         await agentObservabilityService(tx as unknown as Db).removeForCompanyDeletion(id);
         // Finance can reference costs and both can reference runs. Incidents
         // reference policies and approvals; delete these dependents first.
