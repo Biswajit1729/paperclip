@@ -386,6 +386,7 @@ type NativeReconciliationOptions = {
   skipNativeWorkspaceFinalization?: boolean;
   skipNativeResultCommit?: boolean;
   skipNativeRunProjection?: boolean;
+  skipNativeRecoveryNotices?: boolean;
   pluginWorkerManager?: WorkspaceWorkers;
   environmentRuntime?: EnvironmentRuntimeService;
   onWorkspaceSettled?: (input: {
@@ -683,6 +684,7 @@ async function reconcileNativeFinalizationsPass(
           skipNativeResponsePresentation: options.skipNativeResponsePresentation,
           skipNativeReviewResponse: options.skipNativeReviewResponse,
         skipCommittedRunProjection: options.skipNativeRunProjection,
+        skipNativeRecoveryNotices: options.skipNativeRecoveryNotices,
           preserveProviderAttempt: Boolean(
             readNativeWorkspaceSyncReference(
               record(row.runnerProfileJson).nativeWorkspaceSync,
@@ -745,6 +747,7 @@ async function reconcileNativeFinalizationsPass(
         skipNativeResponsePresentation: options.skipNativeResponsePresentation,
         skipNativeReviewResponse: options.skipNativeReviewResponse,
         skipCommittedRunProjection: options.skipNativeRunProjection,
+        skipNativeRecoveryNotices: options.skipNativeRecoveryNotices,
         preserveProviderAttempt: Boolean(
           readNativeWorkspaceSyncReference(
             record(row.runnerProfileJson).nativeWorkspaceSync,

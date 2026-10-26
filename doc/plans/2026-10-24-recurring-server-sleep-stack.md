@@ -2819,3 +2819,20 @@ obligations. Workspace typechecking passes; the full local suite remains limited
 by embedded PostgreSQL startup capacity. Final local
 and remote acceptance is pending. Master refreshed to `ad861a7f94`; stack integration,
 prior failed gates, suppression audits and all remaining duties stay in scope.
+
+## Slice 54 accepted; slice 55 recovery-notice resolution
+
+Slice 54 [#17752](https://github.com/paperclipai/paperclip/pull/17752) is verified at
+`f98e6b5b57558c78ba111170ab3d8d19ff667827`: all 53 checks/status entries passed,
+Greptile 5/5, zero unresolved threads, 400 passing local cases, workspace types
+and build. The PR remains draft/open and unmerged. Intermediate failures and the
+full-local-suite limitation remain recorded in its audit and PR body.
+
+Slice 55, `codex/sleep-55-native-recovery-notices`, moves only committed native
+finalization recovery-notice resolution to scoped transaction wakes. The existing
+action rows remain truth; the owner rechecks reused action identities under
+lifecycle locks. [Its audit](2026-10-26-native-recovery-notice-sleep-audit.md)
+records producer coverage, 102 passing worker/startup cases and 340 passing
+affected cases (442 total), plus workspace typechecking. Build and remote
+acceptance remain pending. All other inventory, prior gate failures,
+suppression audits and master propagation remain active obligations.

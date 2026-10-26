@@ -1,3 +1,4 @@
+import { notifyNativeRecoveryNotices } from "./native-recovery-notice-notifications.js";
 import { notifyNativeRunProjection } from "./native-run-projection-notifications.js";
 import { notifyNativeResultCommit } from "./native-result-commit-notifications.js";
 import { notifyNativeWorkspaceFinalization } from "./native-workspace-finalization-notifications.js";
@@ -11364,6 +11365,7 @@ export function issueService(db: Db) {
         if (patch.status !== undefined || patch.statusVersion !== undefined || patch.executionState !== undefined
           || patch.executionRunId !== undefined || patch.checkoutRunId !== undefined
           || patch.assigneeAgentId !== undefined || patch.assigneeUserId !== undefined || blockedByIssueIds !== undefined) {
+          await notifyNativeRecoveryNotices(tx, { companyId: receiptExisting.companyId, issueId: id });
           await notifyNativeRunProjection(tx, { companyId: receiptExisting.companyId, issueId: id });
           await notifyNativeResultCommit(tx, { companyId: receiptExisting.companyId, issueId: id });
           await notifyNativeWorkspaceFinalization(tx, { companyId: receiptExisting.companyId, issueId: id });

@@ -1,3 +1,4 @@
+import { notifyNativeRecoveryNotices } from "./native-recovery-notice-notifications.js";
 import { notifyNativeRunProjection } from "./native-run-projection-notifications.js";
 import { notifyNativeResultCommit } from "./native-result-commit-notifications.js";
 import { notifyNativeWorkspaceFinalization } from "./native-workspace-finalization-notifications.js";
@@ -629,6 +630,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
           await notifyDirectoryCleanup(tx);
           await notifyInstructionCollection(tx);
           await notifyCancelledWorkspacePreservation(tx);
+          await notifyNativeRecoveryNotices(tx);
           await notifyNativeRunProjection(tx);
           await notifyNativeResultCommit(tx);
           await notifyNativeWorkspaceFinalization(tx);
