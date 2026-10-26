@@ -2556,3 +2556,13 @@ classifier consumer cases and server types pass. The audit preserves before-fix
 failures and the remaining identity/producer and cost limits. Startup wiring,
 periodic removal, remote gates, older stack findings and all remaining recurring
 work are still incomplete. Nothing merged.
+
+
+Slice 50 OAuth producer checkpoint: authorization-card creation/reopening now
+signals both native review workers from the same short transaction as its card
+and state link. Three missing-settlement-signal regressions were reproduced;
+all 472 tool-access and 30 worker lifecycle tests plus server typecheck pass.
+The audit retains before/after evidence and the remaining handoff/authority
+coverage limits. Master is freshly verified at 1fbbef45a8. Discovery/cost proof,
+startup wiring, periodic removal, remote acceptance, earlier stack findings and
+the full original recurring-work scope remain incomplete. Nothing merged.

@@ -781,3 +781,49 @@ cases still run without a locking API in their fake query builder.
 Remaining: producer/authority coverage, query/history/backlog cost, startup
 integration, removal of this periodic duty, PR publication and remote acceptance.
 The full recurring-work stack and its older unresolved gates remain open.
+
+
+## OAuth authorization-start producer checkpoint (2026-10-26)
+
+The direct OAuth authorization-start owner creates a confirmation or reopens its
+previous accepted/rejected card by idempotency key. That bypassed the interaction
+service's native-review notifications. Three real tool-access service regressions
+(creation, reopening, outer rollback) reproduced absent settled notifications:
+/tmp/sleep50-oauth-before.log/.status, three failed assertions, exit 1.
+
+The existing card lookup/mutation and OAuth-state interaction link now share a
+short database transaction. It awaits notifyNativeReviewState before writing,
+with company/task scope. The shared hook wakes both governed review response and
+status reassessment; consumers still select only actionable durable state.
+Provider discovery, client setup and authorization remain outside the new short
+transaction. Browser/user flows that do not create an agent authorization card
+keep their existing path. Caller-owned transactions retain their outer boundary.
+No provider-specific logic moved into recovery or scheduler code.
+
+All 472 tool-access consumer cases pass, including the new real nested-transaction
+tests. They assert the inside/outside card states, no pre-commit notification,
+one settlement notification per consumer, and rollback retaining the prior card
+and no OAuth state. Rollback settlement releases the intent for reconciliation;
+it is not represented as a committed card. All 30 reassessment lifecycle cases
+pass against retained history, and server typecheck passes. Evidence (all terminal):
+/tmp/sleep50-oauth-after.log/.status, /tmp/sleep50-oauth-lifecycle.log/.status and
+/tmp/sleep50-oauth-types.log/.status, all exit 0; 502 distinct tests in this checkpoint.
+
+A fresh origin/master fetch still resolves to
+1fbbef45a8d399771add7a27a04b12f3a20e264c. No source changed during acceptance.
+
+Additional handoff audit evidence: direct operator cancellation flows through
+cancelPendingCaseHandoffsForIssue; run-control/task cancellation uses
+heartbeat/case-handoff-lifecycle; delivery can cancel a fenced claim in its own
+settlement transaction. The classifier accepts all persisted non-cancelled
+handoff states. Those delivery/lease transitions are not independently positive
+evidence triggers, so do not fan out every lease renewal. Creation assigns its
+UUID inside the owning transaction. The previous checkpoint now fences stale
+handoff evidence at commit. Complete activation/quiet-state proof for the
+remaining handoff/authority paths is still outstanding; no blanket producer-
+coverage claim is made from this search.
+
+Remaining acceptance continues to include producer/authority audit, discovery
+and commit costs, backlog and lifecycle coverage, startup registration, periodic
+removal, PR publication and exact-head remote gates. The full original stack
+scope and older unresolved gates remain active.
