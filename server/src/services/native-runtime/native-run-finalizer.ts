@@ -624,7 +624,7 @@ function recoveredExecutionFailureMetadata() {
 
 async function projectCommittedRun(input: {
   db: Db;
-  run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "status" | "finishedAt" | "runtimeMode" | "nativePhase">;
+  run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "status" | "finishedAt" | "runtimeMode" | "nativePhase" | "nativeIssueId" | "contextSnapshot">;
   coordinator: typeof nativeRunFinalizations.$inferSelect;
 }) {
   if (!input.coordinator.resultId) return;
@@ -1222,6 +1222,8 @@ export async function finalizeNativeRun(input: {
   const admittedRun = await input.db
     .select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
       runtimeMode: heartbeatRuns.runtimeMode, status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode,
+      nativeIssueId: heartbeatRuns.nativeIssueId,
+      contextSnapshot: sql<Record<string, unknown>>`jsonb_build_object('issueId', ${heartbeatRuns.contextSnapshot}->>'issueId')`,
       nativePhase: heartbeatRuns.nativePhase, finishedAt: heartbeatRuns.finishedAt })
     .from(heartbeatRuns)
     .where(eq(heartbeatRuns.id, input.runId))
