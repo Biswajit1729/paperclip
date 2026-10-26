@@ -1,8 +1,8 @@
 import { toolReviewInterruptionService } from "./tool-review-interruption.js";
 import { claimToolTestApproval, persistToolTestOutcome, startToolTestInvocation, type ToolTestApprovalClaim } from "./tool-test-approval.js";
-import { prepareApprovedToolReview, recoverApprovedToolReviews } from "./tool-review-recovery.js";
+import { approvedToolReviewCompanies, prepareApprovedToolReview, recoverApprovedToolReviews } from "./tool-review-recovery.js";
 import { toolReviewExpiryService } from "./tool-review-expiry.js";
-import { writeToolReviewChange } from "./tool-review-work-notifications.js";
+import { notifyToolReviewChange, writeToolReviewChange } from "./tool-review-work-notifications.js";
 import { restConnectorFor } from "./connectors/rest-registry.js";
 import type { runPromptInjectionProvider } from "./prompt-injection-provider.js";
 import { promptInjectionPreventionService } from "./prompt-injection-prevention.js";
@@ -2511,7 +2511,7 @@ export function createToolGatewayService(
         signingSecret: options.toolActionSigningSecret,
       });
     } catch (error) {
-      await writeToolReviewChange(db, tx => tx
+      await writeToolReviewChange(db, actionRequest.companyId, tx => tx
         .update(toolActionRequests)
         .set({
           status: "cancelled",
@@ -2670,7 +2670,7 @@ export function createToolGatewayService(
     // an expired row. When the guard matches no row, the row is already resolved.
     // Do not emit an approval card for a dead row; throw a retriable conflict so
     // the retry finds the live request or creates a fresh, signable one.
-    const signedRows = await writeToolReviewChange(db, tx => tx
+    const signedRows = await writeToolReviewChange(db, actionRequest.companyId, tx => tx
       .update(toolActionRequests)
       .set({
         interactionId: interaction.id,
@@ -7768,7 +7768,7 @@ export function createToolGatewayService(
     const message =
       input.error instanceof Error ? input.error.message : String(input.error);
     const now = new Date();
-    const settled = await writeToolReviewChange(db, async (tx) => {
+    const settled = await db.transaction(async (tx) => {
       // Lock in the same invocation -> request order used by the normal
       // execution settlement path. The claim timestamp is the ownership token:
       // a consumer that merely read an approved row cannot settle another
@@ -7784,6 +7784,7 @@ export function createToolGatewayService(
 
       const [actionRequest] = await tx
         .select({
+          companyId: toolActionRequests.companyId,
           status: toolActionRequests.status,
           updatedAt: toolActionRequests.updatedAt,
         })
@@ -7798,6 +7799,7 @@ export function createToolGatewayService(
         return false;
       }
 
+      await notifyToolReviewChange(tx, actionRequest.companyId);
       await tx
         .update(toolInvocations)
         .set({
@@ -7842,6 +7844,7 @@ export function createToolGatewayService(
   }
 
   async function expireApprovedActionForManagedArgumentDrift(input: {
+    companyId: string;
     actionRequestId: string;
     invocationId: string;
     toolName: string;
@@ -7859,7 +7862,7 @@ export function createToolGatewayService(
     );
     const now = new Date();
     await options.beforeManagedArgumentDriftExpiry?.();
-    const [expired] = await writeToolReviewChange(db, tx => tx
+    const [expired] = await writeToolReviewChange(db, input.companyId, tx => tx
       .update(toolActionRequests)
       .set({ status: "expired", resolvedAt: now, updatedAt: now })
       .where(
@@ -7979,7 +7982,7 @@ export function createToolGatewayService(
       );
     }
 
-    const [claimed] = await writeToolReviewChange(db, tx => tx
+    const [claimed] = await writeToolReviewChange(db, actionRequest.companyId, tx => tx
       .update(toolActionRequests)
       .set({ status: "executing", updatedAt: new Date() })
       .where(
@@ -8190,6 +8193,7 @@ export function createToolGatewayService(
     }
     if (!managedArgumentsRemainCurrent) {
       throw await expireApprovedActionForManagedArgumentDrift({
+        companyId: claimed.companyId,
         actionRequestId: claimed.id,
         invocationId: invocation.id,
         toolName: invocation.toolName,
@@ -8289,7 +8293,7 @@ export function createToolGatewayService(
         })
         .where(eq(toolInvocations.id, invocation.id));
       void emitConnectionInvoked(db, invocation.id);
-      await writeToolReviewChange(db, tx => tx
+      await writeToolReviewChange(db, claimed.companyId, tx => tx
         .update(toolActionRequests)
         .set({ status: "executed", resolvedAt: now, updatedAt: now })
         .where(eq(toolActionRequests.id, claimed.id)));
@@ -8420,7 +8424,7 @@ export function createToolGatewayService(
       pendingRequest.expiresAt.getTime() <= Date.now();
     if (pendingUnsigned || pendingExpired) {
       const now = new Date();
-      await writeToolReviewChange(db, tx => tx
+      await writeToolReviewChange(db, pendingRequest.companyId, tx => tx
         .update(toolActionRequests)
         .set({ status: "expired", resolvedAt: now, updatedAt: now })
         .where(
@@ -9460,7 +9464,7 @@ export function createToolGatewayService(
             signingSecret: options.toolActionSigningSecret,
           });
         } catch (error) {
-          await writeToolReviewChange(db, tx => tx
+          await writeToolReviewChange(db, pendingActionRequest.companyId, tx => tx
             .update(toolActionRequests)
             .set({
               status: "cancelled",
@@ -9501,7 +9505,7 @@ export function createToolGatewayService(
           tool,
           argumentsSummary: argumentValidation.summary,
         });
-        await writeToolReviewChange(db, tx => tx
+        await writeToolReviewChange(db, pendingActionRequest.companyId, tx => tx
           .update(toolActionRequests)
           .set({
             canonicalArgumentsHash,
@@ -9658,8 +9662,12 @@ export function createToolGatewayService(
     nextActionReviewInterruptionAt: reviewInterruption.next,
     sweepExpiredActionReviews: reviewExpiry.sweep,
     nextActionReviewExpiryAt: reviewExpiry.next,
+    actionReviewExpiryDeadlines: reviewExpiry.deadlines,
+    sweepExpiredActionReviewsForCompany: reviewExpiry.sweepForCompany,
 
-    async recoverApprovedActionReviews() {
+    approvedActionReviewCompanies: (companyId?: string) => approvedToolReviewCompanies(db, companyId),
+
+    async recoverApprovedActionReviews(companyId?: string) {
       return recoverApprovedToolReviews(db, async row => {
         try {
           const prepared = await prepareApprovedToolReview(db, { actionRequestId: row.request.id,
@@ -9680,7 +9688,7 @@ export function createToolGatewayService(
           logger.warn({ err, actionRequestId: row.request.id }, "Could not recover approved tool action");
           return true;
         }
-      });
+      }, companyId);
     },
 
     async sweepActionReviews(input: { includeExpiry?: boolean; includeApproved?: boolean; includeInterrupted?: boolean } = {}) {
@@ -9826,7 +9834,7 @@ export function createToolGatewayService(
       }
       if (!signedPayload) {
         if (actionRequest.status === "pending") {
-          await writeToolReviewChange(db, tx => tx
+          await writeToolReviewChange(db, actionRequest.companyId, tx => tx
             .update(toolActionRequests)
             .set({
               status: "cancelled",
@@ -10399,7 +10407,7 @@ export function createToolGatewayService(
           actionRequest.expiresAt.getTime() <= Date.now()
         ) {
           const expiredAt = new Date();
-          const [expired] = await writeToolReviewChange(db, tx => tx
+          const [expired] = await writeToolReviewChange(db, actionRequest.companyId, tx => tx
             .update(toolActionRequests)
             .set({
               status: "expired",
@@ -10447,7 +10455,7 @@ export function createToolGatewayService(
             interaction?.kind === "request_confirmation" &&
             interaction.status === "accepted"
           ) {
-            const [approved] = await writeToolReviewChange(db, tx => tx
+            const [approved] = await writeToolReviewChange(db, actionRequest.companyId, tx => tx
               .update(toolActionRequests)
               .set({
                 status: "approved",
@@ -10543,7 +10551,7 @@ export function createToolGatewayService(
           );
           await options.beforeLegacyApprovedActionClaim?.();
           const claimedAt = new Date();
-          const [claimed] = await writeToolReviewChange(db, tx => tx
+          const [claimed] = await writeToolReviewChange(db, actionRequest.companyId, tx => tx
             .update(toolActionRequests)
             .set({
               status: "executing",
@@ -10636,13 +10644,14 @@ export function createToolGatewayService(
           ))
         ) {
           throw await expireApprovedActionForManagedArgumentDrift({
+            companyId: actionRequest.companyId,
             actionRequestId: actionRequest.id,
             invocationId: storedInvocation.id,
             toolName: storedInvocation.toolName,
           });
         }
         const claimedAt = new Date();
-        const [claimed] = await writeToolReviewChange(db, tx => tx
+        const [claimed] = await writeToolReviewChange(db, actionRequest.companyId, tx => tx
           .update(toolActionRequests)
           .set({
             status: "executing",
@@ -10921,7 +10930,7 @@ export function createToolGatewayService(
           .where(eq(toolInvocations.id, invocationId));
         if (input.approvedActionRequestId) {
           const actionRequestId = input.approvedActionRequestId;
-          const [executedRequest] = await writeToolReviewChange(db, tx => tx
+          const [executedRequest] = await writeToolReviewChange(db, session.companyId, tx => tx
             .update(toolActionRequests)
             .set({
               status: "executed",
@@ -11055,7 +11064,7 @@ export function createToolGatewayService(
         void emitConnectionInvoked(db, invocationId);
         if (input.approvedActionRequestId) {
           const actionRequestId = input.approvedActionRequestId;
-          const [failedRequest] = await writeToolReviewChange(db, tx => tx
+          const [failedRequest] = await writeToolReviewChange(db, session.companyId, tx => tx
             .update(toolActionRequests)
             .set({
               status: "failed",
