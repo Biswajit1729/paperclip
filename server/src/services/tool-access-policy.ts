@@ -1371,8 +1371,15 @@ export function toolAccessPolicyService(db: Db, options: { toolActionSigningSecr
       status: toolInvocations.status, policyDecision: toolInvocations.policyDecision, approvalState: toolInvocations.approvalState,
       policyExplanation: toolInvocations.policyExplanation,
     }).from(toolInvocations).where(and(eq(toolInvocations.companyId, ctx.companyId), eq(toolInvocations.id, invocationId)));
-    const authorized = invocation && invocation.status === "executing"
-      && (invocation.policyDecision === "allow" || (invocation.policyDecision === "require_approval" && invocation.approvalState === "approved"))
+    // A parked request already spent its slot before asking for review. Reusing
+    // that admission only skips the same rate rule; current policy and the
+    // gateway's approval/claim owners still decide whether it may execute.
+    const authorized = invocation && (
+      invocation.status === "executing"
+        && (invocation.policyDecision === "allow" || (invocation.policyDecision === "require_approval" && invocation.approvalState === "approved"))
+      || invocation.status === "awaiting_approval" && invocation.policyDecision === "require_approval"
+        && (invocation.approvalState === "pending" || invocation.approvalState === "approved")
+    )
       && invocation.actorType === ctx.actorType && invocation.actorId === ctx.actorId && invocation.agentId === ctx.agentId
       && invocation.runId === ctx.heartbeatRunId && invocation.issueId === ctx.issueId && invocation.gatewayId === ctx.gatewayId
       && invocation.applicationId === ctx.applicationId && invocation.connectionId === ctx.connectionId
