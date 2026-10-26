@@ -2461,3 +2461,12 @@ and server types pass afterward. No polling duty has been removed. The audit
 records the critical transaction boundary: scheduled guards belong inside the
 status committer, which publishes after its own transaction. Producer coverage,
 worker selection, lifecycle/cost proof and a new PR remain outstanding.
+
+Slice 50 scheduled-commit checkpoint: nine competing source/lease/deadline/effect/
+ownership cases reproduce unsafe scheduled reassessment before the new guard.
+The final 103-case status corpus and server types pass. The audit preserves two
+initial invalid fixtures and the before-fix constraint rejection. The guard is
+opt-in at the existing committer transaction; no outer transaction or early
+publication is added. Worker discovery, producer/lifecycle/cost evidence and
+periodic removal remain outstanding. No new PR or merge is claimed; all original
+remaining duties and older stack gates remain open.

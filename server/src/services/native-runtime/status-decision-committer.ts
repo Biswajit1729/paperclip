@@ -1,3 +1,4 @@
+import { isNativeRunnerOwnershipHeld } from "./native-runner-ownership.js";
 import { notifyNativeFinalizationWork } from "../native-finalization-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "../unsafe-workspace-export-notifications.js";
 import { notifyAutomaticCompletionReviews } from "../automatic-completion-review-notifications.js";
@@ -1599,6 +1600,9 @@ export async function commitNativeStatusDecision(input: {
   requireMonitorWait?: { agentId: string; nextCheckAt: string };
   requireMonitorDelivery?: NativeMonitorDelivery;
   requireNoPendingChildCompletion?: NativeChildCompletionRecipient;
+  requireReassessmentSource?: {
+    phase: string; resultId: string; assessmentId: string; decisionId: string | null; agentId: string;
+  };
   requireModelRejectionOwner?: { agentId: string; reviewContext: NativeReviewAssignmentContext | null };
   requireProviderFailureOwner?: { agentId: string; reviewContext: NativeReviewAssignmentContext | null };
   requireBoardResponseWaitSource?: NativeBoardResponseWaitSource;
@@ -1650,6 +1654,30 @@ export async function commitNativeStatusDecision(input: {
       .limit(1)
       .then((rows) => rows[0] ?? null);
     if (!issue) throw new NativeStatusRaceError();
+    if (input.requireReassessmentSource) {
+      const expected = input.requireReassessmentSource;
+      const now = Date.now();
+      if (coordinator.phase === "terminal_failure" || coordinator.phase !== expected.phase ||
+          coordinator.resultId !== expected.resultId || coordinator.assessmentId !== expected.assessmentId ||
+          coordinator.decisionId !== expected.decisionId ||
+          (coordinator.nextAttemptAt !== null && coordinator.nextAttemptAt.getTime() > now) ||
+          (coordinator.leaseOwner !== null &&
+            (coordinator.leaseExpiresAt === null || coordinator.leaseExpiresAt.getTime() > now))) {
+        throw new NativeStatusRaceError();
+      }
+      const run = await tx.select().from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId),
+        eq(heartbeatRuns.nativeIssueId, input.issueId), eq(heartbeatRuns.agentId, expected.agentId),
+      )).for("update").limit(1).then(rows => rows[0]);
+      if (!run || run.runtimeMode !== "native" || isNativeRunnerOwnershipHeld(run)) throw new NativeStatusRaceError();
+      const pendingEffect = expected.decisionId ? await tx.select({ id: statusDecisionEffects.id })
+        .from(statusDecisionEffects).where(and(
+          eq(statusDecisionEffects.companyId, input.companyId), eq(statusDecisionEffects.issueId, input.issueId),
+          eq(statusDecisionEffects.decisionId, expected.decisionId),
+          inArray(statusDecisionEffects.deliveryState, ["pending", "failed"]),
+        )).limit(1).then(rows => rows[0]) : null;
+      if (pendingEffect) throw new NativeStatusRaceError();
+    }
     // A completed model turn cannot close a persistent conversation. Preserve
     // the task here; the response finalizer records its durable waiting state.
     if (issue.conversationAgentId && input.decision.statusAction === "done") {

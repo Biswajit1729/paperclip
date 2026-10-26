@@ -124,3 +124,28 @@ The new worker must reload source facts and preserve deferred races/retries; it
 must not treat an extracted snapshot-based helper as fresh scheduling authority.
 Producer notifications, discovery cost, lifecycle tests and periodic removal
 remain outstanding. No slice 50 PR has been published.
+
+## Scheduled commit guard
+
+Scheduled reassessment now opts into a source guard inside the existing status
+committer transaction. After coordinator/task locking it compares the selected
+phase/result/assessment/decision, respects a future retry and live or unknown
+lease, locks and checks native run ownership, and defers while the old decision
+has pending or failed effects. Explicit callers retain their existing behavior.
+The lock order remains coordinator, task, then run. Publications still occur only
+after the committer's transaction commits.
+
+The first seven-case reproduction had five behavioral failures and two invalid
+fixtures: clearing the assessment/result without clearing dependent references
+violated schema constraints before reaching the committer. Corrected fixtures
+plus pending-effect and ownership races failed all nine before the guard: eight
+incorrect commits and one attempted commit rejected by the result constraint.
+After the guard, all 103 status-authority corpus cases and server typecheck pass.
+Every deferred case preserves the competing state and successfully commits once
+that state is released. Logs: /tmp/sleep50-guard-before.log,
+/tmp/sleep50-guard-before2.log, /tmp/sleep50-guard-after.log,
+/tmp/sleep50-guard-types.log; statuses are saved beside the test logs.
+
+This is not worker acceptance. Candidate selection, dormant-versus-retry outcome
+handling, producer coverage, lifecycle/cost tests and periodic removal remain.
+No slice 50 PR has been published and no additional polling has been removed.

@@ -30,7 +30,11 @@ function record(value: unknown): Record<string, unknown> {
     : {};
 }
 
-export async function reassessNativeStatusFromSource(db: Db, row: NativeStatusReassessmentSource): Promise<Outcome> {
+export async function reassessNativeStatusFromSource(
+  db: Db,
+  row: NativeStatusReassessmentSource,
+  options: { onlyWhenDue?: boolean } = {},
+): Promise<Outcome> {
   const assessment = await db.select({
     id: workAssessments.id,
     contractId: workAssessments.contractId,
@@ -201,6 +205,10 @@ export async function reassessNativeStatusFromSource(db: Db, row: NativeStatusRe
         priorStatusVersion: Number(row.issueStatusVersion),
         priorDecisionId: row.issueDecisionId,
         decision,
+        requireReassessmentSource: options.onlyWhenDue ? {
+          phase: row.coordinatorPhase, resultId: resultRow.id, assessmentId: assessment.id,
+          decisionId: row.decisionId, agentId: row.agentId,
+        } : undefined,
         requireNoPendingChildCompletion: decision.statusAction === "done" ? childCompletionRecipient : undefined,
         supersedesCommittedDecisionId: row.coordinatorPhase === "committed"
           ? row.decisionId ?? undefined

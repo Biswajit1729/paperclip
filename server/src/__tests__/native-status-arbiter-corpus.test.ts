@@ -1,3 +1,4 @@
+import { reassessNativeStatusFromSource } from "../services/native-runtime/native-status-reassessment.js";
 import { NativeRunCoordinatorStore } from "../services/native-runtime/native-run-coordinator-store.js";
 import { registerNativePendingEffectWork } from "../services/native-runtime/native-pending-effect-work.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
@@ -2450,6 +2451,68 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, seeded.runId));
     return seeded;
   }
+
+  it.each(["future", "claim", "unknown claim", "assessment", "result", "phase", "decision", "effects", "ownership"] as const)(
+    "guards scheduled reassessment against a changed %s at the commit boundary", async changed => {
+      const seeded = await seedAutomaticReview();
+      await dismissAutomaticCompletionReviews(db, seeded.issueId);
+      const [source] = await db.select({
+        runId: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
+        issueId: issues.id, issueStatus: issues.status, issueStatusVersion: issues.statusVersion,
+        issueDecisionId: issues.lastStatusDecisionId, coordinatorPhase: nativeRunFinalizations.phase,
+        assessmentId: nativeRunFinalizations.assessmentId, decisionId: nativeRunFinalizations.decisionId,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      }).from(nativeRunFinalizations).innerJoin(heartbeatRuns, eq(heartbeatRuns.id, nativeRunFinalizations.runId))
+        .innerJoin(issues, eq(issues.id, nativeRunFinalizations.issueId))
+        .where(eq(nativeRunFinalizations.runId, seeded.runId));
+      const selected = { ...source, assessmentId: source.assessmentId! };
+      const future = new Date(Date.now() + 60_000);
+      const change = changed === "future" ? { nextAttemptAt: future }
+        : changed === "claim" ? { leaseOwner: "other-finalizer", leaseExpiresAt: future }
+        : changed === "unknown claim" ? { leaseOwner: "unknown-finalizer", leaseExpiresAt: null }
+        : changed === "assessment" ? { assessmentId: null, decisionId: null }
+        : changed === "result" ? { resultId: null, assessmentId: null, decisionId: null }
+        : changed === "phase" ? { phase: "terminal_failure" }
+        : changed === "decision" ? { decisionId: null } : null;
+      const [originalRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId));
+      const originalEffects = await db.select().from(statusDecisionEffects).where(eq(statusDecisionEffects.decisionId, selected.decisionId!));
+      expect(originalEffects.length).toBeGreaterThan(0);
+      const transaction = db.transaction.bind(db);
+      const intercept = vi.spyOn(db, "transaction").mockImplementationOnce((async (callback, options) => {
+        if (change) await db.update(nativeRunFinalizations).set(change).where(eq(nativeRunFinalizations.runId, seeded.runId));
+        if (changed === "effects") await db.update(statusDecisionEffects).set({ deliveryState: "pending" })
+          .where(eq(statusDecisionEffects.decisionId, selected.decisionId!));
+        if (changed === "ownership") await db.update(heartbeatRuns).set({ status: "running",
+          runtimeMode: "native", errorCode: "native_execution_ownership_unverified", nativePhase: "terminal_failure" })
+          .where(eq(heartbeatRuns.id, seeded.runId));
+        return transaction(callback, options);
+      }) as typeof db.transaction);
+      try {
+        expect(await reassessNativeStatusFromSource(db, selected, { onlyWhenDue: true })).toEqual({ kind: "deferred" });
+      } finally { intercept.mockRestore(); }
+      expect((await issueService(db).getById(seeded.issueId))!.status).toBe("in_review");
+      expect(await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, seeded.issueId))).toHaveLength(1);
+      if (change) expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, seeded.runId)))[0]).toMatchObject(change);
+      if (changed === "effects") {
+        expect(await db.select().from(statusDecisionEffects).where(eq(statusDecisionEffects.decisionId, selected.decisionId!)))
+          .toEqual(originalEffects.map(effect => ({ ...effect, deliveryState: "pending" })));
+        for (const effect of originalEffects) await db.update(statusDecisionEffects).set({ deliveryState: effect.deliveryState })
+          .where(eq(statusDecisionEffects.id, effect.id));
+      }
+      if (changed === "ownership") {
+        expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId)))[0])
+          .toMatchObject({ status: "running", errorCode: "native_execution_ownership_unverified" });
+        await db.update(heartbeatRuns).set({ status: originalRun.status, runtimeMode: originalRun.runtimeMode,
+          errorCode: originalRun.errorCode, nativePhase: originalRun.nativePhase }).where(eq(heartbeatRuns.id, seeded.runId));
+      }
+      await db.update(nativeRunFinalizations).set({ phase: selected.coordinatorPhase,
+        resultId: seeded.resultId, assessmentId: selected.assessmentId, decisionId: selected.decisionId,
+        nextAttemptAt: null, leaseOwner: null, leaseExpiresAt: null }).where(eq(nativeRunFinalizations.runId, seeded.runId));
+      expect(await reassessNativeStatusFromSource(db, selected, { onlyWhenDue: true })).toMatchObject({ kind: "committed" });
+      expect((await issueService(db).getById(seeded.issueId))!.status).toBe("done");
+      expect(await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, seeded.issueId))).toHaveLength(2);
+    }, 30_000,
+  );
 
   it("retires a proven automatic review and applies the current successful completion exactly once", async () => {
     const seeded = await seedAutomaticReview();
