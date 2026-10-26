@@ -1857,8 +1857,8 @@ function createSandboxEnvironmentDriver(
       // or account used for qualification and custom-template resolution.
       if (configuredEnvironment.id !== input.environment.id
         || configuredEnvironment.driver !== input.environment.driver
-        || stableStringify({ ...configuredEnvironment.config, reuseLease: undefined })
-          !== stableStringify({ ...input.environment.config, reuseLease: undefined })) {
+        || stableStringify({ ...configuredEnvironment.config, reuseLease: undefined, archiveOnRelease: undefined })
+          !== stableStringify({ ...input.environment.config, reuseLease: undefined, archiveOnRelease: undefined })) {
         throw new Error("Run environment does not match its saved configuration.");
       }
       const storedParsed = parseEnvironmentDriverConfig(input.environment);
@@ -1878,7 +1878,7 @@ function createSandboxEnvironmentDriver(
         && hasSandboxSnapshotQualification(configuredEnvironment, input.companyId)) {
         throw new Error("sandbox_snapshot_qualification_required: The snapshot qualification is missing or stale. Test this environment again before running Paperclip Runner.");
       }
-      if (input.configuredEnvironment) parsed.config = { ...parsed.config, reuseLease: storedParsed.config.reuseLease };
+      if (input.configuredEnvironment) parsed.config = { ...parsed.config, reuseLease: storedParsed.config.reuseLease, archiveOnRelease: storedParsed.config.archiveOnRelease };
       if (pinnedSnapshotId) parsed.config = { ...parsed.config, snapshot: pinnedSnapshotId };
 
       // Check if this provider should be handled by a plugin.
