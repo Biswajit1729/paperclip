@@ -1494,7 +1494,7 @@ async function startServerWithDatabaseTeardown(
       await app.locals.toolGateway.settleInterruptedActionReviews();
     }
     return config.heartbeatSchedulerEnabled
-      ? registerToolReviewProjectionWork(deliveryWork, { sweep: app.locals.toolGateway.repairActionReviewProjections },
+      ? registerToolReviewProjectionWork(deliveryWork, { sweep: app.locals.toolGateway.repairActionReviewProjections, companies: app.locals.toolGateway.actionReviewProjectionCompanies },
         () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready
       : app.locals.toolGateway.repairActionReviewProjections();
   }).catch((err: unknown) => logger.error({ err }, "startup tool review recovery failed"));
