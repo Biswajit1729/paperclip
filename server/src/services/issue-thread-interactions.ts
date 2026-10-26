@@ -1076,8 +1076,22 @@ class InteractionResolvedConcurrentlyError extends Error {
 // tool_action_requests row. Administrative resolutions (withdraw, terminal-issue
 // expiry) must settle that row too, or the parked call stays approvable under
 // its own one-hour lifecycle after its card is gone.
+async function hasLinkedToolActionRequests(db: Pick<Db, "select">, companyId: string, interactionIds: string[]) {
+  if (interactionIds.length === 0) return false;
+  const [request] = await db.select({ id: toolActionRequests.id }).from(toolActionRequests)
+    .where(and(eq(toolActionRequests.companyId, companyId), inArray(toolActionRequests.interactionId, interactionIds)))
+    .limit(1);
+  return request !== undefined;
+}
+
+async function notifyToolProjectionForInteractions(db: Pick<Db, "select">, companyId: string, interactionIds: string[]) {
+  // The persisted link also covers legacy cards without current payload flags.
+  if (await hasLinkedToolActionRequests(db, companyId, interactionIds))
+    await notifyDeliveryWork(db, DELIVERY_QUEUES.toolReviewProjection, companyId);
+}
+
 async function resolveLinkedToolActionRequests(
-  db: Pick<Db, "update">,
+  db: Pick<Db, "select" | "update">,
   interaction: Pick<IssueThreadInteractionRow, "id" | "companyId" | "kind">,
   outcome: {
     status: "expired" | "cancelled";
@@ -1086,7 +1100,8 @@ async function resolveLinkedToolActionRequests(
     now: Date;
   },
 ) {
-  if (interaction.kind !== "request_confirmation") return;
+  if (interaction.kind !== "request_confirmation" ||
+    !(await hasLinkedToolActionRequests(db, interaction.companyId, [interaction.id]))) return;
   await notifyToolReviewChange(db, interaction.companyId);
   await db
     .update(toolActionRequests)
@@ -2247,7 +2262,7 @@ export function issueThreadInteractionService(
             })
           : undefined;
 
-      if (lockedCurrent.kind === "request_confirmation") await notifyDeliveryWork(tx, DELIVERY_QUEUES.toolReviewProjection);
+      if (lockedCurrent.kind === "request_confirmation") await notifyToolProjectionForInteractions(tx, lockedCurrent.companyId, [lockedCurrent.id]);
       const [updated] = await tx
         .update(issueThreadInteractions)
         .set({
@@ -2527,7 +2542,7 @@ export function issueThreadInteractionService(
         now,
       });
 
-      if (lockedCurrent.kind === "request_confirmation") await notifyDeliveryWork(tx, DELIVERY_QUEUES.toolReviewProjection);
+      if (lockedCurrent.kind === "request_confirmation") await notifyToolProjectionForInteractions(tx, lockedCurrent.companyId, [lockedCurrent.id]);
       const [resolved] = await tx
         .update(issueThreadInteractions)
         .set({
@@ -3275,7 +3290,7 @@ export function issueThreadInteractionService(
         const updated = await db.transaction(async (tx) => {
           if (["ask_user_questions", "request_confirmation"].includes(row.kind)) await notifyChatRunMilestones(tx, row);
           else await notifyNativeReviewState(tx, row);
-          if (row.kind === "request_confirmation") await notifyDeliveryWork(tx, DELIVERY_QUEUES.toolReviewProjection);
+          if (row.kind === "request_confirmation") await notifyToolProjectionForInteractions(tx, row.companyId, [row.id]);
           const [resolved] = await tx
             .update(issueThreadInteractions)
             .set({
@@ -3362,7 +3377,7 @@ export function issueThreadInteractionService(
         const updated = await db.transaction(async (tx) => {
           if (["ask_user_questions", "request_confirmation"].includes(row.kind)) await notifyChatRunMilestones(tx, row);
           else await notifyNativeReviewState(tx, row);
-          if (row.kind === "request_confirmation") await notifyDeliveryWork(tx, DELIVERY_QUEUES.toolReviewProjection);
+          if (row.kind === "request_confirmation") await notifyToolProjectionForInteractions(tx, row.companyId, [row.id]);
           const [updatedRow] = await tx
             .update(issueThreadInteractions)
             .set({
@@ -3787,7 +3802,19 @@ export function issueThreadInteractionService(
             data.kind === "ask_user_questions"
               ? buildSupersededByNewerInteractionResult(row.id)
               : buildSupersededByNewerRequestResult(row.id);
-          if (data.kind === "request_confirmation") await notifyDeliveryWork(tx, DELIVERY_QUEUES.toolReviewProjection);
+          const siblingCondition = and(
+            eq(issueThreadInteractions.companyId, issue.companyId),
+            eq(issueThreadInteractions.issueId, issue.id),
+            eq(issueThreadInteractions.kind, data.kind),
+            eq(issueThreadInteractions.createdByAgentId, actor.agentId),
+            eq(issueThreadInteractions.status, "pending"),
+            ne(issueThreadInteractions.id, row.id),
+          );
+          if (data.kind === "request_confirmation") {
+            // The issue lock above excludes concurrent interaction creation.
+            const siblings = await tx.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions).where(siblingCondition);
+            await notifyToolProjectionForInteractions(tx, issue.companyId, siblings.map(sibling => sibling.id));
+          }
           const supersededRows = await tx
             .update(issueThreadInteractions)
             .set({
@@ -3798,17 +3825,7 @@ export function issueThreadInteractionService(
               resolvedAt: now,
               updatedAt: now,
             })
-            .where(
-              and(
-                eq(issueThreadInteractions.companyId, issue.companyId),
-                eq(issueThreadInteractions.issueId, issue.id),
-                eq(issueThreadInteractions.kind, data.kind),
-                eq(issueThreadInteractions.createdByAgentId, actor.agentId),
-                eq(issueThreadInteractions.status, "pending"),
-                ne(issueThreadInteractions.id, row.id),
-
-              ),
-            )
+            .where(siblingCondition)
             .returning();
           for (const supersededRow of supersededRows) {
             await resolveLinkedToolActionRequests(tx, supersededRow, {
@@ -4460,7 +4477,7 @@ export function issueThreadInteractionService(
               .delete(toolOauthStates)
               .where(eq(toolOauthStates.interactionId, row.id));
           }
-          if (row.kind === "request_confirmation") await notifyDeliveryWork(tx, DELIVERY_QUEUES.toolReviewProjection);
+          if (row.kind === "request_confirmation") await notifyToolProjectionForInteractions(tx, row.companyId, [row.id]);
           const [resolved] = await tx
             .update(issueThreadInteractions)
             .set({
@@ -4632,7 +4649,7 @@ export function issueThreadInteractionService(
           const updatedInteractions = await db.transaction(async (tx) => {
             if (commentRows.some(row => row.kind === "request_confirmation")) await notifyChatRunMilestones(tx, sampleConfirmationRow);
             else await notifyNativeReviewState(tx, sampleConfirmationRow);
-            await notifyDeliveryWork(tx, DELIVERY_QUEUES.toolReviewProjection);
+            await notifyToolProjectionForInteractions(tx, issue.companyId, confirmationRowIds);
             const updatedRows = await tx
               .update(issueThreadInteractions)
               .set({
