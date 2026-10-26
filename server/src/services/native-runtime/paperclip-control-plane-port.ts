@@ -85,6 +85,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
   readonly #binding: PaperclipControlPlaneBinding;
   #sessionId: string | null = null;
   readonly #assertControllerActive?: () => void;
+  readonly #assertRunAdmissionActive?: () => void;
   readonly #onCommittedEvent?: (event: PrpEvent) => Promise<void>;
   readonly #onDuplicateEvent?: (event: PrpEvent) => Promise<void>;
 
@@ -96,12 +97,15 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
       privateKeyPem?: string;
       /** Synchronous revocation fence for a controller handing off on restart. */
       assertControllerActive?: () => void;
+      /** Read-only admission may finish an existing startup solely for restart detachment. */
+      assertRunAdmissionActive?: () => void;
       onCommittedEvent?: (event: PrpEvent) => Promise<void>;
       onDuplicateEvent?: (event: PrpEvent) => Promise<void>;
     } = {},
   ) {
     this.#db = db;
     this.#assertControllerActive = options.assertControllerActive;
+    this.#assertRunAdmissionActive = options.assertRunAdmissionActive ?? options.assertControllerActive;
     this.#identityRedactor = createAgentIdentityRedactor(options.privateKeyPem);
     this.#binding = structuredClone(binding);
     this.#onCommittedEvent = options.onCommittedEvent;
@@ -125,7 +129,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
   }
 
   async openRun(input: OpenControlPlaneRunInput): Promise<void> {
-    this.#assertControllerActive?.();
+    this.#assertRunAdmissionActive?.();
     const identity = input.identity;
     if (
       identity.companyId !== this.#binding.companyId
@@ -148,7 +152,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     if (!run || !this.#matchesPersistedBinding(run)) {
       throw new Error("native_open_run_not_authorized");
     }
-    this.#assertControllerActive?.();
+    this.#assertRunAdmissionActive?.();
     this.#sessionId = identity.sessionId;
   }
 

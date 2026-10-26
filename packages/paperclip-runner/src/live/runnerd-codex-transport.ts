@@ -726,6 +726,7 @@ async function releaseRunnerProcessOwnership(input: {
     ((settlement: "settled" | "unsettled") => Promise<void> | void) | null;
   forceKill: () => Promise<void> | void;
   release: (() => Promise<void> | void) | null;
+  retireController?: () => Promise<void>;
 }): Promise<void> {
   let releaseFailure: unknown;
   try {
@@ -735,6 +736,9 @@ async function releaseRunnerProcessOwnership(input: {
   }
   let checkpointFailure: unknown;
   try {
+    // External ingress must stop reconnecting before admitted journal writes
+    // can be joined. A failed retirement cannot authorize a new checkpoint.
+    await input.retireController?.();
     if (input.checkpoint !== null) {
       // Release only the authenticated control route first. In provider-ingress
       // mode this stops its reconnect loop; it does not release the sandbox
@@ -855,6 +859,11 @@ function runnerCloseGraceMs(options: Pick<CapabilityRunnerdCodexTransportOptions
   // Explicit caller deadlines remain authoritative; all settlement proofs stay
   // mandatory even when the provider already completed its task.
   return options.closeGraceMs ?? (options.provider === "acpx" && options.acpxAgent === "pi" ? 45_000 : 10_000);
+}
+
+function runnerProcessReconnectGraceMs(options: CapabilityRunnerdCodexTransportOptions): number | undefined {
+  if (options.runnerProcessReconnectGraceMs === null) return undefined;
+  return options.runnerProcessReconnectGraceMs ?? options.runnerReconnectGraceMs;
 }
 
 function runnerCloseDeadlines(
@@ -1282,6 +1291,8 @@ export interface CapabilityRunnerdCodexTransportOptions extends RunnerExecutionD
   codexCommand?: string;
   codexArgs?: string[];
   disableCodexProjectInstructions?: boolean;
+  /** Restrict hosted search without changing the provider default for other runs. */
+  disableCodexWebSearch?: boolean;
   /** Controller-visible Codex home used only to seed the isolated runner home. */
   sourceCodexHome?: string | null;
   opencodeCommand?: string;
@@ -3514,6 +3525,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       },
     ],
   });
+  #handlerInstalled = false;
+  readonly #handlerReady: Promise<void>;
+  #resolveHandlerReady!: () => void;
   #core: DurablePrpControlPlane | null = null;
   #handle: RunnerProcessHandle | null = null;
   #adoptedRunnerMonitor: NodeJS.Timeout | null = null;
@@ -3579,6 +3593,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   readonly #closedSignal: Promise<void>;
   #resolveClosedSignal!: () => void;
   #closePromise: Promise<void> | null = null;
+  #detachPromise: Promise<void> | null = null;
   #startupOperation: Promise<unknown> | null = null;
   #attachmentOperation: Promise<void> | null = null;
   #startupDrainTimedOut = false;
@@ -3641,6 +3656,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     }
     this.#failureSignal = new Promise<never>((_resolve, reject) => {
       this.#rejectFailureSignal = reject;
+    });
+    this.#handlerReady = new Promise<void>(resolve => {
+      this.#resolveHandlerReady = resolve;
     });
     this.#closedSignal = new Promise<void>(resolve => {
       this.#resolveClosedSignal = resolve;
@@ -4017,6 +4035,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
 
   setServerRequestHandler(handler: CodexServerRequestHandler): void {
     this.#handler = handler;
+    this.#handlerInstalled = true;
+    this.#resolveHandlerReady();
   }
 
   async #awaitWarmRunAttachmentReady(): Promise<void> {
@@ -4471,7 +4491,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   close(reason?: string): Promise<void> {
     // Detachment relinquishes process ownership. A late execution finalizer
     // must not suspend or signal the runner now owned by the next controller.
-    if (this.#controllerDetachedForRestart) return Promise.resolve();
+    if (this.#controllerDetachedForRestart)
+      return this.#detachPromise ?? Promise.resolve();
     if (reason) {
       this.#diagnostic(
         `runner transport close requested: ${reason.replaceAll(/[\r\n]/g, " ").slice(0, 1_000)}`,
@@ -4481,8 +4502,33 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     return this.#closePromise;
   }
 
-  async detachControllerForRestart(): Promise<void> {
+  detachControllerForRestart(): Promise<void> {
+    this.#detachPromise ??= this.#detachControllerOnce();
+    return this.#detachPromise;
+  }
+
+  async #stopAndDrainAuthority(deadline: number): Promise<void> {
+    const core = this.#core;
+    if (!core) return;
+    await core.stop();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        core.drainPendingConnectionProcessing(),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(new Error(
+            "Controller journal drain timed out; preserve the session before replacing its writer.",
+          )), Math.max(0, deadline - Date.now()));
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async #detachControllerOnce(): Promise<void> {
     if (this.#closed) return;
+    const deadline = Date.now() + runnerCloseGraceMs(this.options);
     this.#controllerDetachedForRestart = true;
     this.#closed = true;
     this.#resolveClosedSignal();
@@ -4500,13 +4546,15 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         `controller route release failed during restart detach: ${String(error)}`,
       );
     });
-    await this.#core?.stop().catch((error: unknown) => {
-      this.#diagnostic(
-        `controller authority stop failed during restart detach: ${String(error)}`,
-      );
-    });
+    // A successor must not share this journal with an admitted async write.
+    // A timeout rejects detachment, including repeated calls, instead of
+    // reporting that the old writer has retired.
+    try {
+      await this.#stopAndDrainAuthority(deadline);
+    } finally {
+      this.#queue.close();
+    }
     this.#handle = null;
-    this.#queue.close();
     this.#diagnostic(
       "controller authority detached for restart; durable runner left alive",
     );
@@ -4730,6 +4778,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           this.#evidence.runnerSignal = result.signal as NodeJS.Signals | null;
         },
         release: this.#controlPlaneRelease,
+        retireController: () => this.#stopAndDrainAuthority(closeDeadline),
       });
     } finally {
       await this.#core?.stop();
@@ -5094,7 +5143,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       maxOutboxBytes: RUNNERD_MAX_OUTBOX_BYTES,
       p0ReserveBytes: RUNNERD_P0_RESERVE_BYTES,
       maxRuntimeMs: 0,
-      reconnectGraceMs: this.options.runnerReconnectGraceMs,
+      reconnectGraceMs: runnerProcessReconnectGraceMs(this.options),
       lifecyclePolicy: this.options.lifecyclePolicy,
       runnerBinaryPath,
       runnerVersion: runnerArtifact.version,
@@ -5536,8 +5585,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         // Keep the durable provider profile and thread identity unchanged.
         const recordedCommand = record(runAttachTemplate.provider).command;
         runAttachTemplate.runtimeLaunchArgs =
-          this.options.codexArgs ??
           createRunnerdCodexAppServerArgs({
+            args: this.options.codexArgs,
+            disableWebSearch: this.options.disableCodexWebSearch,
             environment: this.options.environment,
             codexHome,
             workingDirectory: this.options.resumeWorkingDirectory,
@@ -5779,7 +5829,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           maxOutboxBytes: RUNNERD_MAX_OUTBOX_BYTES,
           p0ReserveBytes: RUNNERD_P0_RESERVE_BYTES,
           maxRuntimeMs: 0,
-          reconnectGraceMs: this.options.runnerReconnectGraceMs,
+          reconnectGraceMs: runnerProcessReconnectGraceMs(this.options),
           lifecyclePolicy: this.options.lifecyclePolicy,
           runnerBinaryPath,
           runnerVersion: runnerArtifact.version,
@@ -5935,6 +5985,18 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         : await Promise.race([admission.settled, this.#failureSignal]).catch(() => {
             throw new SemanticToolNotDispatchedError();
           });
+    // An adopted Runner can authenticate and deliver queued tools before the
+    // driver has finished reconstructing its session. Handler publication is
+    // the dispatch barrier; the default RPC diagnostic is not a tool outcome.
+    // The owning startup/transport lifetime bounds this wait, and the original
+    // authority/epoch checks below still apply after it becomes ready.
+    if (!this.#handlerInstalled) {
+      await Promise.race([
+        this.#handlerReady,
+        this.#failureSignal,
+        this.#closedSignal.then(() => { throw new SemanticToolNotDispatchedError(); }),
+      ]).catch(() => { throw new SemanticToolNotDispatchedError(); });
+    }
     try {
       this.#throwIfFailed();
     } catch {
@@ -7282,6 +7344,7 @@ export async function probeNativeRunnerEnvironment(options: {
     environment,
     externallySandboxed: options.transportOptions?.externallySandboxed === true,
     disableCodexProjectInstructions: true,
+    disableCodexWebSearch: options.provider === "codex",
     closeGraceMs: 10_000,
     lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
   });

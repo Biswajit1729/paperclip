@@ -103,6 +103,7 @@ export interface HeartbeatRecoveryDependencies extends Pick<HeartbeatRetryDepend
   getRun: (runId: string, options?: Parameters<ReturnType<typeof createHeartbeatRunState>["getRun"]>[1]) => Promise<
     Awaited<ReturnType<ReturnType<typeof createHeartbeatRunState>["getRun"]>> | null
   >;
+  getRunWorkspaceSettlement: ReturnType<typeof createHeartbeatRunState>["getRunWorkspaceSettlement"];
   environmentRuntime: ReturnType<typeof environmentRuntimeService>;
   pluginWorkerManager?: WorkspaceWorkers;
   environmentsSvc: Pick<ReturnType<typeof environmentService>, "getById" | "getLeaseById" | "releaseLease">;
@@ -362,6 +363,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     environmentRuntime,
     scheduleNativeSessionResumeDispatch,
     getRun,
+    getRunWorkspaceSettlement,
     executeRun,
     activeRunExecutionPromises,
     cancelHeartbeatNativeRun,
@@ -1861,7 +1863,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     agentId: string;
     succeeded: boolean;
   }) {
-    const settledRun = await getRun(input.runId);
+    const settledRun = await getRunWorkspaceSettlement(input.runId);
     const workspaceSyncReference = readNativeWorkspaceSyncReference(
       parseObject(settledRun?.runnerProfileJson).nativeWorkspaceSync,
     );
