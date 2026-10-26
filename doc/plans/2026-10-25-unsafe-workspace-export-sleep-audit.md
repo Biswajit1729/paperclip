@@ -192,3 +192,21 @@ Post-wiring verification:
 Workspace typecheck and build passed. Exact-head remote CI/review remain required
 before this slice is accepted. Other stack gates and migration reconciliation with
 master remain outstanding.
+
+## Notice-retirement follow-up
+
+Retiring an older run's stale unsafe-export notice can make a newer accepted
+result on the same issue eligible. The owner now registers an issue-scoped
+notification in its existing transaction before that retirement, using the
+already-loaded action rows to avoid signalling an unchanged notice. The next
+pass rediscovers the issue, rather than only rechecking the older run. Existing
+physical ownership and eligibility fences are unchanged.
+
+A real PostgreSQL regression first reproduced the newer result remaining in
+terminal failure after the older notice resolved. It now proves automatic
+readmission without another write or restart, preservation of both accepted
+results, no extra run or provider call, and quiet after settlement. All 80
+export-owner tests and 63 startup tests passed. The first combined rerun failed
+export fixture setup because the reused database retained its fixed company
+prefix; the complete export suite subsequently passed on a fresh dedicated
+database. Final integrated typecheck, build, and remote checks remain required.

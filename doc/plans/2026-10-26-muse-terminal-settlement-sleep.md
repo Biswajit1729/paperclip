@@ -169,3 +169,14 @@ startup reconstructs missed work. It does not add cross-replica SQL ingress.
 Cloud's unsupported-work sleep blockers and external-alarm admission contract
 remain unchanged. This slice establishes local worker quiet, not deployed host
 suspension, database suspension, or measured cost savings.
+
+## Qualification deadline precedence
+
+When a bounded settlement pass leaves assignments outstanding, maintenance now
+registers the earlier of its five-second settlement retry and the saved
+qualification expiry. Neither obligation can hide the other. A regression with
+real qualification and assignment rows first reproduced a one-second expiry
+being delayed to the settlement retry. It now proves the exact expiry is
+registered and enforced while assignment debt remains, then disarms after
+settlement with no recurring SQL. All 15 maintenance lifecycle cases passed.
+Integrated typecheck, build, and remote checks remain required.

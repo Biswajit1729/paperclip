@@ -173,6 +173,35 @@ describeDatabase("Muse commit and deadline maintenance", () => {
     await vi.advanceTimersByTimeAsync(600_000);
     expect(calls).toEqual(baseline);
   });
+  it("honors a nearer qualification deadline while terminal settlement remains", async () => {
+    const at = new Date(Date.now() + 1000);
+    const expiring = await fixture(at);
+    const b = await fixture();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: b.companyId, agentId: b.agentId,
+      invocationSource: "automation", status: "succeeded", finishedAt: new Date() }).returning();
+    const [assignment] = await db.insert(museRunnerAssignments).values({ companyId: b.companyId,
+      agentId: b.agentId, bindingId: b.id, bindingGeneration: b.generation, runId: run.id,
+      normalizedSessionId: randomUUID(), turnId: randomUUID(), controllerGeneration: 1,
+      catalogDigest: "test", status: "accepted", projection: {}, acceptBy: new Date(),
+      expiresAt: new Date(Date.now() + 60_000) }).returning();
+    await start();
+    expect(coordinator.nextWakeAt()).toBe(at.getTime());
+    expect(effects.endQualification).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(Math.max(0, at.getTime() - Date.now())); await settle();
+    expect(effects.endQualification).toHaveBeenCalledWith(expect.objectContaining({ bindingId: expiring.id }));
+    expect((await db.select().from(museRunnerAssignments).where(eq(museRunnerAssignments.id, assignment.id)))[0].finalizedAt).toBeNull();
+    expect(coordinator.nextWakeAt()).toBeGreaterThan(Date.now());
+    effects.reconcileTerminalAssignments.mockImplementationOnce(async () => {
+      await db.update(museRunnerAssignments).set({ status: "settled", acceptedResultAt: new Date(), finalizedAt: run.finishedAt })
+        .where(eq(museRunnerAssignments.id, assignment.id));
+    });
+    await vi.advanceTimersByTimeAsync(5000); await settle();
+    expect(coordinator.nextWakeAt()).toBeNull();
+    expect(errors).toEqual([]);
+    const baseline = [...calls];
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(calls).toEqual(baseline);
+  });
   it("moves a scheduled deadline earlier on a committed change", async () => {
     const binding = await fixture(new Date(Date.now() + 600_000)); await start();
     const at = new Date(Date.now() + 60_000);
