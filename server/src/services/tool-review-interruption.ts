@@ -35,7 +35,7 @@ export function toolReviewInterruptionService(db: Db, onSettled: (input: {
               .where(eq(toolActionRequests.id, row.id)).for("update");
             if (!invocation || request?.status !== "executing" ||
               request.updatedAt.getTime() !== row.updatedAt.getTime()) return null;
-            const completed = ["succeeded", "failed", "denied", "timed_out", "rate_limited"].includes(invocation.status);
+            const completed = ["succeeded", "failed", "denied", "timed_out", "rate_limited", "cancelled"].includes(invocation.status);
             const status = invocation.status === "succeeded" ? "executed" as const : "failed" as const;
             const errorCode = completed ? invocation.errorCode : "tool_execution_outcome_unknown";
             const errorMessage = completed ? invocation.errorMessage
