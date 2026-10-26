@@ -376,3 +376,25 @@ hit a five-second sandbox staging test timeout; E2E shard five received a runner
 shutdown signal. These failures remain recorded in `/tmp/sleep48-ci-chat3.log`,
 `/tmp/sleep48-ci-workspaces-b.log`, and `/tmp/sleep48-ci-e2e5.log`. Fresh-head CI and
 review are required after the repair; no failing gate is waived.
+
+
+## Full-history test repair, 2026-10-26
+
+At `c4beddad1e`, fresh Greptile review is 5/5 and the scope thread is resolved.
+Remote CI passed 51 contexts but failed the chat shard and its aggregate gate:
+a second startup assertion assumed `worker.ready` drained every fair batch.
+The full local chat file finished with 1,595 passing and seven failing tests
+(`/tmp/sleep48-chat-full.log`); all seven were in the newly added worker tests.
+
+The larger run exposed two related observation errors: startup can have another
+batch scheduled, and `nextWakeAt() === null` can be transient while a batch runs.
+The latter caused query instrumentation to count unfinished startup checks and
+an outcome assertion to run before its response had been materialized. An early
+future-deadline test failure then left its fixture's real deadline for later tests.
+
+Worker startup/settlement assertions now require both zero active work and the
+expected next deadline. This changes test observation, not scheduler behavior or
+batch limits. All 18 affected cases pass against the retained history database
+from the full 1,602-case run (`/tmp/sleep48-settlement-history.log`), including
+single-query unrelated wakes, future deadlines, and coordinator retry release.
+The full-run failure remains recorded; fresh remote CI is still required.

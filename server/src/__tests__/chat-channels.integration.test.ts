@@ -72641,7 +72641,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const worker = work.register(coordinator, () => true);
     try {
       await worker.ready;
-      await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).toBeNull();
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+        { timeout: 10_000 }).toEqual({ active: 0, next: null });
       const comments = await db.select().from(issueComments).where(eq(issueComments.createdByRunId, context.runId));
       expect(comments).toHaveLength(1);
       expect(comments[0].body).toBe(context.result.summary);
@@ -72666,11 +72667,13 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     let replacement: ReturnType<typeof createService> | undefined;
     try {
       await worker.ready;
-      await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).toBeNull();
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+        { timeout: 10_000 }).toEqual({ active: 0, next: null });
       expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
       replacement = createService(new FakeChatSdkRuntime(), fakeTelegramFetch() as typeof fetch);
       await expect.poll(async () => (await readChatPublicationsByEndpointId(context.endpoint.id)).length, { timeout: 5000 }).toBe(1);
-      await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).toBeNull();
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+        { timeout: 10_000 }).toEqual({ active: 0, next: null });
       expect(errors).toEqual([]);
     } finally { worker.stop(); await coordinator.stop(); await replacement?.service.shutdown(); }
   });
@@ -72684,7 +72687,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const worker = work.register(coordinator, () => true);
     try {
       await worker.ready;
-      await expect.poll(() => coordinator.nextWakeAt(), { timeout: 10_000 }).toBeNull();
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+        { timeout: 10_000 }).toEqual({ active: 0, next: null });
       expect(await work.load({ companyId: context.fixture.companyId, runId: context.runId })).toHaveLength(1);
       const previousDebug = db.$client.options.debug;
       const queries: string[] = [];
@@ -72711,7 +72715,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const worker = nativeResponsePresentationWork(db).register(coordinator, () => true);
     try {
       await worker.ready;
-      await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).toBeNull();
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+        { timeout: 10_000 }).toEqual({ active: 0, next: null });
       const transaction = db.transaction(async tx => {
         await tx.transaction(async nested => {
           await notifyChatRunMilestones(nested, { companyId: context.fixture.companyId, issueId: context.issue.id, runId: randomUUID() });
@@ -72742,7 +72747,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const worker = nativeResponsePresentationWork(db).register(coordinator, () => canRun);
     try {
       await worker.ready;
-      await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).toBeNull();
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+        { timeout: 10_000 }).toEqual({ active: 0, next: null });
       canRun = false;
       await db.transaction(async tx => {
         await notifyChatRunMilestones(tx, { companyId: context.fixture.companyId, issueId: context.issue.id });
@@ -72818,7 +72824,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const worker = nativeResponsePresentationWork(db).register(coordinator, () => true);
     try {
       await worker.ready;
-      expect(coordinator.nextWakeAt()).toBe(at.getTime());
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+        { timeout: 10_000 }).toEqual({ active: 0, next: at.getTime() });
       expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
       await vi.advanceTimersByTimeAsync(Math.max(0, at.getTime() - Date.now()));
       await vi.waitFor(async () => {
@@ -72869,14 +72876,16 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     });
     try {
       await worker.ready;
-      expect(coordinator.nextWakeAt()).toBeNull();
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+        { timeout: 10_000 }).toEqual({ active: 0, next: null });
       expect(await work.load({ companyId: context.fixture.companyId, agentId: randomUUID() })).toEqual([]);
       expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
       await createAgentLifecycle(db).resumeAgent(context.binding.agentId);
       await processAgentLifecycle(db, context.binding.agentId);
       await expect.poll(async () => (await db.select().from(agents).where(eq(agents.id, context.binding.agentId)))[0].status).toBe("idle");
       await expect.poll(async () => (await readChatPublicationsByEndpointId(context.endpoint.id)).length, { timeout: 5000 }).toBe(1);
-      await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).toBeNull();
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+        { timeout: 10_000 }).toEqual({ active: 0, next: null });
       expect(errors).toEqual([]);
     } finally { await lifecycle.stop(); worker.stop(); await coordinator.stop(); await context.service.shutdown(); }
   });
@@ -72891,7 +72900,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const worker = nativeResponsePresentationWork(db).register(coordinator, () => true);
     try {
       await worker.ready;
-      expect(coordinator.nextWakeAt()).toBeNull();
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+        { timeout: 10_000 }).toEqual({ active: 0, next: null });
       await vi.advanceTimersByTimeAsync(2000);
       expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
       expect(coordinator.nextWakeAt()).toBeNull();
@@ -72914,7 +72924,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const worker = nativeResponsePresentationWork(db).register(coordinator, () => true);
     try {
       await worker.ready;
-      await expect.poll(() => coordinator.nextWakeAt(), { timeout: 10_000 }).toBeNull();
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+        { timeout: 10_000 }).toEqual({ active: 0, next: null });
       expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
       const port = new PaperclipControlPlanePort(db, {
         companyId: context.binding.companyId, issueId: context.binding.issueId,

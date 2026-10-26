@@ -2364,3 +2364,14 @@ unproven. Remote failures at `79bf36cbf8` include an early startup-settlement te
 assertion (repaired), a workspace staging timeout, and an E2E runner shutdown.
 See the response audit for logs. Fresh-head CI/review, earlier stack findings,
 master reconciliation, and all remaining original duties stay open. Nothing merged.
+
+
+## Slice 48 full-history acceptance repair
+
+Fresh review of `c4beddad1e` is 5/5 with its scope finding resolved. Remote CI
+exposed a second early startup assertion. Full local chat verification finished
+1,595 passed / seven failed; all seven were new worker tests observing a transient
+null deadline or unfinished startup batch. Their settlement predicate now includes
+zero active work. All 18 affected cases pass against the full suite's retained
+history. Fresh remote acceptance remains pending; these are recorded test repairs,
+not a waiver of failed gates or a change to production batch behavior.
