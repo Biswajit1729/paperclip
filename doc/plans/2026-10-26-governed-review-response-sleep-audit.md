@@ -194,3 +194,50 @@ and confirmation kinds. Payload-only updates that leave a competing card pending
 do not reactivate a response. Task ownership changes already carry task invalidation,
 but direct cleanup writers must be individually accounted for. The polling backstop
 is retained until this audit and the remaining acceptance requirements are complete.
+
+## Lifecycle and finalization notification checkpoint
+
+A real agent-resume regression failed before wiring and passes afterward. The
+existing lifecycle pre-status-write hook now signals this worker when an agent
+becomes invokable. Existing task/run milestones and finalization writes also
+fan out to the new topic. The finalization scope accepts an optional issueId so
+issue-wide pending-effect settlement can target its affected task instead of
+reloading all governed responses in the company. Existing pending-effect delivery
+retains its previous topic semantics. The tool gateway's separate approval link
+insertion now supplies its known issue identity.
+
+All 172 owner cases pass, plus 58 agent lifecycle, 72 milestone and 32 native
+finalization consumer cases. Server typecheck passes. Evidence is in
+/tmp/sleep49-agent-before.log (reproduced failure),
+/tmp/sleep49-lifecycle-full.log, /tmp/sleep49-lifecycle-types.log,
+/tmp/sleep49-agent-consumers.log, /tmp/sleep49-milestone-consumers.log,
+/tmp/sleep49-finalization-consumers.log and their status files.
+
+Further producer audit findings, not completed migration claims:
+
+- Main interaction service: suggest-task accept/reject, item-verdict completion,
+  connection-intent resolve, administrative cancel/withdraw/skip and comment
+  supersession can release a competing pending interaction. Several existing
+  milestone hooks cover only ask_user_questions/request_confirmation. Checkbox
+  confirmation resolution and other kinds need their own governed-response wake
+  without unnecessarily broadening unrelated workers. Some item-verdict comment
+  expiry writes do not currently own a transaction.
+- Direct interaction writers: satisfied-connection cleanup and OAuth confirmation
+  acceptance/denial need coverage. OAuth connection-intent retry-phase changes
+  leave the interaction pending and cannot by themselves restore presentation.
+  Dismissal also leaves status pending; confirm the owning predicate before
+  introducing a wake for it.
+- Existing agent-conversation reset, tool-action review, obsolete policy review,
+  automatic completion review and native decision commits already emit task
+  milestones/finalization signals. Verify every alternate branch before marking
+  those writer groups covered.
+- Issue service currently signals response availability on task status/assignment
+  changes, but that boundary only targets GitHub response queues. Governed-response
+  task status/assignment/execution-state restoration still needs explicit coverage.
+- Coordinator claim/retry notifications now reach the worker, but add a real-store
+  release test; synthetic late claim/deadline owner tests alone do not prove that
+  producer path. Current authority registration and all publication transitions
+  also remain part of the producer audit.
+
+The worker remains unregistered and periodic repair is unchanged. These commits
+are checkpoints, not PR readiness or whole-instance sleep acceptance.

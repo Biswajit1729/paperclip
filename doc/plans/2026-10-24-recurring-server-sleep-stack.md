@@ -2391,3 +2391,12 @@ reproduced missed-wake failures and repaired test stub. Interaction producer
 coverage, discovery cost, startup wiring, periodic removal and full acceptance
 remain outstanding. No slice 49 PR or whole-instance sleep is claimed. Earlier
 stack gates, master reconciliation and every remaining original duty stay in scope.
+
+Slice 49 lifecycle checkpoint: the real agent-resume missed wake was reproduced
+and repaired through the existing lifecycle hook. Milestone/finalization scopes
+now feed review recovery, and pending-effect settlement supplies its task identity.
+The 172-case owner suite and 162 lifecycle/milestone/finalization consumer cases
+pass, with server types passing. The owner audit lists remaining interaction, task
+authority and coordinator producer evidence. Registration, periodic removal, query
+cost, full verification and publication remain outstanding; the full stack scope
+and older unresolved gates remain unchanged.

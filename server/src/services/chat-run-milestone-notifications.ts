@@ -1,3 +1,4 @@
+import { notifyNativeReviewResponse } from "./native-review-response-notifications.js";
 import { notifyNativeResponsePresentation } from "./native-response-presentation-notifications.js";
 import { notifyChatConfirmationWork } from "./chat-confirmation-notifications.js";
 import { notifyChatInboundWakeNotices } from "./chat-inbound-wake-notice-notifications.js";
@@ -9,6 +10,8 @@ import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notificatio
 export type ChatRunMilestoneScope = { companyId: string; issueId?: string; runId?: string };
 
 export async function notifyChatRunMilestones(tx: object, scope: ChatRunMilestoneScope) {
+  await notifyNativeReviewResponse(tx, { companyId: scope.companyId, issueId: scope.issueId,
+    runId: scope.issueId ? undefined : scope.runId });
   await notifyNativeResponsePresentation(tx, { companyId: scope.companyId, issueId: scope.issueId,
     runId: scope.issueId ? undefined : scope.runId });
   await notifyDeliveryWork(tx, DELIVERY_QUEUES.chatGitHubReviewChecks, JSON.stringify({ companyId: scope.companyId }));

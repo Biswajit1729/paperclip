@@ -1,3 +1,4 @@
+import { notifyNativeReviewResponse } from "./native-review-response-notifications.js";
 import { isAgentStatusInvokable } from "@paperclipai/shared";
 import { notifyNativeResponsePresentation } from "./native-response-presentation-notifications.js";
 import { logger } from "../middleware/logger.js";
@@ -24,6 +25,7 @@ export function createAgentLifecycleEffects(_hooks: BudgetServiceHooks = {}): li
     async beforeStatusChange(tx, companyId, agentId, before, after) {
       if (!isAgentStatusInvokable(before) && isAgentStatusInvokable(after)) {
         await notifyNativeResponsePresentation(tx, { companyId, agentId });
+        await notifyNativeReviewResponse(tx, { companyId, agentId });
       }
     },
     reportFailure(context, error) {

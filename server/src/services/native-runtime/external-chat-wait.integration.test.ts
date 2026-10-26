@@ -48,6 +48,7 @@ import type {
 
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { finalizeNativeRun, recoverCommittedNativeReviewResponse } from "./native-run-finalizer.js";
+import { configureAgentLifecycle, createAgentLifecycle, processAgentLifecycle } from "../agent-lifecycle.js";
 import { approvalRecords } from "../approvals.js";
 import { issueApprovalService } from "../issue-approvals.js";
 import { nativeReviewResponseWork } from "./native-review-response-work.js";
@@ -2935,6 +2936,30 @@ describe("native external-chat response wait", () => {
       await expect.poll(async () => (await comments()).length, { timeout: 5_000 }).toBe(1);
       expect(errors).toEqual([]);
     } finally { await coordinator.stop(); }
+  });
+
+  it("wakes dormant governed response recovery after real agent resume", async () => {
+    const fixture = await seedRecoverableReviewResponse();
+    await db.update(agents).set({ status: "paused", lifecycleState: "paused", lifecycleHolds: ["manual"], lifecycleOperation: null })
+      .where(eq(agents.id, fixture.agentId));
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    const worker = nativeReviewResponseWork(db).register(coordinator, () => true);
+    const lifecycle = configureAgentLifecycle(db, {
+      requiredPluginIds: async () => [], runHost: async () => "complete", runPlugin: async () => "complete",
+    });
+    try {
+      await worker.ready;
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+        { timeout: 10_000 }).toEqual({ active: 0, next: null });
+      expect(await db.select().from(issueComments).where(eq(issueComments.createdByRunId, fixture.runId))).toHaveLength(0);
+      await createAgentLifecycle(db).resumeAgent(fixture.agentId);
+      await processAgentLifecycle(db, fixture.agentId);
+      await expect.poll(async () => (await db.select().from(agents).where(eq(agents.id, fixture.agentId)))[0].status).toBe("idle");
+      await expect.poll(async () => (await db.select().from(issueComments).where(eq(issueComments.createdByRunId, fixture.runId))).length,
+        { timeout: 5_000 }).toBe(1);
+      expect(errors).toEqual([]);
+    } finally { await lifecycle.stop(); await coordinator.stop(); }
   });
 
   it("reconstructs scheduled governed responses at startup and leaves their history quiet", async () => {
