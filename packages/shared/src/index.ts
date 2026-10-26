@@ -889,6 +889,7 @@ export type {
   AgentDetail,
   ClearAgentErrorResponse,
   AgentPermissions,
+  AgentProjectAccess,
   AgentPublicIdentity,
   AgentInstructionsBundleMode,
   AgentInstructionsFileSummary,
@@ -1130,6 +1131,7 @@ export type {
   IssueExecutionStagePrincipal,
   IssueExecutionDecision,
   IssueComment,
+  IssueRecentComments,
   IssueQueuedCommentEntry,
   IssueQueuedCommentProtocol,
   IssueQueuedCommentQueue,
@@ -1879,8 +1881,10 @@ export {
   wakeAgentSchema,
   resetAgentSessionSchema,
   testAdapterEnvironmentSchema,
+  qualifyAgentRunnerSchema,
   agentPermissionsSchema,
   updateAgentPermissionsSchema,
+  addAgentProjectAccessSchema,
   type CreateAgent,
   type BuiltInAgentProvision,
   type BuiltInAgentReset,
@@ -2791,7 +2795,7 @@ export { restoreAgentInstructionSchema } from "./validators/agent.js";
 export type { AgentInstructionCandidate } from "./types/agent.js";
 export { resolveAgentInstructionCandidateSchema, type ResolveAgentInstructionCandidate } from "./validators/agent.js";
 
-export { isHeartbeatRunVisibleInMine } from "./heartbeat-inbox.js";
+export { isHeartbeatRunVisibleInMine, latestFailedRunsByAgent } from "./heartbeat-inbox.js";
 export * from "./browser-use.js";
 
 export * from "./types/skill-source.js";
