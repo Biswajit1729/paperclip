@@ -72675,6 +72675,34 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     } finally { worker.stop(); await coordinator.stop(); await replacement?.service.shutdown(); }
   });
 
+  it.each(["issue", "run"])("does not reload dormant accepted-response history for an unrelated %s wake", async scope => {
+    const context = await committedChatResponseRecoveryFixture("telegram");
+    await context.service.shutdown();
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    const work = nativeResponsePresentationWork(db);
+    const worker = work.register(coordinator, () => true);
+    try {
+      await worker.ready;
+      await expect.poll(() => coordinator.nextWakeAt(), { timeout: 10_000 }).toBeNull();
+      expect(await work.load({ companyId: context.fixture.companyId, runId: context.runId })).toHaveLength(1);
+      const previousDebug = db.$client.options.debug;
+      const queries: string[] = [];
+      db.$client.options.debug = (_connection, query) => {
+        if (query.startsWith("select") && query.includes("native_run_finalizations")) queries.push(query);
+      };
+      try {
+        await db.transaction(tx => notifyChatRunMilestones(tx, { companyId: context.fixture.companyId,
+          ...(scope === "issue" ? { issueId: randomUUID() } : { runId: randomUUID() }) }));
+        await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+          { timeout: 5000 }).toEqual({ active: 0, next: null });
+        expect(queries).toHaveLength(1);
+      } finally { db.$client.options.debug = previousDebug; }
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+      expect(errors).toEqual([]);
+    } finally { worker.stop(); await coordinator.stop(); }
+  });
+
   it.each(["commit", "rollback"])("keeps accepted-response work behind the outer %s boundary", async outcome => {
     const context = await committedChatResponseRecoveryFixture("telegram");
     await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, context.runId));
@@ -72686,7 +72714,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).toBeNull();
       const transaction = db.transaction(async tx => {
         await tx.transaction(async nested => {
-          await notifyChatRunMilestones(nested, { companyId: context.fixture.companyId, issueId: context.issue.id });
+          await notifyChatRunMilestones(nested, { companyId: context.fixture.companyId, issueId: context.issue.id, runId: randomUUID() });
           await nested.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, context.runId));
         });
         expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
@@ -72886,7 +72914,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const worker = nativeResponsePresentationWork(db).register(coordinator, () => true);
     try {
       await worker.ready;
-      expect(coordinator.nextWakeAt()).toBeNull();
+      await expect.poll(() => coordinator.nextWakeAt(), { timeout: 10_000 }).toBeNull();
       expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
       const port = new PaperclipControlPlanePort(db, {
         companyId: context.binding.companyId, issueId: context.binding.issueId,

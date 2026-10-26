@@ -974,7 +974,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.status, "queued")))
             .for("update");
           if (!currentRun) return null;
-          await notifyChatRunMilestones(tx, { companyId: run.companyId });
+          await notifyChatRunMilestones(tx, { companyId: run.companyId, runId: run.id,
+            issueId: run.nativeIssueId ?? run.issueId ?? readNonEmptyString(parseObject(run.contextSnapshot).issueId) ?? undefined });
           await notifyInstructionCollection(tx, { companyId: run.companyId, runId: run.id });
           await notifyCancelledWorkspacePreservation(tx, { companyId: run.companyId, runId: run.id });
           await notifyUnsafeWorkspaceExportRunChange(tx, run);
@@ -1623,7 +1624,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             )).for("update");
             if (!lockedRun || lockedRun.status !== "queued") return null;
             await withExternalAdmissionGuard(claimTx, run.companyId, run.agentId, () => assertNoExternalOverlap(claimTx, run.companyId, run.agentId));
-            await notifyChatRunMilestones(claimTx, { companyId: run.companyId, issueId: issueId ?? undefined });
+            await notifyChatRunMilestones(claimTx, { companyId: run.companyId, runId: run.id, issueId: issueId ?? undefined });
             const claimedRun = await claimTx.update(heartbeatRuns).set(claimValues).where(and(
               eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued"),
             )).returning().then((rows) => rows[0] ?? null);
@@ -1724,7 +1725,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       const [candidate] = await tx.select({ companyId: heartbeatRuns.companyId, contextSnapshot: heartbeatRuns.contextSnapshot })
         .from(heartbeatRuns).where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.status, "running"))).for("update");
       if (!candidate) return;
-      await notifyChatRunMilestones(tx, { companyId: candidate.companyId,
+      await notifyChatRunMilestones(tx, { companyId: candidate.companyId, runId,
         issueId: readNonEmptyString(parseObject(candidate.contextSnapshot).issueId) ?? undefined });
       const released = await tx
         .update(heartbeatRuns)

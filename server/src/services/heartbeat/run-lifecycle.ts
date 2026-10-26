@@ -1016,7 +1016,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
     return recordHeartbeatRunRuntimeProgress(currentRun, update, issueId);
   }
 
-  async function writeRunStatus<T>(status: string, previous: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "status" | "nativeIssueId" | "contextSnapshot"> | null,
+  async function writeRunStatus<T>(status: string, previous: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "status" | "nativeIssueId" | "issueId" | "contextSnapshot"> | null,
     write: (tx: Db) => Promise<T>) {
     const companyId = previous?.companyId;
     // Register on the outer transaction before the terminal write. An unknown
@@ -1030,7 +1030,8 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
       if (previous) await notifyCancelledWorkspacePreservation(tx, { companyId: previous.companyId, runId: previous.id });
       if (isHeartbeatRunTerminalStatus(status)) await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, companyId);
       await notifyExecutionRunWork(tx);
-      if (companyId) await notifyChatRunMilestones(tx, { companyId });
+      if (previous) await notifyChatRunMilestones(tx, { companyId: previous.companyId, runId: previous.id,
+        issueId: previous.nativeIssueId ?? previous.issueId ?? readNonEmptyString(parseObject(previous.contextSnapshot).issueId) ?? undefined });
       return write(tx);
     });
   }

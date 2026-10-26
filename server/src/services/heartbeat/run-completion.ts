@@ -891,7 +891,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         }
 
         await db.transaction(async tx => {
-          await notifyChatRunMilestones(tx, { companyId: livenessRun.companyId, issueId: issueId ?? undefined });
+          await notifyChatRunMilestones(tx, { companyId: livenessRun.companyId, runId: livenessRun.id, issueId: issueId ?? undefined });
           await tx.update(heartbeatRuns).set({
             resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({ presentationDecision })}::jsonb`,
             updatedAt: new Date(),

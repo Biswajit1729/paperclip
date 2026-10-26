@@ -335,3 +335,44 @@ Workspace typecheck passes (`/tmp/sleep48-full-typecheck.log`). The full local s
 is still running and has reported embedded PostgreSQL initialization failures;
 its final result and build status remain pending. No full-suite or remote check
 acceptance is claimed at this checkpoint.
+
+
+## Review repair and current verification, 2026-10-26
+
+Published draft #17696 at `79bf36cbf8`. Greptile found a real precision gap:
+`writeRunStatus` still sent a company-only milestone hint. Every unrelated run
+status could reconstruct dormant response history. Three real-PostgreSQL cases
+(native binding, legacy context binding, and taskless run) failed before repair
+(`/tmp/sleep48-scope-before.log`).
+
+The milestone contract now accepts an optional run identity. Status producers
+supply the task when bound and the exact run otherwise. The response fanout
+prefers task scope over run scope, because lineage changes can authorize other
+runs on that task. Known run claim/release and completion producers also preserve
+an exact-run fallback. Existing company configuration invalidations remain broad.
+No new durable rows or caller recovery wrappers are introduced.
+
+All 34 heartbeat lifecycle tests pass after repair. Two real worker regressions
+retain a dormant eligible response, send unrelated task/run wakes, and observe
+one actual candidate SQL query at the postgres.js debug boundary, without
+rechecking the dormant row. The outer-commit/rollback cases additionally send a
+different run identity within the same task and retain task-level recovery.
+An initial test mistakenly counted Drizzle subquery builder construction as a
+second SQL statement; driver-level observation corrected the measurement.
+
+The response/authority/admission selection now passes all 63 cases
+(`/tmp/sleep48-scope-acceptance.log`). Server typechecking and the workspace build
+pass (`/tmp/sleep48-scope-typecheck-v3.log`, `/tmp/sleep48-scope-build.log`).
+The previous full workspace typecheck passed at `79bf36cbf8`. The full local
+Vitest run was explicitly stopped after repeated embedded PostgreSQL bootstrap
+failures; `/tmp/sleep48-full-tests.log` preserves those failures. It is not a
+full-suite pass. Focused database acceptance uses the validated external
+PostgreSQL path and isolated disposable test databases.
+
+Remote CI at `79bf36cbf8` also exposed a late-journal test that assumed worker
+startup drains all candidates in one batch. It now waits for actual settlement,
+as the shared worker deliberately processes fair batches. The workspaces-b job
+hit a five-second sandbox staging test timeout; E2E shard five received a runner
+shutdown signal. These failures remain recorded in `/tmp/sleep48-ci-chat3.log`,
+`/tmp/sleep48-ci-workspaces-b.log`, and `/tmp/sleep48-ci-e2e5.log`. Fresh-head CI and
+review are required after the repair; no failing gate is waived.

@@ -1,7 +1,7 @@
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import { randomBytes } from "node:crypto";
 import type { Db } from "@paperclipai/db";
-import { agents, agentWakeupRequests, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRunEvents, heartbeatRuns } from "@paperclipai/db";
+import { agents, agentWakeupRequests, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRunEvents, heartbeatRuns, issues, subscribeDatabaseWork } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -238,6 +238,23 @@ describe.skipIf(!support.supported)("heartbeat lifecycle database wiring", () =>
       expect(persisted.status).toBe("succeeded");
       expect(persisted.costAccountingPending).toBe(true);
       expect(settled).toHaveBeenCalledOnce();
+    } finally { unsubscribe(); }
+  });
+
+  it.each(["native", "legacy", "unbound"] as const)("keeps %s run-status response recovery scoped to its task or run", async binding => {
+    const { run } = await fixture();
+    const [issue] = await db.insert(issues).values({ companyId: run.companyId, title: "Scope owner" }).returning();
+    await db.update(heartbeatRuns).set(binding === "native" ? { nativeIssueId: issue.id }
+      : binding === "legacy" ? { contextSnapshot: { issueId: issue.id } } : { contextSnapshot: {} }).where(eq(heartbeatRuns.id, run.id));
+    const hints: unknown[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.nativeResponsePresentation, (event, scopes) => {
+      if (event === "settled") for (const hint of scopes ?? []) hints.push(JSON.parse(hint));
+    });
+    try {
+      await createHeartbeatLifecycle(db, callbacks(db)).setRunStatusIfRunning(run.id, "succeeded", { finishedAt: new Date() });
+      expect(hints).toEqual([binding === "unbound" ? { companyId: run.companyId, runId: run.id }
+        : { companyId: run.companyId, issueId: issue.id }]);
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0].status).toBe("succeeded");
     } finally { unsubscribe(); }
   });
 

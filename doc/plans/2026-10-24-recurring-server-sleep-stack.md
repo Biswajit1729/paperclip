@@ -2350,3 +2350,17 @@ active. The startup suite passes 66 cases, and two database regressions confirm
 periodic calls defer to the new worker. Workspace types pass. Full local tests
 remain in progress with embedded-database initialization failures; build and
 remote checks remain pending. The stack goal is still incomplete.
+
+
+## Slice 48 review repair, 2026-10-26
+
+Draft #17696 is open and attached. Review identified company-wide response reloads
+from routine run-status notifications; three real database regressions reproduced
+it. Status/claim/release wakes now retain task or exact-run scope while task
+lineage remains task-wide. All 34 heartbeat lifecycle and 63 response/authority/
+admission tests pass, as do server types and the workspace build. The full local
+suite was stopped after repeated embedded PostgreSQL startup failures and remains
+unproven. Remote failures at `79bf36cbf8` include an early startup-settlement test
+assertion (repaired), a workspace staging timeout, and an E2E runner shutdown.
+See the response audit for logs. Fresh-head CI/review, earlier stack findings,
+master reconciliation, and all remaining original duties stay open. Nothing merged.
