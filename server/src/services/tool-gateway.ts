@@ -1,6 +1,6 @@
 import { toolReviewInterruptionService } from "./tool-review-interruption.js";
 import { claimToolTestApproval, persistToolTestOutcome, startToolTestInvocation, type ToolTestApprovalClaim } from "./tool-test-approval.js";
-import { recoverApprovedToolReviews } from "./tool-review-recovery.js";
+import { prepareApprovedToolReview, recoverApprovedToolReviews } from "./tool-review-recovery.js";
 import { toolReviewExpiryService } from "./tool-review-expiry.js";
 import { writeToolReviewChange } from "./tool-review-work-notifications.js";
 import { restConnectorFor } from "./connectors/rest-registry.js";
@@ -7652,7 +7652,10 @@ export function createToolGatewayService(
       if (!(await approvedManagedArgumentsRemainCurrent(session, tool, signedPayload.arguments))) {
         throw new ToolGatewayHttpError(409, "Approved tool action managed arguments changed after review", "approved_tool_managed_arguments_changed");
       }
-      const access = await policyService.decide(policyInputForTool({ session, tool, parameters: signedPayload.arguments }));
+      const access = await policyService.decide(
+        policyInputForTool({ session, tool, parameters: signedPayload.arguments, consumeRateLimit: false }),
+        { admittedInvocationId: invocation.id },
+      );
       if (!access.allowed && access.decision !== "require_approval") {
         throw new ToolGatewayHttpError(403, access.explanation, access.reasonCode);
       }
@@ -8094,7 +8097,9 @@ export function createToolGatewayService(
           session,
           tool,
           parameters: signedPayload.arguments,
+          consumeRateLimit: false,
         }),
+        { admittedInvocationId: invocation.id },
       );
       if (
         !currentAccess.allowed &&
@@ -9655,24 +9660,24 @@ export function createToolGatewayService(
     nextActionReviewExpiryAt: reviewExpiry.next,
 
     async recoverApprovedActionReviews() {
-      return recoverApprovedToolReviews(db, async ({ request, invocation }) => {
+      return recoverApprovedToolReviews(db, async row => {
         try {
-          if (isTestOriginInvocation(invocation) && invocation.status !== "awaiting_approval") {
-            await claimToolTestApproval(db, request.id, invocation.id);
-            const [remaining] = await db.select({ status: toolActionRequests.status }).from(toolActionRequests)
-              .where(eq(toolActionRequests.id, request.id));
-            return remaining?.status === "approved";
+          const prepared = await prepareApprovedToolReview(db, { actionRequestId: row.request.id,
+            invocationId: row.invocation.id, signingSecret: options.toolActionSigningSecret });
+          if (prepared.kind === "skip") return false;
+          if (prepared.kind === "settled") {
+            await reflectToolActionInteractionLifecycle(prepared.projection);
+            return false;
           }
-          const payload = readSignedToolArgumentsPayload({ signedArguments: request.signedArguments,
-            invocationId: invocation.id, toolName: invocation.toolName, signingSecret: options.toolActionSigningSecret });
-          if (payload && !isTestOriginInvocation(invocation) && payload.executionOnApprove !== true) return false;
+          const { request, invocation, payload } = prepared;
+          if (!isTestOriginInvocation(invocation) && payload.executionOnApprove !== true) return false;
           await this.approveActionRequest({ companyId: request.companyId, actionRequestId: request.id,
             actor: { userId: request.decidedByUserId ?? request.resolvedByUserId } });
           const [remaining] = await db.select({ status: toolActionRequests.status }).from(toolActionRequests)
             .where(eq(toolActionRequests.id, request.id));
           return remaining?.status === "approved";
         } catch (err) {
-          logger.warn({ err, actionRequestId: request.id }, "Could not recover approved tool action");
+          logger.warn({ err, actionRequestId: row.request.id }, "Could not recover approved tool action");
           return true;
         }
       });
@@ -9950,7 +9955,9 @@ export function createToolGatewayService(
             session,
             tool,
             parameters: signedPayload.arguments,
+            consumeRateLimit: false,
           }),
+          { admittedInvocationId: invocation.id },
         );
         if (!access.allowed && access.decision !== "require_approval")
           throw new ToolGatewayHttpError(
