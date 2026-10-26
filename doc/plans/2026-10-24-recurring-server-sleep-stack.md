@@ -2546,3 +2546,13 @@ the initial unordered assertion and misconfigured embedded-test invocation
 failures and their repairs. Remaining authority/producer coverage, cost, startup
 integration, periodic removal, remote gates, earlier stack findings and the full
 original scope remain open. Nothing merged.
+
+
+Slice 50 evidence checkpoint: seven races reproduced completion using revoked,
+removed or concurrently edited evidence. The assessment owner now reclassifies
+and locks referenced evidence inside scheduled status commit; changed facts and
+contention defer through existing retry handling. All 177 status/lifecycle/
+classifier consumer cases and server types pass. The audit preserves before-fix
+failures and the remaining identity/producer and cost limits. Startup wiring,
+periodic removal, remote gates, older stack findings and all remaining recurring
+work are still incomplete. Nothing merged.

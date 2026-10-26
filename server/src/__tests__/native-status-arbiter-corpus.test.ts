@@ -17,6 +17,11 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { and, eq, sql } from "drizzle-orm";
 import {
   agents,
+  assets,
+  caseHandoffs,
+  cases,
+  heartbeatRunEvents,
+  issueAttachments,
   approvals,
   issueApprovals,
   issueComments,
@@ -2749,6 +2754,101 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       expect(await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, seeded.issueId))).toHaveLength(1);
       if (changed === "new blocker" || changed === "reopened blocker") await db.update(issues).set({ status: "done" }).where(eq(issues.id, blockerId));
       if (changed === "workspace operation" || changed === "workspace status") await db.update(workspaceOperations).set({ status: "succeeded" }).where(eq(workspaceOperations.id, operationId));
+      expect(await reassessNativeStatusFromSource(db, selected, { onlyWhenDue: true })).toMatchObject({ kind: "committed" });
+      expect((await issueService(db).getById(seeded.issueId))!.status).toBe("done");
+    }, 30_000,
+  );
+
+  it.each(["work product", "work product writer", "approval", "interaction", "attachment", "event", "handoff"] as const)(
+    "fences reassessment against changed evidence: %s", async kind => {
+      const seeded = await seedAutomaticReview();
+      await dismissAutomaticCompletionReviews(db, seeded.issueId);
+      const evidenceId = randomUUID(), assetId = randomUUID(), caseId = randomUUID();
+      let ref = `work_product:${seeded.workProductId}`;
+      const attachment = { id: evidenceId, companyId, issueId: seeded.issueId, assetId };
+      const event = { companyId, agentId, runId: seeded.runId, seq: 90001, eventType: "evidence.recorded",
+        payload: { prpEvent: { sourceKind: "control_plane", payload: { evidenceOutcome: "accepted" } } } };
+      if (kind === "approval") {
+        ref = `approval:${evidenceId}`;
+        await db.insert(approvals).values({ id: evidenceId, companyId, type: "hire_agent", status: "approved", payload: {} });
+        await db.insert(issueApprovals).values({ companyId, issueId: seeded.issueId, approvalId: evidenceId });
+      }
+      if (kind === "interaction") {
+        ref = `interaction:${evidenceId}`;
+        await db.insert(issueThreadInteractions).values({ id: evidenceId, companyId, issueId: seeded.issueId,
+          kind: "request_confirmation", status: "accepted", payload: { version: 1, prompt: "Evidence accepted" } });
+      }
+      if (kind === "attachment") {
+        ref = `attachment:${evidenceId}`;
+        await db.insert(assets).values({ id: assetId, companyId, provider: "local_disk", objectKey: assetId,
+          contentType: "text/plain", byteSize: 1, sha256: assetId });
+        await db.insert(issueAttachments).values(attachment);
+      }
+      if (kind === "event") { ref = "event:90001"; await db.insert(heartbeatRunEvents).values(event); }
+      if (kind === "handoff") {
+        ref = `case-handoff:${evidenceId}`;
+        const existing = await db.select({ id: cases.id }).from(cases).where(eq(cases.companyId, companyId));
+        await db.insert(cases).values({ id: caseId, companyId, caseNumber: existing.length + 1,
+          identifier: caseId, caseType: "evidence", title: "Handoff evidence" });
+        await db.insert(caseHandoffs).values({ id: evidenceId, companyId, caseId, issueId: seeded.issueId,
+          version: 1, destinationKind: "done", phase: "complete", instructions: "Complete", actorType: "system",
+          actorId: "test", sourceRunId: seeded.runId, wakeupRequestId: randomUUID(), idempotencyKey: evidenceId,
+          inputFingerprint: evidenceId, state: "completed" });
+      }
+      const [storedResult] = await db.select().from(nativeRunResults).where(eq(nativeRunResults.id, seeded.resultId!));
+      const result = storedResult.resultJson.result as Record<string, unknown>;
+      await db.update(nativeRunResults).set({ resultJson: { ...storedResult.resultJson, result: { ...result,
+        completionClaim: { ...(result.completionClaim as object), criteria: [{ criterionId: "objective", status: "satisfied", evidenceRefs: [ref] }] },
+        verification: [{ commandOrCheck: "evidence", status: "passed", artifactRef: ref }],
+      } } }).where(eq(nativeRunResults.id, seeded.resultId!));
+      const [source] = await db.select({
+        runId: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
+        issueId: issues.id, issueStatus: issues.status, issueStatusVersion: issues.statusVersion,
+        issueDecisionId: issues.lastStatusDecisionId, coordinatorPhase: nativeRunFinalizations.phase,
+        assessmentId: nativeRunFinalizations.assessmentId, decisionId: nativeRunFinalizations.decisionId,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      }).from(nativeRunFinalizations).innerJoin(heartbeatRuns, eq(heartbeatRuns.id, nativeRunFinalizations.runId))
+        .innerJoin(issues, eq(issues.id, nativeRunFinalizations.issueId)).where(eq(nativeRunFinalizations.runId, seeded.runId));
+      const selected = { ...source, assessmentId: source.assessmentId! };
+      async function change(database: typeof db, revoke: boolean) {
+        if (kind.startsWith("work product")) await database.update(issueWorkProducts)
+          .set({ reviewState: revoke ? "rejected" : "approved" }).where(eq(issueWorkProducts.id, seeded.workProductId));
+        if (kind === "approval") await database.update(approvals).set({ status: revoke ? "rejected" : "approved" }).where(eq(approvals.id, evidenceId));
+        if (kind === "interaction") await database.update(issueThreadInteractions).set({ status: revoke ? "rejected" : "accepted" }).where(eq(issueThreadInteractions.id, evidenceId));
+        if (kind === "handoff") await database.update(caseHandoffs).set({ state: revoke ? "cancelled" : "completed" }).where(eq(caseHandoffs.id, evidenceId));
+        if (kind === "attachment") {
+          if (revoke) await database.delete(issueAttachments).where(eq(issueAttachments.id, evidenceId));
+          else await database.insert(issueAttachments).values(attachment);
+        }
+        if (kind === "event") {
+          if (revoke) await database.delete(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, seeded.runId), eq(heartbeatRunEvents.seq, event.seq)));
+          else await database.insert(heartbeatRunEvents).values(event);
+        }
+      }
+      const transaction = db.transaction.bind(db);
+      let release!: () => void;
+      let writer: Promise<void> | undefined;
+      const intercept = vi.spyOn(db, "transaction").mockImplementationOnce((async (callback, options) => {
+        if (kind === "work product writer") {
+          let entered!: () => void;
+          const ready = new Promise<void>(resolve => { entered = resolve; });
+          const released = new Promise<void>(resolve => { release = resolve; });
+          const rollback = new Error("rollback evidence writer");
+          writer = transaction(async tx => { await change(tx as unknown as typeof db, true); entered(); await released; throw rollback; })
+            .catch(error => { if (error !== rollback) throw error; });
+          await Promise.race([ready, writer]);
+        } else await change(db, true);
+        return transaction(async tx => {
+          await tx.execute(sql`set local statement_timeout = '2s'`);
+          return callback(tx);
+        }, options);
+      }) as typeof db.transaction);
+      try {
+        expect(await reassessNativeStatusFromSource(db, selected, { onlyWhenDue: true })).toEqual({ kind: "deferred", retry: true });
+      } finally { intercept.mockRestore(); release?.(); await writer; }
+      expect((await issueService(db).getById(seeded.issueId))!.status).toBe("in_review");
+      expect(await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, seeded.issueId))).toHaveLength(1);
+      if (kind !== "work product writer") await change(db, false);
       expect(await reassessNativeStatusFromSource(db, selected, { onlyWhenDue: true })).toMatchObject({ kind: "committed" });
       expect((await issueService(db).getById(seeded.issueId))!.status).toBe("done");
     }, 30_000,

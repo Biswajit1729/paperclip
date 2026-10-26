@@ -734,3 +734,50 @@ that reassessment can subsequently complete. Remaining authority/evidence races,
 producer coverage (including handoffs and OAuth reopening), task-history/backlog
 cost, startup wiring, periodic removal and remote PR acceptance remain open.
 No new PR or merge, and no whole-instance sleep claim.
+
+
+## Evidence freshness at status commit (2026-10-26)
+
+All seven before-fix regressions committed stale completion when supporting
+work-product review, approval, interaction, attachment, event, or case-handoff
+state changed after classification and before commit. The work-product case also
+holds a real uncommitted rejection until recovery returns, then rolls it back.
+/tmp/sleep50-evidence-before.log/.status records seven failed assertions (exit 1),
+not fixture/bootstrap failures.
+
+The assessment owner now exposes lockCurrentNativeWorkAssessmentEvidence. It
+loads the exact persisted reassessment with its bound contract/result, then calls
+the existing classifier with opt-in source locking. Classification rules remain
+in evidence-classifier.ts, including reference parsing, accepted/rejected policy,
+question/approval outcomes and attention-target existence. The scheduled committer
+only compares the resulting normalized assessment and handles contention through
+its existing race/retry outcome. Both retired-review and other scheduled
+reassessment paths use this guard. Ordinary classification retains its original
+unlocked behavior. No extra transaction encloses the committer/publication path.
+
+The classifier acquires SHARE NOWAIT on the referenced evidence rows and existing
+attention target agents. The already-held task/run locks fence new task/run-bound
+records through their existing FKs; the reference cache still deduplicates repeat
+criterion/verification references. The assessment/contract/result records are
+also share-locked. This protects mutable acceptance state and evidence deletion,
+rather than assuming all durable evidence is immutable. Missing arbitrary agent
+IDs have no row to lock; supported agent-creation identity/producer behavior and
+other authority fields remain part of the outstanding producer audit. This is
+not a blanket proof for independent SQL writers.
+
+The added read cost is one exact assessment/contract/result query plus the normal
+classifier's distinct-reference and attention-target queries. It runs only for
+an actual scheduled decision commit, not on idle history. Quantitative history,
+backlog and full transaction cost acceptance remains outstanding; no performance
+claim is inferred from the narrow regression runtime.
+
+After repair all 143 status-corpus, 30 worker-lifecycle and four classifier
+consumer tests pass (177 total), as does server typecheck. The seven regressions
+also restore/roll back evidence and prove subsequent completion. Evidence:
+/tmp/sleep50-evidence-after.log/.status and /tmp/sleep50-evidence-types.log/.status,
+both exit 0; all launched commands are terminal. Ordinary classifier consumer
+cases still run without a locking API in their fake query builder.
+
+Remaining: producer/authority coverage, query/history/backlog cost, startup
+integration, removal of this periodic duty, PR publication and remote acceptance.
+The full recurring-work stack and its older unresolved gates remain open.

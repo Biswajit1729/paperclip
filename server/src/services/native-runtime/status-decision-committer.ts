@@ -1,3 +1,4 @@
+import { lockCurrentNativeWorkAssessmentEvidence } from "./work-assessments.js";
 import { hasNativeWorkspaceFinalizationOwner } from "./native-workspace-finalization-recovery-state.js";
 import { tryLockNativeWorkspaceFinalization } from "./native-workspace-finalization-ownership.js";
 import { lockCurrentNativeCompletionContract } from "./completion-contracts.js";
@@ -1715,6 +1716,15 @@ export async function commitNativeStatusDecision(input: {
           inArray(statusDecisionEffects.deliveryState, ["pending", "failed"]),
         )).limit(1).then(rows => rows[0]) : null;
       if (pendingEffect) throw new NativeStatusRaceError();
+      try {
+        if (!await lockCurrentNativeWorkAssessmentEvidence(tx as unknown as Db, {
+          companyId: input.companyId, issueId: input.issueId, runId: input.runId,
+          resultId: expected.resultId, assessmentId: input.assessmentId,
+        })) throw new NativeStatusRaceError();
+      } catch (error) {
+        if (record(error).code === "55P03" || record(record(error).cause).code === "55P03") throw new NativeStatusRaceError();
+        throw error;
+      }
     }
     // A completed model turn cannot close a persistent conversation. Preserve
     // the task here; the response finalizer records its durable waiting state.
