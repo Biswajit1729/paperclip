@@ -119,7 +119,8 @@ export async function terminalizeLegacyExecution(input: {
           )
           .for("update")
       : [];
-    const [current] = await tx.select({ runtimeMode: heartbeatRuns.runtimeMode, status: heartbeatRuns.status,
+    const [current] = await tx.select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId,
+      runtimeMode: heartbeatRuns.runtimeMode, status: heartbeatRuns.status,
       resultJson: heartbeatRuns.resultJson, executionStatusDeliveryId: heartbeatRuns.executionStatusDeliveryId,
     }).from(heartbeatRuns).where(and(
       eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId),
