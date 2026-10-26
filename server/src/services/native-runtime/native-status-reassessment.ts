@@ -31,6 +31,39 @@ function record(value: unknown): Record<string, unknown> {
     : {};
 }
 
+function isSupersededSource(
+  row: NativeStatusReassessmentSource,
+  decision: Record<string, unknown>,
+  priorDecisionId: string | null | undefined,
+): boolean {
+  return row.coordinatorPhase === "committed"
+    && row.decisionId !== null
+    && row.issueDecisionId !== null
+    && row.issueDecisionId !== row.decisionId
+    && !(
+      decision.statusAction === "preserve"
+      && priorDecisionId === row.issueDecisionId
+    );
+}
+
+// Workspace recovery still needs this authority guard when reassessment has
+// its own scheduled owner. Avoid evidence classification on that path.
+export async function nativeStatusReassessmentSourceIsSuperseded(
+  db: Db,
+  row: NativeStatusReassessmentSource,
+): Promise<boolean> {
+  if (row.coordinatorPhase !== "committed" || row.decisionId === null
+    || row.issueDecisionId === null || row.issueDecisionId === row.decisionId) return false;
+  const [decision] = await db.select({ decisionJson: statusDecisions.decisionJson })
+    .from(statusDecisions).where(and(eq(statusDecisions.id, row.decisionId),
+      eq(statusDecisions.companyId, row.companyId), eq(statusDecisions.issueId, row.issueId))).limit(1);
+  if (!decision) throw new Error("native_committed_decision_missing");
+  const [assessment] = await db.select({ priorDecisionId: workAssessments.priorDecisionId })
+    .from(workAssessments).where(and(eq(workAssessments.id, row.assessmentId),
+      eq(workAssessments.companyId, row.companyId), eq(workAssessments.issueId, row.issueId))).limit(1);
+  return isSupersededSource(row, record(decision.decisionJson), assessment?.priorDecisionId);
+}
+
 export async function reassessNativeStatusFromSource(
   db: Db,
   row: NativeStatusReassessmentSource,
@@ -72,15 +105,7 @@ export async function reassessNativeStatusFromSource(
   if (row.coordinatorPhase === "committed" && row.decisionId && !currentDecision) {
     throw new Error("native_committed_decision_missing");
   }
-  const supersededCommittedDecision = row.coordinatorPhase === "committed"
-    && row.decisionId !== null
-    && row.issueDecisionId !== null
-    && row.issueDecisionId !== row.decisionId
-    && !(
-      currentDecisionJson.statusAction === "preserve"
-      && assessment?.priorDecisionId === row.issueDecisionId
-    );
-  if (supersededCommittedDecision) return { kind: "superseded" };
+  if (isSupersededSource(row, currentDecisionJson, assessment?.priorDecisionId)) return { kind: "superseded" };
   const persistedProjectedVersion = Number(currentDecisionJson.projectedStatusVersion);
   const expectedProjectedVersion = currentDecision
     ? Number.isFinite(persistedProjectedVersion)

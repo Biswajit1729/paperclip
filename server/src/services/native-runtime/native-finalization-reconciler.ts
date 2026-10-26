@@ -1,4 +1,4 @@
-import { reassessNativeStatusFromSource } from "./native-status-reassessment.js";
+import { nativeStatusReassessmentSourceIsSuperseded, reassessNativeStatusFromSource } from "./native-status-reassessment.js";
 import { resolveNativeReconciliationStatus } from "./native-reconciliation-status.js";
 export { resolveNativeReconciliationStatus, type NativeReconciliationFacts } from "./native-reconciliation-status.js";
 import { pendingNativeStatusEffectsCondition } from "./native-pending-effect-work.js";
@@ -518,6 +518,7 @@ type NativeReconciliationOptions = {
   skipNativePendingEffects?: boolean;
   skipNativeResponsePresentation?: boolean;
   skipNativeReviewResponse?: boolean;
+  skipNativeStatusReassessment?: boolean;
   pluginWorkerManager?: WorkspaceWorkers;
   environmentRuntime?: EnvironmentRuntimeService;
   onWorkspaceSettled?: (input: {
@@ -736,10 +737,15 @@ async function reconcileNativeFinalizationsPass(
           assessmentId: row.assessmentId,
         });
       }
-      const reassessed = await reassessNativeStatusFromSource(db, { ...row, assessmentId: row.assessmentId });
-      if (reassessed.kind !== "unchanged") {
-        if (reassessed.kind === "committed") results.push(reassessed.result);
-        continue;
+      const source = { ...row, assessmentId: row.assessmentId };
+      if (options.skipNativeStatusReassessment) {
+        if (await nativeStatusReassessmentSourceIsSuperseded(db, source)) continue;
+      } else {
+        const reassessed = await reassessNativeStatusFromSource(db, source);
+        if (reassessed.kind !== "unchanged") {
+          if (reassessed.kind === "committed") results.push(reassessed.result);
+          continue;
+        }
       }
     }
     const barrier = await db.select({ status: workspaceOperations.status })

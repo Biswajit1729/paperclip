@@ -2578,3 +2578,14 @@ A permanent 103-item backlog test proves real settlement and SQL quiet; all 31
 lifecycle cases and server types pass. Remaining producer/authority audit,
 startup integration, periodic removal, remote gates and the full original stack
 scope remain open. Nothing merged.
+
+
+Slice 50 startup checkpoint: enabled maintenance now registers the reassessment
+worker and periodic recovery skips its classification/decision path. The separate
+historical supersession guard is preserved before workspace recovery. Two missing
+integration regressions fail before the change; all 246 corpus/startup/lifecycle
+cases, 32 existing finalization/cleanup consumer cases, and server types pass after.
+The owner audit records the intentional separation of reassessment from independent
+workspace settlement and the retained failure evidence. Remaining producer/authority
+audit, full acceptance, publication, remote gates and all other original duties
+remain incomplete. Nothing merged; the goal remains active.

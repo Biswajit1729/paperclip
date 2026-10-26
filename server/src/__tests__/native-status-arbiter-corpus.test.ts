@@ -2854,6 +2854,22 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     }, 30_000,
   );
 
+  it("leaves reassessment to its scheduled owner while periodic finalization continues", async () => {
+    const seeded = await seedAutomaticReview();
+    await dismissAutomaticCompletionReviews(db, seeded.issueId);
+    const options = { skipNativeStatusReassessment: true, skipNativeResponsePresentation: true, skipNativeReviewResponse: true };
+    const result = await reconcileNativeFinalizations(db, [seeded.runId], options);
+    expect(result).toEqual([expect.objectContaining({ runId: seeded.runId, phase: "committed" })]);
+    expect((await issueService(db).getById(seeded.issueId))!.status).toBe("in_review");
+    expect(await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, seeded.issueId))).toHaveLength(1);
+    const work = nativeStatusReassessmentWork(db);
+    const [pending] = await work.load({ companyId, issueId: seeded.issueId, runId: seeded.runId });
+    expect(pending).toBeDefined();
+    expect(await work.check(pending)).toBeNull();
+    expect((await issueService(db).getById(seeded.issueId))!.status).toBe("done");
+    expect(await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, seeded.issueId))).toHaveLength(2);
+  });
+
   describe("native status reassessment work", () => {
     const selectedScope = (seeded: { issueId: string; runId: string }) => ({ companyId, issueId: seeded.issueId, runId: seeded.runId });
 
@@ -3633,7 +3649,7 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     ]);
   });
 
-  it("ignores historical committed finalizations superseded by a newer authoritative decision", async () => {
+  it.each([false, true])("ignores superseded historical finalizations with scheduled reassessment %s", async scheduled => {
     const fixture = corpus.fixtures.find((candidate) => candidate.mode === "native");
     if (!fixture) throw new Error("native corpus fixture missing");
     const seeded = await seedFixture(fixture);
@@ -3695,7 +3711,7 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       decisionId: historicalDecision!.id,
     }).where(eq(nativeRunFinalizations.runId, seeded.runId));
 
-    await expect(reconcileNativeFinalizations(db, [seeded.runId])).resolves.toEqual([]);
+    await expect(reconcileNativeFinalizations(db, [seeded.runId], { skipNativeStatusReassessment: scheduled })).resolves.toEqual([]);
     await expect(db.select({
       decisionId: nativeRunFinalizations.decisionId,
     }).from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, seeded.runId))).resolves.toEqual([

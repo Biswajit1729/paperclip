@@ -890,3 +890,39 @@ retained history, and server typecheck passes:
 All handles are terminal. Startup registration/periodic removal, remaining
 producer/authority audit and remote acceptance still remain; the full stack
 objective and its earlier unresolved gates are not complete.
+
+
+## Startup integration and periodic ownership, 2026-10-26
+
+The worker now registers through heartbeat under enabled maintenance, with the
+same warm-standby, idle-drain and stopped gates as its sibling owners. The shared
+coordinator owns shutdown and restart reconstruction. The periodic orphan reaper
+passes `skipNativeStatusReassessment`; explicit/manual and one-time startup
+recovery retain the existing reassessment entry point.
+
+The old reassessment call also supplied a superseded-decision early return before
+workspace recovery. Removing the whole call without preserving that guard would
+allow obsolete history into unrelated recovery. The reassessment owner now shares
+that pure authority predicate and exposes a narrow guard for the periodic path.
+It makes no queries for the usual matching-decision case, and reads only selected
+decision/assessment authority when IDs differ; it does not classify evidence or
+create assessments. Independent workspace settlement and committed result replay
+remain owned by finalization recovery. Reassessment's dormant outcome no longer
+implicitly suppresses those separate duties in the periodic path; their own
+ownership and physical-resource guards remain applicable.
+
+Before the wiring change, the new regressions failed because periodic recovery
+completed the task itself and startup never registered the worker. Historical
+supersession was verified with the new option both enabled and disabled. Evidence:
+`/tmp/sleep50-startup-before.log/.status` (two failures, four passing selected cases).
+After the repair, all 246 corpus/startup/lifecycle cases pass and server typecheck
+passes: `/tmp/sleep50-startup-after.log/.status` and
+`/tmp/sleep50-startup-types.log/.status`. The existing native finalization and
+retained cleanup consumer suite passes all 32 cases in a dedicated database:
+`/tmp/sleep50-startup-consumers.log/.status`. All command handles are terminal.
+
+This integrates only reassessment ownership. The aggregate orphan/finalization
+sweep still runs for the other listed duties, so this is not whole-process SQL
+quiet or host suspension. Remaining producer/authority audit, final acceptance,
+publication and remote PR gates remain open, along with the older stack findings
+and every remaining recurring-server obligation. No merge occurred.
