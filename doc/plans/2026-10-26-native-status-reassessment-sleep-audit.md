@@ -2,7 +2,11 @@
 
 Parent: governed-review response recovery, draft #17702 at `be6ca6151b`.
 This audit starts the next reason in the recurring-server migration stack.
-Parent CI remains in progress; Greptile is 5/5 with no unresolved threads.
+Parent #17702 has passing checks and Greptile 5/5 at that head; it remains unmerged.
+
+Current summary: [worker contract](../idle-native-status-reassessment.md).
+Entries below preserve chronological checkpoints, including earlier incomplete
+states and failures; the latest checkpoints supersede their progress status.
 
 ## Obligation and ownership
 
@@ -926,3 +930,38 @@ sweep still runs for the other listed duties, so this is not whole-process SQL
 quiet or host suspension. Remaining producer/authority audit, final acceptance,
 publication and remote PR gates remain open, along with the older stack findings
 and every remaining recurring-server obligation. No merge occurred.
+
+
+## Producer closeout and PR validation checkpoint
+
+The final source audit distinguishes reactivation from negative evidence. Handoff
+creation uses a fresh identity in its transaction; delivery/renewal/completion
+preserve accepted evidence. Cancellation can only revoke it and is locked by the
+scheduled evidence guard. Existing task cancellation/assignment writers signal
+through the task boundary. No permanent lease-renewal wake was introduced.
+Target-agent existence affects attention validation, not criterion/verification
+acceptance, so lifecycle status changes do not activate the three reassessment
+predicates. Arbitrary missing identities have no row lock; the worker contract
+states this limit rather than claiming a general identity-insertion fence.
+Child completion remains a fresh-turn obligation enforced at status commit.
+Latest-contract creation can invalidate an old result, not make it eligible again.
+The only dormant retired-review prerequisites that can be restored in normal
+operation are current run/task authority and workspace settlement/ownership;
+their real transaction producers and lifecycle tests are recorded above.
+
+At 0337779e6d, workspace typecheck and build pass, in addition to the 278 selected
+integration/consumer tests. Evidence: /tmp/sleep50-workspace-types.log/.status and
+/tmp/sleep50-build.log/.status. All handles are terminal. Fresh origin/master is
+still 1fbbef45a8d399771add7a27a04b12f3a20e264c; the PR base remains slice 49.
+No duplicate reassessment PR was found; related automatic-review migrations are
+#17679 and #17680. Full-stack master reconciliation remains separate unfinished
+work; the PR is not represented as a direct-master diff.
+
+A direct disposable embedded initdb probe explains earlier full-suite failures:
+FATAL could not create semaphores, No space left on device (semget), before tests.
+/tmp/sleep50-pg-init-probe.log/.status preserves the failure. Read-only IPC/process
+inspection found a candidate orphan group, but automatic approval review rejected
+its removal because it changes shared OS resources and PID checks can race.
+Explicit approval for those exact IDs is pending; no cleanup was executed. This
+blocks local embedded-database acceptance, not dedicated PostgreSQL validation or
+remote PR validation. The full goal is still incomplete and no merge is authorized.
