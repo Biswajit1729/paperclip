@@ -2753,3 +2753,20 @@ consults the owning suppression policy before discovery/execution, and worktree
 activation publishes a reconstruction signal. All 15 lifecycle cases pass,
 including real settings activation after quiet. Latest validation/review are still
 pending; the scope remains active with no merge.
+
+
+Slice 52 startup repair: Greptile reached 5/5 at `020ccbc66d` with both threads
+resolved, but CI server shard 4/12 found a missing startup fixture method. Added
+that method and enabled/disabled lifecycle coverage, then corrected the exact
+periodic skip expectation. All 74 startup cases pass. The old-head default local
+full run was deliberately interrupted (Vitest 130, wrapper 1) before editing;
+it is not a pass. Remote gates and review on the repaired head remain pending.
+
+Follow-up audit: eight earlier native worker registrations gate task drain but
+lack the new worker's restore/worktree suppression boundary: retained session
+cleanup, status reassessment, governed response, response presentation, pending
+effects, unsafe exports, automatic completion review and obsolete policy review.
+Verify each duty's prior suppression contract and its settings activation wake
+before declaring it safe. This is outstanding stack acceptance work, not a claim
+that every listed duty has the same defect. All remaining duties and older gates
+remain active; no merge is authorized.

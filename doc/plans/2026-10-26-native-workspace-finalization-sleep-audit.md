@@ -152,3 +152,21 @@ suppression policy remains heartbeat; neither the worker nor index interprets fl
 Workspace types and build passed again at `b11b1229084d9f2f5cb332b6b11beca40ece5552`
 before this suppression repair. Validation for the new repair and fresh review
 remain required; the initial 3/5 review is not acceptance.
+
+
+## Startup fixture repair and full-command disposition
+
+At `020ccbc66d`, Greptile reached 5/5 and both review threads were resolved.
+CI server shard 4/12 failed 24 startup cases because its heartbeat fixture omitted
+`registerNativeWorkspaceFinalizationWork`. The fixture now exposes that contract
+and covers enabled/disabled registration plus the close subscription. A full
+local rerun then exposed the stale exact periodic-recovery expectation; it now
+includes `skipNativeWorkspaceFinalization: true`. The complete startup suite
+passes all 74 cases, without weakening the remaining-duty assertions.
+
+The default local `pnpm test:run` at `020ccbc66d` was interrupted with SIGINT
+once this concrete CI repair was known, before changing source or tests. The
+Vitest child exited 130 and the wrapper exited 1. It is not a passing full run.
+The log is `/tmp/sleep52-full-test-run.log`; affected-suite passes and full remote
+CI remain separate evidence. No additional semaphore cleanup was performed.
+Latest-head remote gates and review must be refreshed after the fixture repair.
