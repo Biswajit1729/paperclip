@@ -87,7 +87,7 @@ listActionRequests: async (
           if (!readable) invalidRequestIds.push(request.id);
         }
         if (invalidRequestIds.length > 0) {
-          await writeToolReviewChange(db, tx => tx
+          await writeToolReviewChange(db, companyId, tx => tx
             .update(toolActionRequests)
             .set({
               status: "cancelled",
