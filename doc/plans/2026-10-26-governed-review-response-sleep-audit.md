@@ -345,7 +345,7 @@ Evidence: /tmp/sleep49-drain.log, /tmp/sleep49-drain-v2.log,
 Workspace typecheck and build pass. Migration generation and safety checks pass.
 The first migration application exposed the missing top-level migration allowlist
 entry; after registration, fresh application, invalid concurrent-index repair,
-concurrent migrator replay and no-op replay all pass. Evidence: 
+concurrent migrator replay and no-op replay all pass. Evidence:
 /tmp/sleep49-migration-apply.log, /tmp/sleep49-migration-apply-v2.log,
 /tmp/sleep49-migration-replay.log, /tmp/sleep49-workspace-types.log,
 /tmp/sleep49-build.log. The five newest schema snapshots are retained.
