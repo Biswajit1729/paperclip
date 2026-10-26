@@ -146,7 +146,7 @@ export function createSecretProposalsService(db: Db) {
         });
         return { denial, value: null };
       }
-      await notifyDeliveryWork(txDb, DELIVERY_QUEUES.secretProposalExpiry);
+      await notifyDeliveryWork(txDb, DELIVERY_QUEUES.secretProposalExpiry, input.companyId);
       return { denial: null, value: await create(txDb) };
     });
     if (result.denial) throw unprocessable(result.denial.message);
@@ -623,7 +623,7 @@ export function createSecretProposalsService(db: Db) {
     appliedBindingConfigPath?: string | null;
   }) {
     const now = new Date();
-    await notifyDeliveryWork(txDb, DELIVERY_QUEUES.secretProposalExpiry);
+    await notifyDeliveryWork(txDb, DELIVERY_QUEUES.secretProposalExpiry, proposal.companyId);
     const updated = await txDb.update(companySecretProposals).set({
       status: "approved",
       resolvedByUserId: input.resolvedByUserId,
@@ -799,7 +799,7 @@ export function createSecretProposalsService(db: Db) {
     const now = new Date();
     return db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
-      await notifyDeliveryWork(tx, DELIVERY_QUEUES.secretProposalExpiry);
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.secretProposalExpiry, companyId);
       const updated = await tx.update(companySecretProposals).set({
         status,
         resolvedByUserId: input.resolvedByUserId ?? null,
@@ -874,10 +874,12 @@ export function createSecretProposalsService(db: Db) {
     limit = DEFAULT_EXPIRY_SWEEP_LIMIT,
     expireProposal: (companyId: string, proposalId: string) => Promise<unknown> =
       (companyId, proposalId) => transition(companyId, proposalId, "expired", { reason: "Pending proposal expired" }),
+    companyId?: string,
   ) {
     const expired = await db.select({ id: companySecretProposals.id, companyId: companySecretProposals.companyId })
       .from(companySecretProposals)
-      .where(and(eq(companySecretProposals.status, "pending"), lte(companySecretProposals.expiresAt, now)))
+      .where(and(eq(companySecretProposals.status, "pending"), lte(companySecretProposals.expiresAt, now),
+        companyId === undefined ? undefined : eq(companySecretProposals.companyId, companyId)))
       .orderBy(companySecretProposals.expiresAt)
       .limit(limit);
     let expiredCount = 0;
@@ -893,11 +895,25 @@ export function createSecretProposalsService(db: Db) {
     return expiredCount;
   }
 
+  async function sweepExpiredForCompany(companyId: string) {
+    return sweepExpired(new Date(), DEFAULT_EXPIRY_SWEEP_LIMIT, undefined, companyId);
+  }
+
+  async function expiryDeadlines(companyId?: string) {
+    const rows = await db.select({ companyId: companySecretProposals.companyId,
+      at: sql<string | Date>`min(${companySecretProposals.expiresAt})` })
+      .from(companySecretProposals)
+      .where(and(eq(companySecretProposals.status, "pending"),
+        companyId === undefined ? undefined : eq(companySecretProposals.companyId, companyId)))
+      .groupBy(companySecretProposals.companyId);
+    return rows.map(row => ({ companyId: row.companyId, dueAt: new Date(row.at).getTime() }));
+  }
+
   async function nextExpiryAt(): Promise<number | null> {
     const [row] = await db.select({ at: sql<string | Date | null>`min(${companySecretProposals.expiresAt})` })
       .from(companySecretProposals).where(eq(companySecretProposals.status, "pending"));
     return row?.at == null ? null : new Date(row.at).getTime();
   }
 
-  return { getById, view: enrich, createSecret, createBinding, listForAgent, listForBoard, assertBindingSnapshotCurrent, approve, transition, sweepExpired, nextExpiryAt };
+  return { getById, view: enrich, createSecret, createBinding, listForAgent, listForBoard, assertBindingSnapshotCurrent, approve, transition, sweepExpired, sweepExpiredForCompany, expiryDeadlines, nextExpiryAt };
 }
