@@ -4062,6 +4062,14 @@ export function heartbeatService(
     triggerIssueMonitor,
 
     reportRunActivity: clearDetachedRunWarning,
+    registerStoppedInstructionCollectionWork: (
+      coordinator: Parameters<typeof instructionCopies.registerStoppedCollectionWork>[0], canRun: () => boolean,
+    ) => instructionCopies.registerStoppedCollectionWork(coordinator,
+      () => canRun() && readTaskDrain(new Date()) === null,
+      async () => {
+        const state = await getSchedulingSuppression(true);
+        return !state.suppressed || state.reason === "task_drain";
+      }),
     registerInstructionDirectoryCleanupWork: (
       coordinator: Parameters<typeof instructionCopies.registerDirectoryCleanupWork>[0], canRun: () => boolean,
     ) => instructionCopies.registerDirectoryCleanupWork(coordinator,

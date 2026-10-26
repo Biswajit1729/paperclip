@@ -1,3 +1,4 @@
+import { notifyInstructionCollection } from "./instruction-collection-notifications.js";
 import { notifyDirectoryCleanup } from "./directory-cleanup-notifications.js";
 import { notifyInstructionCommit } from "./instruction-commit-notifications.js";
 import { notifyScheduledRetryCancellation } from "./scheduled-retry-cancellation-notifications.js";
@@ -622,6 +623,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         if (patch.enableWorktreeRunExecution !== undefined) {
           await notifyInstructionCommit(tx);
           await notifyDirectoryCleanup(tx);
+          await notifyInstructionCollection(tx);
         }
         if (patch.enableChatConnectors !== undefined) await notifyVoiceChange(tx);
         await notifyToolConnectionHealth(tx, "*");

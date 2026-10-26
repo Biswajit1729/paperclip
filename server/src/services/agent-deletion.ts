@@ -1,3 +1,4 @@
+import { notifyInstructionCollection } from "./instruction-collection-notifications.js";
 import { notifyDirectoryCleanup } from "./directory-cleanup-notifications.js";
 import { notifyInstructionCommit } from "./instruction-commit-notifications.js";
 import { notifyScheduledRetryCancellation } from "./scheduled-retry-cancellation-notifications.js";
@@ -48,6 +49,7 @@ export async function deleteAgentDependencies(tx: Db, companyId: string, id: str
   await notifyScheduledRetryCancellation(tx, { companyId: companyId });
   await notifyInstructionCommit(tx, { companyId: companyId });
   await notifyDirectoryCleanup(tx, { companyId: companyId });
+  await notifyInstructionCollection(tx, { companyId: companyId });
   await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.agentId, id));
   await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, id));
   await tx.delete(agentApiKeys).where(eq(agentApiKeys.agentId, id));

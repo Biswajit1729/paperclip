@@ -1,3 +1,4 @@
+import { notifyInstructionCollection } from "./instruction-collection-notifications.js";
 import { notifyExecutionRunWork } from "./execution-control-notifications.js";
 import { hasRequiredWorkspaceRecovery, preserveWorkspaceRestoreRecoveryMetadata, LEGACY_WORKSPACE_RECOVERY_SCHEMA } from "./workspace-restore-recovery-state.js";
 import { hasUnrestoredRemoteWorkspace, preserveLegacyWorkspaceRestoreSources, type LegacyWorkspaceRestoreSource } from "./legacy-workspace-restore-recovery.js";
@@ -109,6 +110,7 @@ export async function terminalizeLegacyExecution(input: {
       resultJson: preserveWorkspaceRestoreRecoveryMetadata(current.resultJson,
         input.recordRestoreFailureOnly ? { ...current.resultJson, ...patch.resultJson } : patch.resultJson),
     };
+    await notifyInstructionCollection(tx, { companyId: current.companyId, runId: current.id });
     await notifyExecutionRunWork(tx);
     let [updated] = await tx
       .update(heartbeatRuns)

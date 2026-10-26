@@ -2134,3 +2134,19 @@ Local verification currently has 200 passing cases across directory, startup,
 captured instruction and heartbeat release suites, plus workspace typecheck/build.
 Remote acceptance is pending. Stopped collection and the remaining
 original inventory and older stack review/CI gates remain outstanding.
+
+## Slice 41 acceptance and slice 42 collection
+
+Parent directory cleanup PR #17671 at
+`854244092a993b621ab8efd2ca9f80a0e3b0b9d4` has all 53 checks successful,
+Greptile 5/5 at that head, and no unresolved review findings. It remains open.
+
+Slice 42 migrates stopped instruction collection, including terminal-run writers
+that make unchanged copy rows eligible. The producer, lifecycle, partial-index,
+and verification audit is in
+[the stopped collection audit](2026-10-25-stopped-instruction-collection-sleep-audit.md).
+The initial eight-suite acceptance selection passed 269 tests; directory-owner
+coverage passed 101 separately. Exact-head remote acceptance is still required.
+Other native recovery, dispatch, retention, integration and aggregate-tick duties
+remain in scope. The older CI/review gates recorded above are not discharged by
+this slice's local tests.

@@ -1,3 +1,4 @@
+import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
 import { writeEnvironmentCleanup } from "../environment-cleanup-notifications.js";
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 import { writeExecutionControl } from "../execution-control-notifications.js";
@@ -9594,6 +9595,7 @@ async function executePaperclipNativeSessionWithinScope(
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.id, input.execution.binding.runId))
           .for("update");
+        if (!ownershipUnverified) await notifyInstructionCollection(tx, { companyId: input.execution.binding.companyId, runId: input.execution.binding.runId });
         let [updatedRun] = await tx
           .update(heartbeatRuns)
           .set({

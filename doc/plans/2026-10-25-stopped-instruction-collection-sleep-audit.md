@@ -1,0 +1,158 @@
+# Stopped instruction collection
+
+Date: 2026-10-25. Parent: directory cleanup PR #17671 at
+`854244092a993b621ab8efd2ca9f80a0e3b0b9d4`.
+
+## Obligation and owner
+
+The orphan reaper previously rediscovered stopped instruction copies on every
+maintenance pass. This slice migrates that one reason to committed signals and
+saved retry deadlines. Captured candidate commits (#17670) and post-save
+physical release (#17671) remain separate workers. No new table is needed.
+
+The instruction working-copy service owns eligibility, reconstruction and
+collection scheduling. The directory service still owns directory locks,
+materialization identity, warm handoff, stop proof and physical operations.
+Native and legacy run owners emit a normalized company/run signal before their
+status writes. They do not inspect instruction receipts or perform file work.
+Startup only wires the existing coordinator and scheduler.
+
+## Existing durable predicate
+
+A copy is eligible when its same-company run is terminal (succeeded, failed,
+cancelled, timed_out or interrupted), its receipt has no retainedByRunId key,
+and either:
+
+- It has fewer than three collection attempts and is prepared,
+  pending_collection, unchanged_turn, warm_saved, or an agent-files.v1 copy in
+  preparing state.
+- It is an unavailable remote agent-files.v1 copy without processStoppedAt.
+  This existing cleanup-proof branch is not subject to the collection cap.
+
+Active prepared copies and retained warm owners are excluded. Exhausted or
+completed copy history is passive. Terminal run status is eligibility for
+inspection, not proof that the provider has stopped.
+
+Startup loads scalar run IDs, company IDs and nextAttemptAt in keyset pages of
+100. The shared worker keeps outstanding IDs and selects fair batches of 20.
+Each due check rereads eligibility, honors a later saved deadline, and reserves
+30 seconds through the existing copy CAS before I/O. The claim also verifies
+that the same-company run is still terminal. A resumed run cannot be collected
+merely because it was in an earlier discovery result.
+
+The existing collection owner then applies its rules:
+
+- Interrupted directory preparation can be discarded because launch requires
+  prepared state first.
+- Local collection requires saved stop proof or a valid server-authored native
+  stop event, including its existing launch-order validation.
+- Remote collection retains exact lease and termination checks. Unknown ownership
+  stays pending. Recovery never starts a replacement environment to fetch files.
+- Failed capture retains candidate/error state and the existing attempt limit.
+- Captured bytes hand off to the existing commit owner. Directory cleanup keeps
+  its own receipt and owner.
+
+The worker rereads durable state after the attempt. Settled entries disarm;
+unresolved entries retain their saved future deadline. A failure or unresolved
+entry without a future deadline uses the shared bounded error backoff. Later
+stop evidence is covered by the already-pending retry; it needs no recurring
+scan of unrelated process events or environment leases.
+
+## Producer audit and transaction ownership
+
+Copy writes alone are insufficient. Run terminalization creates eligibility
+without changing the copy row. The audit inspected run inserts/updates as well
+as both instruction-copy owners.
+
+| Producer family | Integration |
+| --- | --- |
+| Common instruction-copy patch | Signal changes into, within and out of potential collection work, inside the short existing transaction |
+| Legacy copy preparation | Signal before the preparing insert; stage files outside the new short transaction |
+| Directory preparation and warm successor insert | Signal in a short insert transaction; preserve insertion before the agent-row handoff lock |
+| Directory adoption | Signal prior and successor scopes inside the existing handoff transaction |
+| Heartbeat run lifecycle and legacy terminalization | Signal exact company/run inside existing status transaction |
+| Heartbeat queue and run-dispatch adapter | Signal cancellation, supersession and other terminal writes inside their existing transactions |
+| Queued-comment adapter and active-run watchdog | Signal exact terminalized run in the existing transaction |
+| Execution-control and task recovery | Signal after candidate eligibility checks, before terminal write |
+| Native finalizer, restart recovery and finalization reconciler | Signal terminal projection and terminal recovery writes in their owning transactions |
+| Native session executor and status-decision committer | Signal verified terminal failure/cancellation; retain unverified-ownership behavior |
+| Agent/company deletion | Invalidate company scope before cascades |
+| Worktree execution policy | Signal globally through the existing settings transaction |
+
+Metadata-only run writes do not create eligibility. A reset to running is
+rechecked before execution; the subsequent terminal transition signals again.
+Deletion of an unsuccessful directory reservation cannot create new collection
+work. An already-known entry is invalidated at its next scheduled check.
+
+Signals join existing outer transaction settlement, including nested writes and
+ambiguous commit outcomes. No filesystem/provider call is wrapped in a new
+transaction. Signal handling can inspect the exact run even if it has no copy;
+this is bounded producer-time work, not recurring empty discovery. The supported
+model is one process with instrumented writers. Independent SQL writers and
+additional replicas still need explicit integration.
+
+## Lifecycle and index
+
+The heartbeat facade retains task-drain and worktree-execution admission.
+Committed changes during drain/standby remain pending without passive SQL.
+Startup/resume reconstructs existing debt. Shutdown joins admitted work and
+retires subscriptions and deadlines. Manual/startup recoverStopped remains
+available; only the migrated periodic caller skips it.
+
+Migration 0396 adds the concurrent, replay-safe partial collection index on
+(run_id, company_id). Its predicate excludes ineligible copy history; terminal
+run eligibility remains a same-company join. The migration is registered with
+the existing nontransactional runner and retains the five newest snapshots.
+Memory and startup cost scale with actual pending copy candidates, including
+active candidates filtered by the run join; this is not a constant-cost claim.
+
+## Verification and preserved failures
+
+- 269 tests passed across instruction copies, startup wiring, run dispatch,
+  queued-comment dispatch, heartbeat queue/recovery, execution-control recovery,
+  and native finalization recovery. No tests were skipped in this selection.
+- The instruction suite has 45 cases, including 12 stopped-worker cases. These
+  cover quiet active/history states, real terminalization without a copy write,
+  nested rollback/commit, restart, drain/standby, saved deadlines, delayed stop
+  evidence, resumed-run claim races, 103 candidates, a failed claim, and shutdown
+  during a save. Filesystem and PostgreSQL effects are exercised together.
+- The directory owner suite passed all 101 cases after updating the existing
+  stale-collector race injector to intercept the actual transaction boundary.
+- Workspace typecheck and build passed.
+- Native session/restart/reconciler tests passed 814 cases. Fifteen embedded-only
+  remote warm ownership cases were filtered out locally. Native finalizer tests
+  initially skipped all 27 cases because embedded PostgreSQL was unavailable;
+  the suite now accepts a dedicated external URL and passed all 29 cases,
+  including two real terminal-projection notification cases. These skips are
+  not counted as passes. Full CI must exercise the embedded-only fixtures.
+- Fresh migration application, migration-runner replay, direct index replay and
+  migration numbering/safety checks passed.
+- A rolled-back PostgreSQL fixture added 10,000 completed-history rows and one
+  pending terminal copy. The plan used the partial collection index and run PK
+  join, returned one row, and used 12 buffer hits (0.026 ms local execution).
+  Dead index entries existed in this transaction. This is evidence of index
+  selection, not a production latency or one-index-tuple claim.
+
+The first broad run passed 187 tests and failed one existing directory race
+test: its direct-update spy no longer injected adoption after the mutation moved
+into a transaction. The repaired test injects at that transaction and retains
+its original ownership, untouched-file, attempt and stop-proof assertions. The
+subsequent instruction/directory run passed 143 tests. The later eight-suite run
+includes three additional collection lifecycle tests and passed 269 tests.
+
+A first added native-finalizer notification test passed 27 cases and failed one:
+it expected a collection wake for a metadata-only finalizer failure. That API
+only writes terminal run status when projectRunStatus is enabled. The final test
+separates both cases: metadata-only failure leaves the run running and emits no
+collection signal; terminal projection emits the signal. All 29 finalizer cases
+then passed on a fresh database. No production behavior was weakened.
+
+The embedded PostgreSQL support probe failed before suite startup on this host.
+Tests used fresh disposable PostgreSQL 17 databases through the existing
+validated external-test-database helper. Native finalization, native finalizer and execution-control
+suites now accept opt-in dedicated URLs; normal embedded CI remains unchanged.
+The failed harness log and all prior test logs remain available locally.
+
+Full remote CI and review are required for this PR's exact head. This slice does
+not establish Cloud alarm coverage, deployed database/host suspension, fleet
+savings, or completion of the remaining orphan-reaper migrations.
