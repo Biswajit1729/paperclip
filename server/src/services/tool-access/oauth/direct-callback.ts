@@ -1,4 +1,4 @@
-import { notifyNativeReviewResponse } from "../../native-review-response-notifications.js";
+import { notifyNativeReviewState } from "../../native-review-state-notifications.js";
 import { notifyToolConnectionHealth } from "../../tool-connection-health-notifications.js";
 import { credentialScope } from "./client-settings.js";
 import { withoutOAuthRefreshLease } from "./refresh-leases.js";
@@ -386,7 +386,7 @@ export function createDirectOAuthCallback(db: Db, dependencies: Dependencies) {
           stateRow.interactionId &&
           linkedInteraction?.kind === "request_confirmation"
         ) {
-          await notifyNativeReviewResponse(tx, { companyId: connection.companyId, issueId: linkedInteraction.issueId });
+          await notifyNativeReviewState(tx, { companyId: connection.companyId, issueId: linkedInteraction.issueId });
           await tx
             .update(issueThreadInteractions)
             .set({

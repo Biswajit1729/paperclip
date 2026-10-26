@@ -1,4 +1,4 @@
-import { notifyNativeReviewResponse } from "../../native-review-response-notifications.js";
+import { notifyNativeReviewState } from "../../native-review-state-notifications.js";
 import { notifyToolConnectionHealth } from "../../tool-connection-health-notifications.js";
 import { managedConnectorProfile } from "./client-settings.js";
 import type { ActorInfo } from "../types.js";
@@ -420,7 +420,7 @@ export function createCloudOAuthCallback(db: Db, dependencies: Dependencies) {
         stateRow.interactionId &&
         linkedInteraction?.kind === "request_confirmation"
       ) {
-        await notifyNativeReviewResponse(tx, { companyId: connection.companyId, issueId: linkedInteraction.issueId });
+        await notifyNativeReviewState(tx, { companyId: connection.companyId, issueId: linkedInteraction.issueId });
         await tx
           .update(issueThreadInteractions)
           .set({

@@ -301,3 +301,61 @@ Several interaction mutations also lack either signal and require fact-level
 audit before the old polling path can be removed. Run evidence, ownership,
 completion contracts, workspace barriers, concurrent authority, discovery cost,
 and startup registration remain outstanding as listed above.
+
+
+## Interaction evidence producer checkpoint
+
+The interaction classifier reads status and result outcome, not just terminal
+status. Real response regressions reproduced missed wakes for confirmation,
+checkbox confirmation, question answers, completed item verdicts, and partial
+item verdicts. The first checkbox fixture used `items`/`checkedItemIds` rather
+than the real `options`/`selectedOptionIds` contract; after correcting it, that
+case also reproduced the missed wake before production changes.
+
+`notifyNativeReviewState` is a small fan-out boundary for the two consumers of
+changed review facts: governed response recovery and status reassessment. It
+preserves their existing task/run/company scopes and delegates all discovery,
+classification and authority to the owning workers. Approval, interaction,
+chat-milestone, satisfied-connection and OAuth completion/rejection producers
+reuse that boundary in their existing transactions. It does not add database
+queries or a transaction wrapper at these call sites; the existing shared intent
+registration still owns its normal transaction-tracking cost.
+
+Confirmation/question paths already use the milestone boundary; other interaction
+outcomes use the new shared review-state boundary directly. Connection-intent
+creation/supersession signals before insert in its existing transaction. Generic
+non-question/non-confirmation creation signals reassessment before insert.
+Partial item verdicts need reassessment even though governed response recovery
+still waits for completion: their persisted `outcome: resolved` is already
+accepted by the evidence classifier. This migration preserves that existing
+classification policy rather than silently changing it while removing polling.
+
+Direct-writer audit: secret proposals, tool-action review, gateway outcome
+projection, conversation promotion, and obsolete-policy review retirement already
+signal milestones. Automatic completion retirement and native status commits
+already signal reassessment/finalization. Confirmation comment enrichment shares
+its outer transaction with ordinary service resolution. Ownership-change connection
+expiry is called only through issueService's owned transaction. OAuth callback
+acceptance/rejection and satisfied-connection retirement now use the shared helper.
+Payload-only connection-phase updates, consumed-action stamps, retry annotations
+on already accepted confirmations, and dismissal attention fields do not change
+the classifier's status/outcome facts. Native response materialization uses the
+existing finalization boundary. Authorization-start's reopening/creation path
+and native superseded-review caller ownership still need final audit; do not infer
+complete producer coverage from this checkpoint.
+
+All 22 reassessment lifecycle cases pass, with driver-observed SQL quiet before
+and after real response activation. Server typecheck passes. Existing interaction
+service, tool-access/OAuth, and satisfied-connection suites pass 625 cases across
+three separate freshly migrated PostgreSQL databases. Evidence:
+`/tmp/sleep50-interaction-before.log` (four missed-wake failures and one invalid
+fixture), `/tmp/sleep50-interaction-checkbox-before.log` (corrected missed-wake
+failure), `/tmp/sleep50-interaction-after.log` and `.status` (22 passes),
+`/tmp/sleep50-interaction-types.log` and `.status` (pass), and
+`/tmp/sleep50-interaction-consumers.log` and `.status` (625 passes).
+
+The milestone fan-out also reaches existing run-status producers, but that is not
+proof that all native ownership/run-event writers are covered. Workspace barrier
+producers, remaining run/contract/case-handoff facts, concurrent authority guards,
+current-history/backlog query cost, startup registration and remote PR acceptance
+remain incomplete. Periodic reassessment is deliberately still enabled.

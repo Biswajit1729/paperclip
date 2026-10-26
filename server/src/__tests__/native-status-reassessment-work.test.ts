@@ -6,12 +6,13 @@ import { errorHandler } from "../middleware/index.js";
 import { workProductService } from "../services/work-products.js";
 import { issueService } from "../services/issues.js";
 import { approvalService } from "../services/approvals.js";
+import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import { issueApprovalService } from "../services/issue-approvals.js";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { agents, companies, completionContracts, createDb, heartbeatRuns, issues, issueWorkProducts,
+import { agents, companies, completionContracts, createDb, heartbeatRuns, issues, issueWorkProducts, issueThreadInteractions,
   nativeRunFinalizations, nativeRunResults, statusDecisions, workAssessments, workspaceOperations } from "@paperclipai/db";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
@@ -107,6 +108,42 @@ describe("native reassessment worker lifecycle", () => {
       status: "succeeded", exitCode: 0, cwd: process.cwd(), finishedAt: new Date() });
     return { issueId, runId, workProductId, decisionId: committed.decision.id };
   }
+
+  it.each(["confirmation", "checkbox", "question", "verdict", "partial verdict"] as const)("wakes dormant evidence from real interaction %s", async mutation => {
+    const interactionId = randomUUID();
+    const seeded = await seedReview(`interaction:${interactionId}`);
+    const kind = mutation === "confirmation" ? "request_confirmation" : mutation === "checkbox" ? "request_checkbox_confirmation"
+      : mutation === "question" ? "ask_user_questions" : "request_item_verdicts";
+    const payload = kind === "ask_user_questions"
+      ? { version: 1 as const, questions: [{ id: "verified", prompt: "Verified?", selectionMode: "single" as const,
+        options: [{ id: "yes", label: "Yes" }] }] }
+      : kind === "request_item_verdicts"
+        ? { version: 1 as const, prompt: "Review evidence", items: [{ id: "artifact", label: "Artifact" },
+          ...(mutation === "partial verdict" ? [{ id: "other", label: "Other" }] : [])] }
+        : kind === "request_checkbox_confirmation"
+          ? { version: 1 as const, prompt: "Accept evidence", options: [{ id: "verified", label: "Verified" }] }
+          : { version: 1 as const, prompt: "Accept evidence" };
+    await db.insert(issueThreadInteractions).values({ id: interactionId, companyId, issueId: seeded.issueId, kind,
+      sourceRunId: seeded.runId, continuationPolicy: "none", createdByUserId: "board-user", payload });
+    await db.update(issues).set({ createdByUserId: "board-user" }).where(eq(issues.id, seeded.issueId));
+    await vi.advanceTimersByTimeAsync(1000);
+    await db.update(issueWorkProducts).set({ updatedAt: new Date() }).where(eq(issueWorkProducts.id, seeded.workProductId));
+    await start(); await flush(); await quiet();
+    expect(await status(seeded.issueId)).toBe("in_review");
+    const scope = { id: seeded.issueId, companyId, projectId: null, goalId: null };
+    const interactions = issueThreadInteractionService(db);
+    if (mutation === "confirmation" || mutation === "checkbox") {
+      await interactions.acceptInteraction(scope, interactionId, mutation === "checkbox" ? { selectedOptionIds: ["verified"] } : {}, { userId: "board-user" });
+    } else if (mutation === "question") {
+      await interactions.answerQuestions(scope, interactionId, { answers: [{ questionId: "verified", optionIds: ["yes"] }] }, { userId: "board-user" });
+    } else {
+      await interactions.submitItemVerdicts(scope, interactionId, { verdicts: [{ id: "artifact", verdict: "approve" }] }, { userId: "board-user" });
+    }
+    await flush();
+    expect(await status(seeded.issueId)).toBe("done");
+    expect(await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, seeded.issueId))).toHaveLength(2);
+    await quiet();
+  });
 
   it.each(["resolution", "link", "bulk link"] as const)("wakes dormant evidence from real approval %s", async mutation => {
     const approvalId = randomUUID();
