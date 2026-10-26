@@ -374,6 +374,31 @@ describe("board retry of accepted workspace export", () => {
       expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.actionId)))[0]).toMatchObject({ status: "resolved", resolutionNote: "unsafe_export_automatic_recovery" });
       expect(await phase(f.runId)).toBe("terminal_failure"); await quiet();
     });
+    it("discovers a newer accepted result after retiring an older unsafe notice", async () => {
+      const older = await seed(unsafe);
+      const [oldRun] = await db.update(heartbeatRuns).set({ createdAt: new Date(Date.now() - 60_000) })
+        .where(eq(heartbeatRuns.id, older.runId)).returning();
+      const [oldResult] = await db.select().from(nativeRunResults).where(eq(nativeRunResults.id, older.resultId));
+      const runId = randomUUID(), resultId = randomUUID();
+      await db.insert(heartbeatRuns).values({ ...oldRun, id: runId, createdAt: new Date() });
+      await db.insert(nativeRunResults).values({ ...oldResult, id: resultId, runId,
+        serverFingerprint: resultId, canonicalSha256: resultId });
+      await db.insert(nativeRunFinalizations).values({ runId, companyId, issueId: older.issueId,
+        phase: "terminal_failure", resultId, failureCode: unsafe });
+      const accepted = await db.select().from(nativeRunResults).where(eq(nativeRunResults.issueId, older.issueId));
+
+      // Discovery initially sees only the older notice: it blocks the newer run.
+      // Its retirement must rediscover the issue without another write or restart.
+      await start(); await flush();
+      expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, older.actionId)))[0])
+        .toMatchObject({ status: "resolved", resolutionNote: "unsafe_export_automatic_recovery" });
+      expect(await phase(older.runId)).toBe("terminal_failure");
+      expect(await phase(runId)).toBe("result_accepted");
+      expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.issueId, older.issueId))).toEqual(accepted);
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.nativeIssueId, older.issueId))).toHaveLength(2);
+      expect(probe).not.toHaveBeenCalled();
+      await quiet();
+    });
     it("wakes from a real finalization failure and readmits only the accepted result", async () => {
       const f = await seedBeforeFailure(); await start(); await flush(); await quiet();
       await failExport(f); await flush(); expect(await phase(f.runId)).toBe("result_accepted");

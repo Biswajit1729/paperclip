@@ -1496,7 +1496,7 @@ async function startServerWithDatabaseTeardown(
       await app.locals.toolGateway.settleInterruptedActionReviews();
     }
     return config.heartbeatSchedulerEnabled
-      ? registerToolReviewProjectionWork(deliveryWork, { sweep: app.locals.toolGateway.repairActionReviewProjections },
+      ? registerToolReviewProjectionWork(deliveryWork, { sweep: app.locals.toolGateway.repairActionReviewProjections, companies: app.locals.toolGateway.actionReviewProjectionCompanies },
         () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready
       : app.locals.toolGateway.repairActionReviewProjections();
   }).catch((err: unknown) => logger.error({ err }, "startup tool review recovery failed"));
@@ -1814,7 +1814,8 @@ async function startServerWithDatabaseTeardown(
         () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby());
       unsubscribeNativeWorkspaceFinalization = worker.stop;
       server.on("close", worker.stop);
-      await worker.ready;
+      // Copy-back remains owned through drain/shutdown without delaying readiness.
+      trackHeartbeatSchedulerWork(worker.ready);
     }
     if (config.heartbeatSchedulerEnabled) {
       const worker = heartbeat.registerRetainedNativeSessionCleanupWork(deliveryWork,
