@@ -72613,6 +72613,26 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     },
   );
 
+  it.each(["reconciler", "finalizer"])("leaves accepted-response presentation to its worker during periodic %s replay", async caller => {
+    const context = await committedChatResponseRecoveryFixture("telegram");
+    try {
+      if (caller === "reconciler") {
+        await reconcileNativeFinalizations(db, [context.runId], { skipNativeResponsePresentation: true });
+      } else {
+        await finalizeNativeRun({ db, runId: context.runId, workspaceFinalizeStatus: "succeeded",
+          projectRunStatus: true, skipNativeResponsePresentation: true });
+      }
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+      expect(await db.select().from(issueComments).where(eq(issueComments.createdByRunId, context.runId))).toHaveLength(0);
+      const work = nativeResponsePresentationWork(db);
+      const entries = await work.load({ companyId: context.fixture.companyId, runId: context.runId });
+      expect(entries).toHaveLength(1);
+      await expect(work.check(entries[0])).resolves.toBeNull();
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(1);
+      await expect(context.repair()).resolves.toBe(false);
+    } finally { await context.service.shutdown(); }
+  });
+
   it("recovers accepted-response work on startup and leaves selected history quiet", async () => {
     const context = await committedChatResponseRecoveryFixture("telegram");
     const errors: unknown[] = [];

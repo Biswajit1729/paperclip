@@ -1159,6 +1159,7 @@ export async function finalizeNativeRun(input: {
   workspaceFinalizeStatus: "succeeded" | "failed";
   /** Reconciliation owns terminal run projection; the live heartbeat does it afterward. */
   projectRunStatus?: boolean;
+  skipNativeResponsePresentation?: boolean;
   /** Workspace-only replay must not consume the provider recovery budget. */
   preserveProviderAttempt?: boolean;
   failpoint?: NativeStatusCommitFailpoint;
@@ -1208,7 +1209,7 @@ export async function finalizeNativeRun(input: {
       await projectCommittedRun({ db: input.db, run, coordinator });
     if (input.projectRunStatus && !presentationAlreadyMaterialized)
       await materializeCommittedReviewResponse(input.db, input.runId);
-    if (input.projectRunStatus)
+    if (input.projectRunStatus && !input.skipNativeResponsePresentation)
       await repairCommittedNativeChatResponse(input.db, {
         companyId: run.companyId,
         issueId: coordinator.issueId,

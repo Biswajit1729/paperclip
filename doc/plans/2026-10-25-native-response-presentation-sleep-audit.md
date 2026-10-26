@@ -1,6 +1,6 @@
 # Native accepted-response presentation recovery
 
-Status: worker and owner guards implemented locally; producer audit and startup/periodic integration incomplete.
+Status: worker, producers, and startup/periodic integration implemented; full local and remote acceptance pending.
 Branch: `codex/sleep-48-native-response-presentation`.
 Parent: [#17690](https://github.com/paperclipai/paperclip/pull/17690),
 `56c3601ea605b333141e86e0a810ed790fb6ce48`.
@@ -311,3 +311,27 @@ Startup/shutdown integration, removal of this duty's periodic call, final produc
 coverage review, full PR verification, and publication remain outstanding. The old
 backstop is still present. Master was refreshed to `6bdcb70244`; the full stack
 still needs reconciliation and its earlier failing/review gates remain open.
+
+
+## Startup integration, 2026-10-26
+
+The heartbeat facade now registers this worker with the existing task-drain gate.
+Enabled maintenance awaits reconstruction during startup. Shutdown and listener
+close release its live-authority subscription; coordinator shutdown retains
+ownership of cancellation and in-flight work.
+
+The periodic orphan-recovery caller now passes `skipNativeResponsePresentation`.
+The reconciler skips its direct repair call and passes the same option into
+canonical finalizer replay. The finalizer skips only its already-committed response
+repair in that mode. Fresh finalization still delivers immediately. Explicit
+recovery and startup recovery keep their default behavior. Governed-review
+presentation and other native finalization duties remain separate.
+
+All 66 startup tests pass, including disabled maintenance and close subscription
+registration. Two real PostgreSQL regressions verify that both periodic entry
+points leave the response unmaterialized, and the worker then creates exactly one
+publication from the accepted result. Log: `/tmp/sleep48-wiring-tests.log`.
+Workspace typecheck passes (`/tmp/sleep48-full-typecheck.log`). The full local suite
+is still running and has reported embedded PostgreSQL initialization failures;
+its final result and build status remain pending. No full-suite or remote check
+acceptance is claimed at this checkpoint.

@@ -7,6 +7,11 @@ import { onCommittedChatResponseAuthorityRegistered } from "../durable-chat-wake
 import { registerScopedDeadlineWork } from "../scoped-deadline-work.js";
 import { recoverCommittedNativeChatResponse } from "./native-run-finalizer.js";
 
+export function registerNativeResponsePresentationWork(db: Db,
+  coordinator: ReturnType<typeof createDeliveryWorkCoordinator>, canRun: () => boolean) {
+  return nativeResponsePresentationWork(db).register(coordinator, canRun);
+}
+
 type Entry = { id: string; companyId: string; issueId: string; agentId: string; dueAt: number };
 
 export function nativeResponsePresentationWork(db: Db) {

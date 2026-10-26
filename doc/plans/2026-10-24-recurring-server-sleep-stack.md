@@ -2339,3 +2339,14 @@ runs; server types pass. A real source-row lock verifies retry across drain.
 Earlier harness/test failures and the 10,000-unpresented-row discovery measurements
 are preserved in the response audit. No startup wiring, periodic removal, PR
 publication, remote acceptance, or whole-instance sleep is claimed yet.
+
+
+## Slice 48 startup integration, 2026-10-26
+
+The response worker now registers under enabled maintenance and releases its
+subscription during shutdown. Periodic recovery skips both its direct repair and
+already-committed finalizer replay; fresh finalization and explicit recovery stay
+active. The startup suite passes 66 cases, and two database regressions confirm
+periodic calls defer to the new worker. Workspace types pass. Full local tests
+remain in progress with embedded-database initialization failures; build and
+remote checks remain pending. The stack goal is still incomplete.
