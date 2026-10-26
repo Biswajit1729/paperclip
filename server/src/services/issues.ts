@@ -7785,6 +7785,7 @@ export function issueService(db: Db) {
       if (isExplicitContinuationRetryClaim(issue, run)) return false;
 
       await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: issue.companyId, issueId });
+      await notifyNativeStatusReassessment(tx, { companyId: issue.companyId, issueId });
       const updated = await tx
         .update(issues)
         .set({
@@ -7859,6 +7860,7 @@ export function issueService(db: Db) {
       }
 
       await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: issue.companyId, issueId });
+      await notifyNativeStatusReassessment(tx, { companyId: issue.companyId, issueId });
       const updated = await tx
         .update(issues)
         .set({
@@ -12271,6 +12273,7 @@ export function issueService(db: Db) {
         const releaseStatus =
           existing.status === "in_progress" ? "todo" : existing.status;
         await notifyTerminalWorkspaceWork(tx, `issue:${id}`);
+        await notifyNativeStatusReassessment(tx, { companyId: existing.companyId, issueId: id });
         const updated = await tx
           .update(issues)
           .set({
@@ -12322,6 +12325,9 @@ export function issueService(db: Db) {
         }
 
         await notifyTerminalWorkspaceWork(tx, `issue:${id}`);
+        if (existing.checkoutRunId || existing.executionRunId || options.clearAssignee) {
+          await notifyNativeStatusReassessment(tx, { companyId: existing.companyId, issueId: id });
+        }
         if (existing.checkoutRunId || existing.executionRunId) {
           await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: existing.companyId, issueId: id });
         }

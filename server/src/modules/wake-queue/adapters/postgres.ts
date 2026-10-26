@@ -1,3 +1,4 @@
+import { notifyNativeStatusReassessment } from "../../../services/native-status-reassessment-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "../../../services/unsafe-workspace-export-notifications.js";
 import { notifyChatInboundWakeNotices } from "../../../services/chat-inbound-wake-notice-notifications.js";
 import { notifyChatRunMilestones } from "../../../services/chat-run-milestone-notifications.js";
@@ -1127,6 +1128,7 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
         for (const issue of candidateIssues) {
           if (issue.executionRunId === run.id || issue.checkoutRunId === run.id) {
             await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: input.companyId, issueId: issue.id });
+            await notifyNativeStatusReassessment(tx, { companyId: input.companyId, issueId: issue.id });
           }
         }
         // Two separate updates: a retry can move `executionRunId` to a new run

@@ -1,3 +1,4 @@
+import { createPostgresWakeQueueAdapter } from "../modules/wake-queue/adapters/postgres.js";
 import { withNativeWorkspaceFinalizationOwnership } from "../services/native-runtime/native-workspace-finalization-ownership.js";
 import express from "express";
 import { appendHeartbeatRunEvent } from "../services/heartbeat-run-events.js";
@@ -124,6 +125,67 @@ describe("native reassessment worker lifecycle", () => {
       status: "succeeded", exitCode: 0, cwd: process.cwd(), finishedAt: new Date() });
     return { issueId, runId, workProductId, decisionId: committed.decision.id };
   }
+
+  it.each(["force release", "release", "terminal execution", "terminal checkout", "queue release"] as const)(
+    "wakes dormant reassessment from real %s", async action => {
+      const seeded = await seedReview();
+      const [other] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "failed",
+        runtimeMode: "legacy", contextSnapshot: { issueId: seeded.issueId }, finishedAt: new Date() }).returning();
+      await db.update(issues).set({ executionRunId: other.id, checkoutRunId: other.id }).where(eq(issues.id, seeded.issueId));
+      await dismissAutomaticCompletionReviews(db, seeded.issueId);
+      await start(); await flush(); await quiet();
+      expect(await status(seeded.issueId)).toBe("in_review");
+      const service = issueService(db);
+      if (action === "force release") await service.adminForceRelease(seeded.issueId);
+      if (action === "release") await service.release(seeded.issueId);
+      if (action === "terminal execution") await service.clearExecutionRunIfTerminal(seeded.issueId);
+      if (action === "terminal checkout") await service.clearCheckoutRunIfTerminal(seeded.issueId);
+      if (action === "queue release") {
+        const adapter = createPostgresWakeQueueAdapter(db, {
+          resolveResponsibleUserId: async () => "reassessment-user",
+          getRoutineEnv: async () => ({ routineId: null, env: null, responsibleUserId: null }),
+          resolveSessionBeforeForWakeup: async () => null,
+        });
+        await adapter.withIssueExecutionLock({ companyId, runId: other.id, now: new Date() },
+          async () => ({ outcome: { kind: "released" }, postCommitEffects: [] }));
+      }
+      await flush();
+      expect(await status(seeded.issueId)).toBe(action === "release" ? "in_review" : "done");
+      const decisions = await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, seeded.issueId));
+      expect(decisions).toHaveLength(2);
+      if (action === "release") {
+        expect((await service.getById(seeded.issueId))!.assigneeAgentId).toBeNull();
+        expect(decisions.find(decision => decision.id !== seeded.decisionId)?.reasonCode).toBe("prior_status_terminal_preserved");
+      }
+      await quiet();
+    },
+  );
+
+  it("retains dormant reassessment through outer force-release rollback and commit", async () => {
+    const seeded = await seedReview();
+    const [other] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "failed",
+      runtimeMode: "legacy", contextSnapshot: { issueId: seeded.issueId }, finishedAt: new Date() }).returning();
+    await db.update(issues).set({ executionRunId: other.id }).where(eq(issues.id, seeded.issueId));
+    await dismissAutomaticCompletionReviews(db, seeded.issueId);
+    await start(); await flush(); await quiet();
+    const rollback = new Error("rollback release");
+    await expect(db.transaction(async tx => {
+      await issueService(tx as unknown as typeof db).adminForceRelease(seeded.issueId);
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(await status(seeded.issueId)).toBe("in_review");
+      throw rollback;
+    })).rejects.toBe(rollback);
+    await flush(); await quiet();
+    expect((await issueService(db).getById(seeded.issueId))!.executionRunId).toBe(other.id);
+    await db.transaction(async tx => {
+      await issueService(tx as unknown as typeof db).adminForceRelease(seeded.issueId);
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(await status(seeded.issueId)).toBe("in_review");
+    });
+    await flush();
+    expect(await status(seeded.issueId)).toBe("done");
+    await quiet();
+  });
 
   it("bounds discovery by pages and drains a real reassessment backlog to SQL quiet", async () => {
     const backlog = [];

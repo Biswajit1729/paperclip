@@ -965,3 +965,42 @@ its removal because it changes shared OS resources and PID checks can race.
 Explicit approval for those exact IDs is pending; no cleanup was executed. This
 blocks local embedded-database acceptance, not dedicated PostgreSQL validation or
 remote PR validation. The full goal is still incomplete and no merge is authorized.
+
+
+## Review repair: direct claim release
+
+Draft #17709 at 91a6c14170 passed all 52 CI checks but Greptile scored 4/5 and
+identified a missing adminForceRelease wake (discussion 4376190896). This invalidates
+the preceding producer-closeout claim for direct task-claim writers. The ordinary
+task update method did not cover their separate transactions.
+
+Six real regressions fail before repair: operator force-release, ordinary release,
+terminal execution cleanup, terminal checkout cleanup, the queue's actual release
+adapter, and outer force-release commit after rollback. Each starts with a retired
+review dormant behind a different execution owner. The missing notification leaves
+it untouched after that owner is released. /tmp/sleep50-release-before.log/.status
+retains all six failures.
+
+The release owners now await task-scoped reassessment intent before their existing
+writes. The audit also covers queued-comment release, watchdog settlement, legacy
+and native recovery, safe replacement, tree restoration and stale-lock cleanup.
+Existing run-dispatch and queue branches that already notify task-wide milestones
+retain that common hook. Case-handoff release already delegates to issueService
+update. Rare member-archive bulk reassignment signals its company. No database
+transaction wrappers, recurring retries or provider logic are added.
+
+The first repaired run passed 36/37 cases. Ordinary release deliberately clears
+the assignee, which advances task authority; the worker correctly appended a
+preserve decision instead of completing the task. The test now requires that
+preserved status, cleared assignee and exactly one additional decision. The initial
+incorrect completion expectation remains recorded in /tmp/sleep50-release-after.log.
+All 37 lifecycle cases now pass, including outer rollback/commit and SQL quiet.
+
+Affected consumer suites pass: queue 25, queued comments 5, execution control 5,
+safe replacement 59, access 18; native executor/restart, legacy recovery and tree
+unit selection 829 pass with 15 known embedded-DB cases excluded. Thus 978 distinct
+selected cases pass after repair. This is not full local-suite acceptance. Server
+typecheck passes. Evidence: /tmp/sleep50-release-final.log/.status,
+/tmp/sleep50-release-{queue,queued_comment,control,safe,access,runtime,types}.log
+and .status. All launched command handles are terminal. Fresh-head remote CI and
+review remain required. The full stack and its earlier unresolved gates remain open.

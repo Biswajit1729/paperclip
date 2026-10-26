@@ -1,3 +1,4 @@
+import { notifyNativeStatusReassessment } from "../native-status-reassessment-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "../unsafe-workspace-export-notifications.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { logger } from "../../middleware/logger.js";
@@ -487,6 +488,7 @@ export async function reconcileSafeNativeReplacements(
           .update(heartbeatRuns)
           .set({ executionStatusDeliveryId: randomUUID() })
           .where(eq(heartbeatRuns.id, run.id));
+        await notifyNativeStatusReassessment(tx, { companyId: run.companyId, issueId: task.id });
         // The successor gets task authority only through the existing admission gate.
         await tx
           .update(issues)

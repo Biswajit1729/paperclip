@@ -1,3 +1,4 @@
+import { notifyNativeStatusReassessment } from "../native-status-reassessment-notifications.js";
 import { notifyNativeFinalizationWork } from "../native-finalization-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "../unsafe-workspace-export-notifications.js";
 import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-preservation-notifications.js";
@@ -9659,6 +9660,7 @@ async function executePaperclipNativeSessionWithinScope(
           stillOwnsTask &&
           phase === "terminal_failure"
         ) {
+          await notifyNativeStatusReassessment(tx, { companyId: input.execution.binding.companyId, issueId: input.execution.binding.issueId });
           await tx
             .update(issues)
             .set({ executionRunId: null, checkoutRunId: null, updatedAt: now })

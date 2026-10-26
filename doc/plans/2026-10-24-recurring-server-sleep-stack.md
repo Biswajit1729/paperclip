@@ -2589,3 +2589,15 @@ The owner audit records the intentional separation of reassessment from independ
 workspace settlement and the retained failure evidence. Remaining producer/authority
 audit, full acceptance, publication, remote gates and all other original duties
 remain incomplete. Nothing merged; the goal remains active.
+
+
+Slice 50 is draft [#17709](https://github.com/paperclipai/paperclip/pull/17709),
+based on #17702. Initial head 91a6c14170 passed all 52 CI checks; Greptile 4/5
+found direct claim-release writers missing reassessment notifications. Six real
+regressions reproduced the gap. Task-scoped signals now cover their existing
+transactions; the repaired selection passes 978 cases and server types, with
+15 embedded-DB runtime cases excluded for the diagnosed host semaphore exhaustion.
+The owner audit preserves the wrong initial ordinary-release completion assertion
+and its authority-preserving correction. Fresh-head gates remain pending; nothing
+merged. Earlier E2E failures on #17490/#17572 and voice findings on #17576/#17580
+were revalidated and remain unresolved. All original remaining duties stay in scope.

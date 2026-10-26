@@ -1,3 +1,4 @@
+import { notifyNativeStatusReassessment } from "../native-status-reassessment-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "../unsafe-workspace-export-notifications.js";
 import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-preservation-notifications.js";
 import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
@@ -6418,6 +6419,7 @@ export function recoveryService(
 
       const updated = await db.transaction(async tx => {
         await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: issue.companyId, issueId: issue.id });
+        await notifyNativeStatusReassessment(tx, { companyId: issue.companyId, issueId: issue.id });
         return tx
         .update(issues)
         .set({

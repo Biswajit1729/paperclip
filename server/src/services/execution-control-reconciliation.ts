@@ -1,3 +1,4 @@
+import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
 import { notifyNativeFinalizationWork } from "./native-finalization-notifications.js";
 import { notifyUnsafeWorkspaceExportRunChange } from "./unsafe-workspace-export-notifications.js";
 import { notifyCancelledWorkspacePreservation } from "./cancelled-workspace-preservation-notifications.js";
@@ -243,6 +244,7 @@ export async function reconcileAbandonedExecutionControl(
             (task.checkoutRunId && task.checkoutRunId !== run.id)
           )
             return true;
+          await notifyNativeStatusReassessment(tx, { companyId: task.companyId, issueId: task.id });
           await tx
             .update(issues)
             .set({ executionRunId: null, checkoutRunId: null, updatedAt: now })

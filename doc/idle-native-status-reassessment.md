@@ -12,6 +12,7 @@ source of truth. No new queue table or database migration is required.
 | --- | --- |
 | Work-product creation, update, import, removal, attachment or trusted promotion | Work-product/task services and the promotion transaction |
 | Task status/version, assignment, execution state or blocker configuration | Task mutation transaction |
+| Direct claim release, terminal/stale lock cleanup, queue release, recovery or tree restoration | Existing task-scoped claim mutation transaction |
 | Automatic review retirement | Automatic completion review owner |
 | Approval/link or interaction outcome, including OAuth card creation/reopening | Approval/review-state notification boundaries |
 | Accepted/rejected control-plane run evidence | Run-event append transaction |
@@ -66,7 +67,11 @@ owners; this change does not add a distributed notification transport.
 
 The corpus/startup/lifecycle selection passes 246 tests; the existing native
 finalization and retained-cleanup consumers pass 32 tests. Workspace typecheck
-and build pass. Earlier producer suites exercise commit/rollback, first real
+and build pass. A review-driven repair adds six real claim-release regressions; the repaired
+selection passes 978 lifecycle and consumer cases, with 15 embedded-DB runtime
+cases excluded for the host limitation below. Ordinary release preserves its new
+assignment authority instead of automatically completing the old review.
+Earlier producer suites exercise commit/rollback, first real
 writes, failures, dormant history, saved deadlines and authority races.
 
 A 10,000-task selected-history fixture returns no company candidates in about
