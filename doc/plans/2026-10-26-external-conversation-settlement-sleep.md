@@ -144,6 +144,18 @@ Material failures were retained during development:
   test needed its existing created-at cutoff to exclude retained test fixtures.
 - Monitor regressions exposed premature readiness and lost deferred/failed
   handoffs. Restart testing then exposed the lack of automatic key deduplication.
+- Review caught a restart edge case: the monitor limit reason can change from
+  attempts exhausted to timeout after admission but before clear. Two regression
+  cases failed before the fix. Recovery now uses the monitor schedule as identity
+  and recognizes both legacy reason-bearing receipt keys, retaining company,
+  assignee, issue, and admitted-run binding. A different schedule is not reused.
+- CI shard 1 exposed a stale cancellation fault injection: spying on root
+  `db.update` no longer fails writes owned by transactions. The failure reproduced
+  locally. The test now injects a PostgreSQL failure at the target run's cancelled
+  transition and checks that the process stops even though the row stays running.
+- The first CI serialized shard 5 run timed out on the first agent live-run route
+  history test (15 seconds). Its unchanged 92-test suite passed locally; that does
+  not establish a root cause. Fresh CI after the recovery fix remains required.
 - A board escalation expectation incorrectly treated its new comment as finished.
   The test now preserves the existing policy; comment and clear are atomic.
 - Additional verification caught a nullable guard type, an extra query parenthesis,

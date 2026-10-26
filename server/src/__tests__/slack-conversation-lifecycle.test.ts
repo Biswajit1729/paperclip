@@ -145,18 +145,44 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(await pendingExternalConversationSettlement(db, f.companyId, f.issueId)).toBe(false);
   });
 
-  it("consumes a monitor after restart without re-admitting its already accepted recovery", async () => {
+  it.each(["original limit", "later timeout", "stable key"])("consumes accepted monitor recovery after restart (%s)", async scenario => {
     const f = await fixture();
     const enqueue = vi.fn<HeartbeatSchedulingDependencies["enqueueWakeup"]>(async () => null);
     const scheduler = await exhaustedMonitor(f, enqueue);
     const [issue] = await db.select().from(issues).where(eq(issues.id, f.issueId));
     await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId,
       source: "automation", status: "completed", runId: f.runId, reason: "issue_monitor_recovery",
-      idempotencyKey: `issue-monitor-recovery:${f.issueId}:max_attempts_exhausted:${issue!.monitorNextCheckAt!.toISOString()}`,
+      idempotencyKey: scenario === "stable key"
+        ? `issue-monitor-recovery:${f.issueId}:${issue!.monitorNextCheckAt!.toISOString()}`
+        : `issue-monitor-recovery:${f.issueId}:max_attempts_exhausted:${issue!.monitorNextCheckAt!.toISOString()}`,
       payload: { issueId: f.issueId } });
-    await scheduler.triggerIssueMonitor(f.issueId);
+    const now = new Date();
+    if (scenario === "later timeout") {
+      const policy = issue!.executionPolicy!;
+      await db.update(issues).set({ executionPolicy: { ...policy,
+        monitor: { ...policy.monitor as object, timeoutAt: new Date(now.getTime() - 1).toISOString() },
+      } }).where(eq(issues.id, f.issueId));
+    }
+    await scheduler.triggerIssueMonitor(f.issueId, { now });
     expect(enqueue).not.toHaveBeenCalled();
     expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]!.monitorNextCheckAt).toBeNull();
+  });
+
+  it("does not consume a recovery receipt for a different monitor schedule", async () => {
+    const f = await fixture();
+    const enqueue = vi.fn<HeartbeatSchedulingDependencies["enqueueWakeup"]>(async () => null);
+    const scheduler = await exhaustedMonitor(f, enqueue);
+    const [issue] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+    const previousSchedule = new Date(issue!.monitorNextCheckAt!.getTime() - 60_000).toISOString();
+    await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId,
+      source: "automation", status: "completed", runId: f.runId, reason: "issue_monitor_recovery",
+      idempotencyKey: `issue-monitor-recovery:${f.issueId}:${previousSchedule}`,
+      payload: { issueId: f.issueId } });
+    await scheduler.triggerIssueMonitor(f.issueId);
+    expect(enqueue).toHaveBeenCalledOnce();
+    expect(enqueue.mock.calls[0]![1]?.idempotencyKey).toBe(
+      `issue-monitor-recovery:${f.issueId}:${issue!.monitorNextCheckAt!.toISOString()}`);
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]!.monitorNextCheckAt).not.toBeNull();
   });
 
   describe("settlement worker", () => {

@@ -385,7 +385,14 @@ export function createHeartbeatScheduling(
       return;
     }
 
-    const recoveryKey = `issue-monitor-recovery:${input.claimed.id}:${input.clearReason}:${input.scheduledAtIso}`;
+    const recoveryKey = `issue-monitor-recovery:${input.claimed.id}:${input.scheduledAtIso}`;
+    // The limit reason may change before a failed clear is retried. The
+    // scheduled monitor identifies the obligation, including older receipts.
+    const acceptedRecoveryKeys = [
+      recoveryKey,
+      `issue-monitor-recovery:${input.claimed.id}:max_attempts_exhausted:${input.scheduledAtIso}`,
+      `issue-monitor-recovery:${input.claimed.id}:timeout_exceeded:${input.scheduledAtIso}`,
+    ];
     // A saved key alone does not deduplicate enqueueWakeup. Reuse a receipt
     // bound to an admitted run before retrying a handoff after restart. The
     // monitor claim guard fences competing claimants at queue admission.
@@ -397,7 +404,7 @@ export function createHeartbeatScheduling(
           ${heartbeatRuns.nativeIssueId}::text) = ${input.claimed.id}`))
       .where(and(eq(agentWakeupRequests.companyId, input.claimed.companyId),
         eq(agentWakeupRequests.agentId, input.claimed.assigneeAgentId!),
-        eq(agentWakeupRequests.idempotencyKey, recoveryKey),
+        inArray(agentWakeupRequests.idempotencyKey, acceptedRecoveryKeys),
         eq(agentWakeupRequests.reason, "issue_monitor_recovery"),
         sql`${agentWakeupRequests.payload}->>'issueId' = ${input.claimed.id}`,
         sql`${agentWakeupRequests.status} <> 'skipped'`)).limit(1);
