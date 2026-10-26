@@ -867,25 +867,33 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   // is on but no managed sandbox is available; a render must not throw, so this
   // resolution catches that case and resolves no login environment. The Test
   // mutation surfaces the same case as a fail-closed error.
-  const effectiveLoginEnvironmentId = useMemo(() => {
-    try {
-      return resolveAdapterTestEnvironmentId({
-        agentDefaultEnvironmentId: rawCurrentDefaultEnvironmentId || null,
-        instanceDefaultEnvironmentId: instanceSettings?.defaultEnvironmentId ?? null,
-        localDefaultEnvironmentId: resolveLocalDefaultEnvironmentId(environments),
-        managedSandboxOnly: experimentalSettings?.enableManagedSandboxOnly === true,
-        managedSandboxEnvironmentId: resolveManagedSandboxEnvironmentId(environments),
-        // The policy hides the local environment, so an agent default that still
-        // points at the hidden local row names no visible environment. Pass the
-        // visible ids so the resolver redirects that stale local default to the
-        // managed sandbox instead of the hidden local id.
-        visibleEnvironmentIds: environments.map((environment) => environment.id),
-      });
-    } catch {
-      return null;
-    }
+  const savedDefaultEnvironmentId = isCreate ? null : props.agent.defaultEnvironmentId ?? null;
+  const { effectiveLoginEnvironmentId, savedLoginEnvironmentId } = useMemo(() => {
+    const resolve = (agentDefaultEnvironmentId: string | null) => {
+      try {
+        return resolveAdapterTestEnvironmentId({
+          agentDefaultEnvironmentId,
+          instanceDefaultEnvironmentId: instanceSettings?.defaultEnvironmentId ?? null,
+          localDefaultEnvironmentId: resolveLocalDefaultEnvironmentId(environments),
+          managedSandboxOnly: experimentalSettings?.enableManagedSandboxOnly === true,
+          managedSandboxEnvironmentId: resolveManagedSandboxEnvironmentId(environments),
+          // The policy hides the local environment, so an agent default that still
+          // points at the hidden local row names no visible environment. Pass the
+          // visible ids so the resolver redirects that stale local default to the
+          // managed sandbox instead of the hidden local id.
+          visibleEnvironmentIds: environments.map((environment) => environment.id),
+        });
+      } catch {
+        return null;
+      }
+    };
+    return {
+      effectiveLoginEnvironmentId: resolve(rawCurrentDefaultEnvironmentId || null),
+      savedLoginEnvironmentId: resolve(savedDefaultEnvironmentId),
+    };
   }, [
     rawCurrentDefaultEnvironmentId,
+    savedDefaultEnvironmentId,
     instanceSettings?.defaultEnvironmentId,
     environments,
     experimentalSettings?.enableManagedSandboxOnly,
@@ -897,6 +905,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const nativeRunnerAvailability = runnerDiscovery.data?.find(item => item.type === "paperclip_runner");
   const upgradeEnvironment = forcedKubernetes ? kubernetesEnvironment : effectiveLoginEnvironment;
   const upgradeEnvironmentId = upgradeEnvironment?.id ?? null;
+  const upgradeEnvironmentChanged = !isCreate && !forcedKubernetes
+    && effectiveLoginEnvironmentId !== savedLoginEnvironmentId;
   const canQualifyRunnerUpgrade = upgradeEnvironment?.status === "active"
     && canQualifyRunnerEnvironment(upgradeEnvironment)
     && Boolean(runnerAvailability && !runnerAvailability.disabled && !runnerAvailability.overriddenBuiltin)
@@ -913,7 +923,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     && !runnerDiscovery.isError
     && (runnerAvailability?.defaultRunner === "paperclip" || canQualifyRunnerUpgrade);
   const upgradeRunner = async () => {
-    if (isCreate || runnerUpgradePending) return;
+    if (isCreate || runnerUpgradePending || upgradeEnvironmentChanged) return;
     const agentId = props.agent.id;
     setRunnerUpgrade({ agentId, status: "pending" });
     try {
@@ -929,7 +939,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         const qualified = await qualifyRunnerEnvironment({
           adapterType: harnessType,
           readAdapters: () => adaptersApi.list({ companyId: selectedCompanyId, environmentId: upgradeEnvironmentId }),
-          probeEnvironment: () => environmentsApi.probe(upgradeEnvironmentId, selectedCompanyId),
+          probeEnvironment: () => agentsApi.qualifyRunner(agentId, upgradeEnvironmentId, selectedCompanyId),
           isCurrent: () => upgradeTargetRef.current === pendingTarget,
         });
         if (!qualified) throw new Error("Agent settings changed during verification. Retry the upgrade with the current settings.");
@@ -1578,9 +1588,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 <p className="text-xs text-muted-foreground">The upgrade will verify your computer first. This can take a few minutes.</p>
               ) : null}
               {upgradeWarnings.map(warning => <p key={warning.field} className="text-xs text-muted-foreground">{warning.message}</p>)}
-              {isDirty ? <p className="text-xs text-muted-foreground">Your unsaved changes will be included.</p> : null}
+              {upgradeEnvironmentChanged ? (
+                <p className="text-xs text-muted-foreground">Save your computer change before upgrading the runner.</p>
+              ) : isDirty ? <p className="text-xs text-muted-foreground">Your unsaved changes will be included.</p> : null}
             </div>
-            <Button size="sm" className="self-end sm:self-auto" onClick={upgradeRunner} disabled={runnerUpgradePending || (!isCreate && props.isSaving)}>
+            <Button size="sm" className="self-end sm:self-auto" onClick={upgradeRunner} disabled={runnerUpgradePending || upgradeEnvironmentChanged || (!isCreate && props.isSaving)}>
               {runnerUpgradePending ? <Loader2 className="size-4 animate-spin" /> : null}
               {runnerUpgradePending ? "Upgrading…" : "Upgrade runner"}
             </Button>
@@ -3865,7 +3877,7 @@ export function AdapterTypeDropdown({
     [...listAdapterOptions(type => adapterLabels[type] ?? getAdapterLabel(type)),
       ...(openAiDotEnabled ? [{ value: "openai_dot", label: "OpenAI Dot", experimental: true, comingSoon: false }] : []),
       ...(museEnabled ? [{ value: "muse", label: "Muse — Personal agent", experimental: true, comingSoon: false }] : []),
-    ].filter(item => (item.value !== "paperclip_runner" || nativeRunnerEnabled) && !disabledTypes.has(item.value))
+    ].filter(item => !item.comingSoon && (item.value !== "paperclip_runner" || nativeRunnerEnabled) && !disabledTypes.has(item.value))
       .sort((a, b) => Number(a.value === "paperclip_runner") - Number(b.value === "paperclip_runner")),
     [disabledTypes, openAiDotEnabled, nativeRunnerEnabled, museEnabled]);
   return <SelectPopover aria-label="Harness" value={value} onValueChange={onChange}
@@ -3874,10 +3886,9 @@ export function AdapterTypeDropdown({
       <span className="truncate">{adapterLabels[value] ?? getAdapterLabel(value)}</span>
       {selectedDisplay.experimental && <ExperimentalBadge />}
     </span>}
-    options={adapterList.map(item => ({ value: item.value, disabled: item.comingSoon,
+    options={adapterList.map(item => ({ value: item.value,
       group: item.value === "paperclip_runner" ? "Advanced" : undefined,
       label: <span className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="inline-flex shrink-0"><AdapterMark type={item.value} className="size-4" /></span><span>{item.label}</span>{item.experimental && <ExperimentalBadge />}</span>,
-      suffix: item.comingSoon ? <span className="text-(length:--text-nano) text-muted-foreground">Coming soon</span> : undefined,
     }))} />;
 }
 
