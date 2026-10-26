@@ -24,12 +24,19 @@ PostgreSQL microsecond timestamps. Before the repair, the eligible workspace was
 never archived. After the repair, the full workspace service and terminal worker
 selection passes all 87 tests, including bounded rotation under continuous churn,
 changed rows behind the cursor, failed-page recovery, quiet workers, and shutdown.
-The service suite now supports the repository's validated disposable external
-PostgreSQL URL so this path executes where embedded PostgreSQL is unavailable.
-The database connection closes during teardown. Server typechecking passes.
+The service suite accepts the repository's validated disposable external
+PostgreSQL URL. Setup applies pending migrations before opening the test client,
+then clears fixture tables before the first test as well as after each test. This
+supports a fresh database and reuse after an interrupted test run. The database
+connection closes during teardown. Server typechecking passes.
 
 This fixes recovery progress. It does not establish provider suspension or change
 which active or unresolved resources prevent instance sleep.
 
 Workspace-wide typechecking and the production build also pass. Full sharded CI
 and fresh review remain required before this PR is ready.
+
+Review follow-up reproduced the missing-schema failure against a newly created,
+unmigrated disposable database. The setup repair migrates that same database
+inside the suite; the full workspace-service selection then runs without manual
+schema preparation. The production cursor implementation is unchanged.
