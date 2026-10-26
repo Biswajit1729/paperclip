@@ -1,4 +1,6 @@
 import express from "express";
+import { appendHeartbeatRunEvent } from "../services/heartbeat-run-events.js";
+import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -121,6 +123,67 @@ describe("native reassessment worker lifecycle", () => {
       status: "succeeded", exitCode: 0, cwd: process.cwd(), finishedAt: new Date() });
     return { issueId, runId, workProductId, decisionId: committed.decision.id };
   }
+
+  it.each(["ordinary", "native source"] as const)("wakes from a committed control-plane evidence event through the %s append path", async path => {
+    const seeded = await seedReview("event:1");
+    await vi.advanceTimersByTimeAsync(1000);
+    await db.update(issueWorkProducts).set({ updatedAt: new Date() }).where(eq(issueWorkProducts.id, seeded.workProductId));
+    await start(); await flush(); await quiet();
+    const prpEvent = { sourceKind: "control_plane", payload: { evidenceOutcome: " accepted " } };
+    const input = { companyId, agentId, runId: seeded.runId, eventType: "evidence.recorded", payload: { prpEvent },
+      ...(path === "native source" ? { nativeSource: { sourceInstanceId: randomUUID(), sourceEventId: randomUUID(),
+        sourceSeq: 1, protocolSchemaVersion: 1, canonicalPayload: prpEvent } } : {}) };
+    expect((await appendHeartbeatRunEvent(db, input)).disposition).toBe("committed");
+    await flush();
+    expect(await status(seeded.issueId)).toBe("done");
+    if (path === "native source") expect((await appendHeartbeatRunEvent(db, input)).disposition).toBe("duplicate");
+    expect(await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, seeded.issueId))).toHaveLength(2);
+    await quiet();
+  });
+
+  it("preserves event evidence until outer commit and ignores rollback", async () => {
+    const seeded = await seedReview("event:1");
+    await vi.advanceTimersByTimeAsync(1000);
+    await db.update(issueWorkProducts).set({ updatedAt: new Date() }).where(eq(issueWorkProducts.id, seeded.workProductId));
+    await start(); await flush(); await quiet();
+    const write = async (tx: typeof db) => {
+      await appendHeartbeatRunEvent(tx, { companyId, agentId, runId: seeded.runId, eventType: "evidence.recorded",
+        payload: { prpEvent: { sourceKind: "control_plane", payload: { evidenceOutcome: "accepted" } } } });
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(await status(seeded.issueId)).toBe("in_review");
+    };
+    await expect(db.transaction(async tx => {
+      await write(tx as unknown as typeof db); throw new Error("rollback event evidence");
+    })).rejects.toThrow("rollback event evidence");
+    await flush(); await quiet();
+    expect(await status(seeded.issueId)).toBe("in_review");
+    await db.transaction(tx => write(tx as unknown as typeof db));
+    await flush();
+    expect(await status(seeded.issueId)).toBe("done");
+    await quiet();
+  });
+
+  it("keeps ordinary and runner-authored logs from waking reassessment", async () => {
+    const seeded = await seedReview("event:3");
+    await vi.advanceTimersByTimeAsync(1000);
+    await db.update(issueWorkProducts).set({ updatedAt: new Date() }).where(eq(issueWorkProducts.id, seeded.workProductId));
+    await start(); await flush(); await quiet();
+    const wakes = vi.fn();
+    const stop = subscribeDeliveryWork(db, DELIVERY_QUEUES.nativeStatusReassessment, wakes);
+    try {
+      await appendHeartbeatRunEvent(db, { companyId, agentId, runId: seeded.runId, eventType: "log", message: "Still working" });
+      await appendHeartbeatRunEvent(db, { companyId, agentId, runId: seeded.runId, eventType: "evidence.recorded",
+        payload: { prpEvent: { sourceKind: "runner", payload: { evidenceOutcome: "accepted" } } } });
+      expect(wakes).not.toHaveBeenCalled();
+      await quiet();
+      expect(await status(seeded.issueId)).toBe("in_review");
+      await appendHeartbeatRunEvent(db, { companyId, agentId, runId: seeded.runId, eventType: "evidence.recorded",
+        payload: { prpEvent: { sourceKind: "control_plane", payload: { evidenceOutcome: "accepted" } } } });
+      await flush();
+      expect(await status(seeded.issueId)).toBe("done");
+      await quiet();
+    } finally { stop(); }
+  });
 
   it("wakes when a real workspace finalization settles after a quiet failure", async () => {
     const seeded = await seedReview();

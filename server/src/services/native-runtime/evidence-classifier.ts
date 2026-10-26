@@ -102,6 +102,13 @@ function uuidRef(ref: string, prefixes: string[]): string | null {
   return null;
 }
 
+export function readNativeEventEvidenceOutcome(value: unknown): "accepted" | "rejected" | null {
+  const event = record(value);
+  if (event.sourceKind !== "control_plane") return null;
+  const outcome = text(record(event.payload).evidenceOutcome);
+  return outcome === "accepted" || outcome === "rejected" ? outcome : null;
+}
+
 async function classifyEvidenceRef(input: {
   db: Db;
   companyId: string;
@@ -135,12 +142,11 @@ async function classifyEvidenceRef(input: {
     if (!event) {
       return { ref: input.ref, kind: "event", outcome: "missing", reasonCode: "durable_run_event_missing", durableRecordId: null };
     }
-    const prpEvent = record(record(event.payload).prpEvent);
-    const evidenceOutcome = text(record(prpEvent.payload).evidenceOutcome);
-    if (prpEvent.sourceKind === "control_plane" && evidenceOutcome === "accepted") {
+    const evidenceOutcome = readNativeEventEvidenceOutcome(record(event.payload).prpEvent);
+    if (evidenceOutcome === "accepted") {
       return { ref: input.ref, kind: "event", outcome: "accepted", reasonCode: "control_plane_evidence_accepted", durableRecordId: String(event.id) };
     }
-    if (prpEvent.sourceKind === "control_plane" && evidenceOutcome === "rejected") {
+    if (evidenceOutcome === "rejected") {
       return { ref: input.ref, kind: "event", outcome: "rejected", reasonCode: "control_plane_evidence_rejected", durableRecordId: String(event.id) };
     }
     return {

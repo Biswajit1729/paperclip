@@ -412,3 +412,47 @@ cost/backlog behavior, lifecycle wiring and remote PR gates. Current scheduled
 commit guards fence coordinator/run ownership and source selection, but the
 retired-review business-fact checks still run before the commit transaction.
 The old periodic reassessment remains enabled until this full slice is ready.
+
+
+## Authoritative run-event producer checkpoint
+
+Event references may become accepted/rejected only when a persisted PRP event
+has `sourceKind: control_plane` and the corresponding evidence verdict. The
+classifier now exposes that existing pure verdict interpretation to the append
+boundary, including its existing whitespace normalization. The append boundary
+registers a run-scoped reassessment signal before the event write for native
+runs. It does not look up a task context or scan evidence consumers to append
+an event. Non-verdict events retain the ordinary atomic single-statement path;
+runner-authored claims do not activate reassessment.
+
+The writer audit found three insertion paths. The native coordinator store accepts
+only `sourceKind: runner` and rejects control-plane events, so its append path
+cannot produce an authoritative verdict and needs no added signal. Scheduled
+retry cancellation inserts ordinary lifecycle diagnostics without PRP evidence.
+The shared append path owns the supported control-plane verdict writes. Event
+rows are otherwise immutable in production; agent/company deletion owns removal
+of their run history rather than producing new evidence for surviving runs.
+
+Four real-append regressions failed before the fix: ordinary append, native-source
+append, outer transaction commit, and authoritative evidence after ordinary/runner
+logs. The repaired tests observe task completion, outer rollback/commit fencing,
+no reassessment signal for ordinary or runner-authored logs, replay idempotency,
+and driver-observed SQL quiet. All 28 lifecycle cases and six existing atomic
+append cases pass. The atomic tests still prove the one-statement ordinary-log
+path and preserve binding/concurrency behavior.
+
+The initial combined run failed three sequencing cases during embedded PostgreSQL
+bootstrap, before assertions. They now accept a validated dedicated external test
+database URL, clean only their own company fixture between cases, and close both
+clients. All three then pass, including concurrent retry receipt deduplication,
+concurrent event allocation, and conflicting replay without cursor drift. Final
+server typecheck passes. This is 37 distinct passing cases across the runs, not
+a successful initial combined run.
+
+Evidence: `/tmp/sleep50-events-before.log` and `.status` (four failures),
+`/tmp/sleep50-events-after.log` and `.status` (34 passes, three bootstrap failures),
+`/tmp/sleep50-events-sequence.log` and `.status` (three passes), and
+`/tmp/sleep50-events-final-types.log` and `.status` (pass). All test handles at
+this checkpoint are terminal. Case-handoff creation/cancellation, remaining
+contract/ownership/authority producers and the full acceptance tasks listed above
+remain outstanding; the old periodic reassessment path is still enabled.
