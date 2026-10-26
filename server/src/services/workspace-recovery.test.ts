@@ -1,3 +1,5 @@
+import { resolveExternalTestDatabaseUrl } from "../__tests__/helpers/external-test-database.js";
+import { DELIVERY_QUEUES, subscribeDeliveryWork } from "./delivery-work-notifications.js";
 import { prepareHeartbeatWorkspace } from "./heartbeat/workspace-preparation.js";
 import { createHeartbeatWorkspaceResolver, resolveExecutionWorkspaceReuseRequestForIssue } from "./heartbeat/workspaces.js";
 import { environmentService } from "./environments.js";
@@ -44,14 +46,18 @@ vi.mock("./environment-execution-target.js", async importOriginal => {
 });
 
 describe("automatic retained workspace recovery", () => {
-  let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
+  let connectionString: string;
   let db: ReturnType<typeof createDb>;
   let root: string;
   const priorHome = process.env.PAPERCLIP_HOME, priorInstance = process.env.PAPERCLIP_INSTANCE_ID;
   beforeAll(async () => {
     root = await mkdtemp(path.join(os.tmpdir(), "workspace-recovery-"));
     process.env.PAPERCLIP_HOME = path.join(root, "home"); process.env.PAPERCLIP_INSTANCE_ID = "recovery";
-    temporary = await startEmbeddedPostgresTestDatabase("workspace-recovery-"); db = createDb(temporary.connectionString);
+    const external = resolveExternalTestDatabaseUrl("PAPERCLIP_WORKSPACE_RECOVERY_TEST_DATABASE_URL");
+    if (!external) temporary = await startEmbeddedPostgresTestDatabase("workspace-recovery-");
+    connectionString = external ?? temporary!.connectionString;
+    db = createDb(connectionString);
   }, 30_000);
   afterAll(async () => {
     await db?.$client.end(); await temporary?.cleanup(); await rm(root, { recursive: true, force: true });
@@ -152,6 +158,21 @@ describe("automatic retained workspace recovery", () => {
     await db.update(issueRecoveryActions).set({ evidence: { ...current.evidence,
       systemRecovery: { ...state, nextAttemptAt: 0 } } }).where(eq(issueRecoveryActions.id, actionId));
   }
+
+  it("publishes the committed finalization barrier after real retained workspace recovery", async () => {
+    const f = await seed();
+    const observed: Array<Promise<Array<{ status: string }>>> = [];
+    const stop = subscribeDeliveryWork(db, DELIVERY_QUEUES.nativeStatusReassessment, () => {
+      observed.push(db.select({ status: workspaceOperations.status }).from(workspaceOperations).where(and(
+        eq(workspaceOperations.companyId, f.companyId), eq(workspaceOperations.heartbeatRunId, f.runId),
+        eq(workspaceOperations.phase, "workspace_finalize"),
+      )).then(rows => rows));
+    });
+    try { await recoverRetainedWorkspace(f.input); } finally { stop(); }
+    expect(readSystemRecovery((await action(f.actionId)).evidence)?.state).toBe("complete");
+    expect(observed.length).toBeGreaterThan(0);
+    expect((await Promise.all(observed)).some(rows => rows.some(row => row.status === "succeeded"))).toBe(true);
+  });
 
   it("re-enters only the existing finalizer for an accepted result, once per intent, preserving failure history", async () => {
     const f = await seed();
@@ -257,7 +278,7 @@ describe("automatic retained workspace recovery", () => {
     expect(pending.status).toBe("running");
     expect(uploads).toBe(2);
     await makeRetryDue(f.actionId);
-    const restarted = createDb(temporary.connectionString);
+    const restarted = createDb(connectionString);
     try { await recoverRetainedWorkspace({ ...f.input, db: restarted }); }
     finally { await restarted.$client.end(); }
     const operations = await db.select().from(workspaceOperations).where(and(
@@ -466,7 +487,7 @@ describe("automatic retained workspace recovery", () => {
     const pending = await action(f.actionId);
     await db.update(issueRecoveryActions).set({ evidence: { ...pending.evidence,
       systemRecovery: { ...readSystemRecovery(pending.evidence), nextAttemptAt: 0 } } }).where(eq(issueRecoveryActions.id, f.actionId));
-    const restarted = createDb(temporary.connectionString);
+    const restarted = createDb(connectionString);
     try {
       await recoverRetainedWorkspace({ ...f.input, db: restarted });
       expect(await hasVerifiedWorkspaceRepair(restarted, await run(f.runId))).toBe(true);
@@ -796,7 +817,7 @@ describe("automatic retained workspace recovery", () => {
     }
     expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toHaveLength(0);
     expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id)))[0].status).toBe("released");
-    const restarted = createDb(temporary.connectionString), onRecovered = vi.fn(async (_source: { id: string }) => {});
+    const restarted = createDb(connectionString), onRecovered = vi.fn(async (_source: { id: string }) => {});
     try {
       await expect.poll(async () => {
         await reconcileRetainedWorkspaces(restarted, f.input.environmentRuntime, onRecovered);

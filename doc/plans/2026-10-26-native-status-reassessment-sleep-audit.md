@@ -359,3 +359,56 @@ proof that all native ownership/run-event writers are covered. Workspace barrier
 producers, remaining run/contract/case-handoff facts, concurrent authority guards,
 current-history/backlog query cost, startup registration and remote PR acceptance
 remain incomplete. Periodic reassessment is deliberately still enabled.
+
+
+## Workspace finalization barrier producer checkpoint
+
+The retired-review path defers when the latest `workspace_finalize` record has
+not succeeded. It deliberately leaves no recovery timer for an in-progress or
+failed barrier, so the actual producer must reactivate it when that fact changes.
+Two PostgreSQL regressions reproduced missing reactivation through the normal
+workspace-operation recorder: failure followed by a later successful export,
+and a successful write inside a caller-owned transaction.
+
+The recorder now routes its initial state insert, successful settlement and failed
+settlement through one local state-write boundary. Only `workspace_finalize`
+operations with a run binding register reassessment intent; other phases retain
+their existing writes. The added transaction contains only the state write and
+notification. Log I/O, the provider callback, and progress/lease updates remain
+outside it. Existing caller-owned transactions retain outer commit semantics.
+The success test keeps the real callback suspended while the worker goes SQL
+quiet, then completes it and observes task completion. The transaction test
+proves no decision before outer commit, no decision after rollback, and successful
+activation after a later commit.
+
+The separate retained-workspace recovery success receipt now signals in its
+existing transaction before the receipt insert and generation update. A test
+runs real retained recovery with temporary files and verifies that the delivered
+notification's reader observes a committed `workspace_finalize: succeeded` row.
+The historical unsafe-export path already had the common finalization signal;
+it now registers that intent before its barrier insert rather than afterward.
+Snapshot and copy-only records use other phases and do not satisfy this barrier.
+Runtime-control orphan reconciliation operates on action-stamped controls; normal
+native workspace finalization uses its own ownership metadata instead.
+
+All 24 worker lifecycle cases pass, and server typecheck passes. The workspace
+operation reconciliation, retained workspace recovery and native status arbiter
+corpus suites pass 170 cases across three fresh PostgreSQL databases. The two
+workspace suites now accept dedicated, validated external test database URLs;
+restart tests reuse that URL, and clients close before fixture teardown. This
+uses the known-working local PostgreSQL installation because embedded bootstrap
+failed in earlier acceptance attempts; no product database is used.
+
+Evidence: `/tmp/sleep50-workspace-before.log` and `.status` (two failures),
+`/tmp/sleep50-workspace-after.log` and `.status` (24 passes),
+`/tmp/sleep50-workspace-consumers.log` and `.status` (170 passes), and
+`/tmp/sleep50-workspace-final-types.log` and `.status` (pass). All launched
+commands at this checkpoint reached terminal status. These are local checks,
+not remote PR acceptance or evidence of host suspension.
+
+Next: finish run-event/case-handoff, completion-contract, ownership and remaining
+interaction producer audit; then verify commit-time business authority, discovery
+cost/backlog behavior, lifecycle wiring and remote PR gates. Current scheduled
+commit guards fence coordinator/run ownership and source selection, but the
+retired-review business-fact checks still run before the commit transaction.
+The old periodic reassessment remains enabled until this full slice is ready.

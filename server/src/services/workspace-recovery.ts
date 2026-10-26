@@ -1,3 +1,4 @@
+import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
 import { writeEnvironmentCleanup } from "./environment-cleanup-notifications.js";
 import { resumePreservedResultFinalization } from "./preserved-result-finalization.js";
 import { and, asc, eq, gt, inArray, ne, or, sql } from "drizzle-orm";
@@ -243,6 +244,7 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
       const next = { ...current!, revision: current!.revision + 1, phase: "reconcile_effects" as const,
         state: "complete" as const, nextAttemptAt: null };
       const activity = await db.transaction(async tx => {
+        await notifyNativeStatusReassessment(tx, input);
         await tx.insert(workspaceOperations).values({ companyId: input.companyId, issueId: input.issueId,
           heartbeatRunId: input.runId, phase: "workspace_finalize", status: "succeeded", finishedAt: new Date(),
           metadata: { owningService: "workspace_recovery", preservationOperationIds: next.preservationOperationIds } });

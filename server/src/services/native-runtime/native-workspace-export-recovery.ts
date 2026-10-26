@@ -92,11 +92,11 @@ async function recoverCandidate(db: Db, candidate: { runId: string; companyId: s
         await ownership.assertHeld();
         // Publish the omission barrier atomically with re-admission. This is
         // explicitly not a receipt claiming that files were copied to the host.
+        await notifyNativeFinalizationWork(tx, { companyId: run.companyId, runId: run.id });
         await tx.insert(workspaceOperations).values({ companyId: run.companyId, heartbeatRunId: run.id, issueId: issue.id,
           phase: "workspace_finalize", status: "succeeded", exitCode: 0, finishedAt: now,
           metadata: { owningService: "native_workspace_finalizer", workspaceSync: { omitted: true, reason: "restore_unsafe_archive", legacy: true } },
         });
-        await notifyNativeFinalizationWork(tx, { companyId: run.companyId, runId: run.id });
         await tx.update(nativeRunFinalizations).set({ phase: "result_accepted", failureCode: null, nextAttemptAt: null,
           failureDetail: { workspaceFinalizeAttempt: 0, legacyUnsafeExportOmitted: { resultId: result.id, recoveredAt: now.toISOString() } }, updatedAt: now,
         }).where(eq(nativeRunFinalizations.runId, run.id));

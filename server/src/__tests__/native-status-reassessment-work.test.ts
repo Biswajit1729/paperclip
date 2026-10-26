@@ -1,4 +1,8 @@
 import express from "express";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { workspaceOperationService } from "../services/workspace-operations.js";
 import request from "supertest";
 import { LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
 import { issueRoutes } from "../routes/issues.js";
@@ -28,16 +32,25 @@ describe("native reassessment worker lifecycle", () => {
   let db: ReturnType<typeof createDb>;
   let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
   const companyId = randomUUID(), agentId = randomUUID();
+  let logRoot: string;
+  const priorLogRoot = process.env.WORKSPACE_OPERATION_LOG_BASE_PATH;
   let admitted = true;
   const errors: unknown[] = [];
   beforeAll(async () => {
+    logRoot = await mkdtemp(join(tmpdir(), "reassessment-workspace-logs-"));
+    process.env.WORKSPACE_OPERATION_LOG_BASE_PATH = logRoot;
     const external = resolveExternalTestDatabaseUrl("PAPERCLIP_STATUS_REASSESSMENT_TEST_DATABASE_URL");
     if (!external) temporary = await startEmbeddedPostgresTestDatabase("paperclip-status-reassessment-");
     db = createDb(external ?? temporary!.connectionString);
     await db.insert(companies).values({ id: companyId, name: "Reassessment lifecycle", issuePrefix: `RS${randomUUID().slice(0, 8)}` });
     await db.insert(agents).values({ id: agentId, companyId, name: "Reassessment agent", adapterType: "codex_local", status: "idle" });
   }, 30_000);
-  afterAll(async () => { await db?.$client.end({ timeout: 1 }); await temporary?.cleanup(); });
+  afterAll(async () => {
+    await db?.$client.end({ timeout: 1 }); await temporary?.cleanup();
+    await rm(logRoot, { recursive: true, force: true });
+    if (priorLogRoot === undefined) delete process.env.WORKSPACE_OPERATION_LOG_BASE_PATH;
+    else process.env.WORKSPACE_OPERATION_LOG_BASE_PATH = priorLogRoot;
+  });
   beforeEach(() => {
     admitted = true; errors.length = 0;
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
@@ -108,6 +121,55 @@ describe("native reassessment worker lifecycle", () => {
       status: "succeeded", exitCode: 0, cwd: process.cwd(), finishedAt: new Date() });
     return { issueId, runId, workProductId, decisionId: committed.decision.id };
   }
+
+  it("wakes when a real workspace finalization settles after a quiet failure", async () => {
+    const seeded = await seedReview();
+    await db.update(workspaceOperations).set({ status: "running" }).where(eq(workspaceOperations.heartbeatRunId, seeded.runId));
+    await dismissAutomaticCompletionReviews(db, seeded.issueId);
+    await start(); await flush(); await quiet();
+    const recorder = workspaceOperationService(db).createRecorder({ companyId, issueId: seeded.issueId, heartbeatRunId: seeded.runId });
+    await expect(recorder.recordOperation({ phase: "workspace_finalize", run: async () => { throw new Error("export interrupted"); } }))
+      .rejects.toThrow("export interrupted");
+    await flush(); await quiet();
+    expect(await status(seeded.issueId)).toBe("in_review");
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let started!: () => void;
+    const running = new Promise<void>(resolve => { started = resolve; });
+    const operation = recorder.recordOperation({ phase: "workspace_finalize", run: async () => {
+      started(); await gate; return { status: "succeeded" };
+    } });
+    try {
+      await running; await flush(); await quiet();
+      expect(await status(seeded.issueId)).toBe("in_review");
+    } finally { release(); await operation; }
+    await flush();
+    expect(await status(seeded.issueId)).toBe("done");
+    expect(await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, seeded.issueId))).toHaveLength(2);
+    await quiet();
+  });
+
+  it("defers workspace barrier writes until outer commit and ignores rollback", async () => {
+    const seeded = await seedReview();
+    await db.update(workspaceOperations).set({ status: "running" }).where(eq(workspaceOperations.heartbeatRunId, seeded.runId));
+    await dismissAutomaticCompletionReviews(db, seeded.issueId);
+    await start(); await flush(); await quiet();
+    const write = async (tx: typeof db) => {
+      await workspaceOperationService(tx).createRecorder({ companyId, issueId: seeded.issueId, heartbeatRunId: seeded.runId })
+        .recordOperation({ phase: "workspace_finalize", run: async () => ({ status: "succeeded" }) });
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(await status(seeded.issueId)).toBe("in_review");
+    };
+    await expect(db.transaction(async tx => {
+      await write(tx as unknown as typeof db); throw new Error("rollback workspace barrier");
+    })).rejects.toThrow("rollback workspace barrier");
+    await flush(); await quiet();
+    expect(await status(seeded.issueId)).toBe("in_review");
+    await db.transaction(tx => write(tx as unknown as typeof db));
+    await flush();
+    expect(await status(seeded.issueId)).toBe("done");
+    await quiet();
+  });
 
   it.each(["confirmation", "checkbox", "question", "verdict", "partial verdict"] as const)("wakes dormant evidence from real interaction %s", async mutation => {
     const interactionId = randomUUID();
