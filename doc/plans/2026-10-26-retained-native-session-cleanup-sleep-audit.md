@@ -127,7 +127,7 @@ worker lifecycle proof, deployed sleep proof or PR readiness.
 
 - [x] Explicit transient/dormant/terminal cleanup outcomes and operational failures.
 - [ ] Full producer audit and real commit/rollback/reactivation tests.
-- [ ] Local session-release and retained-callback completion ownership.
+- [x] Local session-release and retained-callback completion ownership.
 - [ ] Shared worker startup, first producer, retry, changes during sweep, drain,
       resume and shutdown; prove SQL/network quiet with retained history.
 - [ ] Discovery/backlog cost and fairness under realistic retained history.
@@ -364,3 +364,61 @@ Remaining finalization writer audit, maintenance ownership, initialization-path
 reactivation proof, startup integration, large-history cost, periodic removal,
 publication, and complete PR gates still stand. This slice remains unpublished;
 periodic cleanup remains enabled and the full stack remains unmerged.
+
+
+## Original maintenance ownership and terminal projection checkpoint
+
+Runner's existing drain now joins active maintenance attempts as well as their
+original callbacks. A root-specific promise resolves only when neither remains;
+the global drain repeats discovery if another operation was registered meanwhile.
+This is local ownership settlement, not physical retirement or launch permission.
+The root waiter stays inside the Runner transport module; the server consumes the
+existing public drain contract. No server policy is imported into Runner.
+
+The physical cleanup entry point now joins that drain in its own finally block,
+including on error. Manual, startup and future scheduled callers therefore own
+the complete operation. A maintenance-deferred result emits its scoped release
+hint only after the original callbacks settle. Heartbeat's sweep no longer owns
+a separate trailing drain. Existing timeout/quarantine and physical proof rules
+remain unchanged; an indefinitely unresolved original callback retains ownership.
+
+Two more producer boundaries were missing cleanup intent: finalizer run
+projection (both committed-result repair and ordinary post-decision projection),
+and heartbeat's shared terminal run-status writer. They now signal within their
+existing transactions, including terminal metadata repairs. Running-progress
+writes do not wake this duty. The ordinary finalizer signal is unconditional in
+its projection transaction because metadata may make a previously terminal run
+eligible even when projectRunStatus is false.
+
+Real PostgreSQL regressions cover outer commit, rollback, and a deterministic
+separate-commit race: delay the finalizer after its actual decision commit, allow
+the worker to consume that notification while the run is still running, then
+permit terminal projection. Before the new signal cleanup is stranded; afterward
+it runs once. No finalizer/provider decision logic was mocked for this race.
+
+Evidence (all /tmp paths have matching .status files):
+
+- sleep51-maintenance-before: invalid root Vitest selection, no matching Runner
+  tests; not regression evidence. Correct package invocation
+  sleep51-maintenance-before-runner failed the missing completion API test.
+- sleep51-maintenance-after: all 19 Runner settlement cases pass, including
+  timeout/abort ownership, unrelated-root idleness and unresolved original callbacks.
+- sleep51-owned-maintenance-before: both new physical lifetime tests failed;
+  sleep51-owned-maintenance-after passes 799 executor cases. The 15 embedded-DB
+  remote warm cases remain excluded for the diagnosed host semaphore limit.
+- sleep51-maintenance-types initially failed the test mock's Promise<undefined>
+  inference; an explicit Promise<void> fixes it. maintenance-types-final passes.
+- sleep51-maintenance-worker: all 26 existing real-DB worker cases pass.
+- sleep51-projection-before: committed-finalizer producer regression failed.
+- sleep51-lifecycle-before: both terminal writer variants failed; running progress
+  remained quiet. The repaired sleep51-projection-after passes all 64 worker and
+  heartbeat lifecycle cases, including outer rollback and terminal metadata repair.
+- sleep51-corpus-projection-before: the separate-commit race failed with zero
+  cleanup calls after the terminal projection. sleep51-corpus-projection-after
+  passes the entire 146-case finalizer corpus, including that regression.
+- sleep51-projection-types: server typecheck passes.
+
+Fresh origin/master remains 1fbbef45a8d399771add7a27a04b12f3a20e264c.
+Remaining: final producer/initialization audit, startup integration, history/query
+cost, periodic removal, broader acceptance and PR gates. Nothing is published or
+merged for slice 51; periodic cleanup is still enabled at this checkpoint.

@@ -1,3 +1,4 @@
+import { notifyRetainedNativeSessionCleanup } from "../retained-native-session-cleanup-notifications.js";
 import { notifyNativeFinalizationWork } from "../native-finalization-notifications.js";
 import { notifyUnsafeWorkspaceExportRunChange } from "../unsafe-workspace-export-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "../unsafe-workspace-export-notifications.js";
@@ -679,6 +680,7 @@ async function projectCommittedRun(input: {
   const now = new Date();
   const [updatedRun] = await input.db.transaction(async transaction => {
     const tx = transaction as unknown as Db;
+    await notifyRetainedNativeSessionCleanup(tx, { companyId: input.run.companyId, runId: input.run.id });
     await notifyInstructionCollection(tx, { companyId: input.run.companyId, runId: input.run.id });
     await notifyCancelledWorkspacePreservation(tx, { companyId: input.run.companyId, runId: input.run.id });
     await notifyUnsafeWorkspaceExportRunChange(tx, input.run);
@@ -1652,6 +1654,7 @@ export async function finalizeNativeRun(input: {
         .returning();
       const [updatedRun] = await input.db.transaction(async transaction => {
         const tx = transaction as unknown as Db;
+        await notifyRetainedNativeSessionCleanup(tx, { companyId: run.companyId, runId: run.id });
         if (input.projectRunStatus) await notifyInstructionCollection(tx, { companyId: run.companyId, runId: run.id });
         if (input.projectRunStatus) await notifyCancelledWorkspacePreservation(tx, { companyId: run.companyId, runId: run.id });
         if (input.projectRunStatus) await notifyUnsafeWorkspaceExportRunChange(tx, run);

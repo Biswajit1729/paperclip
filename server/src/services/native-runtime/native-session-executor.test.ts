@@ -180,6 +180,7 @@ const state = vi.hoisted(() => ({
   cleanup: vi.fn(),
   retireCleanup: vi.fn(),
   maintenanceIdle: vi.fn(() => true),
+  drainMaintenance: vi.fn(async (): Promise<void> => undefined),
   createTransport: vi.fn((_options: RunnerTransportOptions) => ({
     transport: {},
   })),
@@ -261,6 +262,7 @@ vi.mock("../../vendor/paperclip-runner/index.js", async (importOriginal) => {
     executeNativeSession: state.execute,
     settleRetainedRunnerdSession: state.cleanup,
     retainedRunnerdMaintenanceIsIdle: state.maintenanceIdle,
+    drainRetainedRunnerdMaintenanceOperations: state.drainMaintenance,
     completeRetainedNativeSessionCleanup: state.retireCleanup,
     parsePaperclipQuestionSet: (value: unknown) => value,
   };
@@ -391,6 +393,7 @@ import {
 } from "./native-session-executor.js";
 
 beforeEach(() => {
+  state.drainMaintenance.mockReset().mockResolvedValue(undefined);
   usageRecorder.capture.mockReset().mockImplementation(async receipt => receipt);
   usageRecorder.create.mockReset().mockResolvedValue({ capture: usageRecorder.capture,
     complete: vi.fn(async () => ({ complete: true })), persistFailure: vi.fn(async () => undefined) });
@@ -3434,6 +3437,23 @@ const execution = {
 } as NativeExecutionInputV1;
 
 describe("retained native cleanup activation", () => {
+  it("retains operation ownership through original callbacks after a cleanup failure", async () => {
+    const failure = new Error("cleanup database failure");
+    const db = { transaction: vi.fn().mockRejectedValue(failure) } as unknown as Db;
+    let release!: () => void;
+    const original = new Promise<void>(resolve => { release = resolve; });
+    state.drainMaintenance.mockReturnValueOnce(original);
+    let finished = false;
+    const operation = reconcileRetainedNativeSessionCleanup(db, { companyId: "company", runId: "run" })
+      .catch(error => error).finally(() => { finished = true; });
+    try {
+      await vi.waitFor(() => expect(state.drainMaintenance).toHaveBeenCalledTimes(1));
+      expect(finished).toBe(false);
+      release();
+      expect(await operation).toBe(failure);
+    } finally { release(); await operation; }
+  });
+
   it.each([
     Object.assign(new Error("database disconnected"), { code: "CONNECTION_CLOSED" }),
     new Error("query failed", { cause: Object.assign(new Error("row locked"), { code: "55P03" }) }),
@@ -3529,6 +3549,10 @@ describe("retained native cleanup activation", () => {
       join(tmpdir(), "paperclip-maintenance-activation-"),
     );
     let providerHomeDatabase: DatabaseSync | undefined;
+    let releaseMaintenance!: () => void;
+    const maintenance = new Promise<void>(resolve => { releaseMaintenance = resolve; });
+    let unsubscribeMaintenance: (() => void) | undefined;
+    const maintenanceReleased = vi.fn();
     const preservedHomeFiles = [
       "sessions/rollout-exact-thread.jsonl",
       "state_5.sqlite",
@@ -4541,6 +4565,10 @@ describe("retained native cleanup activation", () => {
         ).toBe("settled");
         return 1;
       });
+      if (mode === "legacy_busy_copy") {
+        state.drainMaintenance.mockReturnValueOnce(maintenance);
+        unsubscribeMaintenance = onRetainedNativeSessionCleanupRelease(db, maintenanceReleased);
+      }
       const pendingOutcome = reconcileRetainedNativeSessionCleanup(
         db as unknown as Db,
         { companyId: run.companyId, runId: run.id },
@@ -4597,7 +4625,16 @@ describe("retained native cleanup activation", () => {
         expect(await Promise.all(source.map(([file]) => readFile(join(root, file), "utf8")))).toEqual(original);
         return;
       }
+      if (mode === "legacy_busy_copy") {
+        await vi.waitFor(() => expect(state.drainMaintenance).toHaveBeenCalledTimes(1));
+        expect(maintenanceReleased).not.toHaveBeenCalled();
+        releaseMaintenance();
+      }
       const outcome = await pendingOutcome;
+      if (mode === "legacy_busy_copy") {
+        expect(maintenanceReleased).toHaveBeenCalledExactlyOnceWith({ companyId: run.companyId, runId: run.id });
+        unsubscribeMaintenance?.();
+      }
       if (canonicalSource) {
         const prepared = (
           coordinator.recoveryHistory as Array<Record<string, unknown>>
@@ -4958,6 +4995,8 @@ describe("retained native cleanup activation", () => {
         expect(state.retireCleanup).toHaveBeenCalledTimes(1);
       }
     } finally {
+      releaseMaintenance();
+      unsubscribeMaintenance?.();
       providerHomeDatabase?.close();
       proofSpy.mockRestore();
       state.maintenanceIdle.mockReset().mockReturnValue(true);

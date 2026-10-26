@@ -2667,3 +2667,15 @@ completion and physical callback ownership are next; the audit records the exact
 boundary gap. Startup registration, periodic removal, cost proof, remaining
 producers and PR acceptance remain incomplete. Nothing published or merged;
 all original recurring-server duties and older stack gates remain open.
+
+
+Slice 51 maintenance and terminal-producer checkpoint: cleanup now owns original
+Runner maintenance attempts/callbacks through settlement, using Runner's existing
+drain boundary. Finalizer projection and heartbeat terminal writes now notify
+cleanup in their transactions. Three reproduced producer regressions include the
+real separate-commit decision/projection race. All 64 worker/lifecycle cases,
+146 finalizer corpus cases, 799 selected executor cases, 19 Runner settlement
+cases and server types pass; 15 embedded-DB cases remain excluded for the recorded
+host limitation. The audit records earlier failures and fixture corrections.
+Startup wiring, query cost, periodic removal, full gates and publication remain.
+No PR or merge; the complete recurring-server scope and older stack gates stay open.

@@ -1,3 +1,4 @@
+import { notifyRetainedNativeSessionCleanup } from "../retained-native-session-cleanup-notifications.js";
 import { notifyUnsafeWorkspaceExportRunChange } from "../unsafe-workspace-export-notifications.js";
 import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-preservation-notifications.js";
 import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
@@ -1028,6 +1029,8 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
         await notifyScheduledRetryCancellation(tx, { companyId: previous.companyId, runId: previous.id });
       if (previous) await notifyInstructionCollection(tx, { companyId: previous.companyId, runId: previous.id });
       if (previous) await notifyCancelledWorkspacePreservation(tx, { companyId: previous.companyId, runId: previous.id });
+      if (previous && isHeartbeatRunTerminalStatus(status))
+        await notifyRetainedNativeSessionCleanup(tx, { companyId: previous.companyId, runId: previous.id });
       if (isHeartbeatRunTerminalStatus(status)) await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, companyId);
       await notifyExecutionRunWork(tx);
       if (previous) await notifyChatRunMilestones(tx, { companyId: previous.companyId, runId: previous.id,

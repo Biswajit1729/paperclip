@@ -1,3 +1,4 @@
+import { finalizeNativeRun } from "../services/native-runtime/native-run-finalizer.js";
 import { notifyNativeFinalizationWork } from "../services/native-finalization-notifications.js";
 import { randomUUID } from "node:crypto";
 import os from "node:os";
@@ -374,6 +375,31 @@ describe("retained native cleanup scheduled lifecycle", () => {
     await vi.advanceTimersByTimeAsync(1000);
     await vi.waitFor(() => expect(cleanup).toHaveBeenCalledTimes(afterRollback + 1));
     await flush(); await quiet();
+  });
+
+  it("reactivates when the real finalizer projects an already committed result to a terminal run", async () => {
+    const runId = await candidate({ run: { status: "running", finishedAt: null } });
+    await db.update(nativeRunResults).set({ resultJson: { terminal: { runTerminalState: "succeeded" } } })
+      .where(eq(nativeRunResults.runId, runId));
+    await start(); await flush(); await quiet();
+    expect(cleanup).not.toHaveBeenCalled();
+    const finalize = (writer: Db) => finalizeNativeRun({ db: writer, runId, workspaceFinalizeStatus: "succeeded",
+      projectRunStatus: true, skipNativeResponsePresentation: true, skipNativeReviewResponse: true });
+    await expect(db.transaction(async tx => {
+      await finalize(tx as unknown as Db);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(cleanup).not.toHaveBeenCalled();
+      throw new Error("rollback final projection");
+    })).rejects.toThrow("rollback final projection");
+    await flush(); await quiet();
+    expect(cleanup).not.toHaveBeenCalled();
+    await finalize(db); await flush();
+    expect(cleanup).toHaveBeenCalledExactlyOnceWith({ companyId, runId });
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(run!.status).toBe("succeeded");
+    expect(run!.error).toBeNull();
+    expect(run!.resultJson?.recoveredExecutionFailure).toMatchObject({ errorCode: "adapter_failed", error: closeError });
+    await quiet();
   });
 
   it("reconstructs a lease deadline across restart and does no SQL before it", async () => {
