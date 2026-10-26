@@ -359,7 +359,7 @@ describeEmbeddedPostgres("tool gateway service", () => {
       async function startProjection() {
         coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => !draining,
           canReconcile: () => true, onError: error => errors.push(error) });
-        await registerToolReviewProjectionWork(coordinator, { sweep: gateway.repairActionReviewProjections }, () => !draining).ready;
+        await registerToolReviewProjectionWork(coordinator, { sweep: gateway.repairActionReviewProjections, companies: gateway.actionReviewProjectionCompanies }, () => !draining).ready;
       }
       async function savedOutcome(pending: Awaited<ReturnType<typeof request>>, source = db,
         status: "executed" | "failed" | "expired" | "cancelled" = "executed") {
@@ -391,6 +391,63 @@ describeEmbeddedPostgres("tool gateway service", () => {
         const before = (await db.select().from(activityLog).where(eq(activityLog.action, "issue.thread_interaction_updated"))).length;
         await gateway.repairActionReviewProjections();
         expect((await db.select().from(activityLog).where(eq(activityLog.action, "issue.thread_interaction_updated"))).length).toBe(before);
+      });
+
+      it("keeps projection scans scoped to the company whose review changed", async () => {
+        const other = await createRunFixture(db);
+        await db.insert(toolPolicies).values(reviewNotePolicyRow(other.company));
+        const foreign = await request(gateway, db, other);
+        await gateway.approveActionRequest({ companyId: other.company.id, actionRequestId: foreign.id, actor: { userId: "board" } });
+        await startProjection(); await quiet();
+        const before = await projection(foreign);
+        const reads: Array<{ query: string; params: unknown[] }> = [];
+        const debug = db.$client.options.debug;
+        db.$client.options.debug = (_id, query, params) => {
+          if (/^select/i.test(query) && query.includes('"tool_action_requests"') && query.includes("coalesce("))
+            reads.push({ query, params: [...params] });
+        };
+        try {
+          for (let index = 0; index < 3; index++) {
+            const pending = await request();
+            await gateway.approveActionRequest({ companyId: fixture.company.id, actionRequestId: pending.id, actor: { userId: "board" } });
+            await settle(1500); expect(await projection(pending)).toMatchObject({ status: "executed" });
+          }
+        } finally { db.$client.options.debug = debug; }
+        expect(reads.length).toBeGreaterThan(0);
+        for (const read of reads) {
+          expect(read.query).toContain('"tool_action_requests"."company_id" =');
+          expect(read.params).toContain(fixture.company.id);
+          expect(read.params).not.toContain(other.company.id);
+        }
+        expect(await projection(foreign)).toEqual(before); await quiet();
+      });
+
+      it("does not wake projection repair for ordinary confirmation creation, replacement, or cancellation", async () => {
+        await startProjection(); await quiet();
+        const interactions = issueThreadInteractionService(db);
+        const scope = { id: fixture.issue.id, companyId: fixture.company.id };
+        const [recipient] = await db.insert(agents).values({ companyId: fixture.company.id,
+          name: "Plan recipient", role: "engineer", adapterType: "process" }).returning();
+        const input = { kind: "request_confirmation" as const, addresseeAgentId: recipient.id,
+          payload: { version: 1 as const, prompt: "Approve this plan?" } };
+        const signal = vi.fn();
+        const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.toolReviewProjection, signal);
+        const reads: string[] = [];
+        const debug = db.$client.options.debug;
+        db.$client.options.debug = (_id, query) => {
+          if (/^select/i.test(query) && query.includes('"tool_action_requests"') && query.includes("coalesce(")) reads.push(query);
+        };
+        try {
+          const first = await interactions.create(scope, input, { agentId: fixture.agent.id });
+          const second = await interactions.create(scope, input, { agentId: fixture.agent.id });
+          const cancelled = await interactions.cancelPendingForDeletedAddressee(fixture.company.id, recipient.id);
+          expect(cancelled.map(row => row.id)).toEqual([second.id]);
+          expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, first.id)))[0].status).toBe("expired");
+          await settle();
+          expect(signal).not.toHaveBeenCalled();
+          expect(reads).toEqual([]);
+          await quiet();
+        } finally { unsubscribe(); db.$client.options.debug = debug; }
       });
 
       it.each(["executed", "failed", "expired", "cancelled"] as const)("reconstructs a saved %s result after restart and leaves terminal history quiet", async status => {
@@ -453,6 +510,28 @@ describeEmbeddedPostgres("tool gateway service", () => {
         expect(await db.select().from(toolCallEvents).where(eq(toolCallEvents.reasonCode, "approved_action_executed"))).toEqual([]);
       });
 
+      it("backs off a failing company while another company's projection completes", async () => {
+        const other = await createRunFixture(db);
+        await db.insert(toolPolicies).values(reviewNotePolicyRow(other.company));
+        const foreign = await request(gateway, db, other); await acceptedCard(foreign); await savedOutcome(foreign, db, "failed");
+        await db.execute(sql`create function sleep_projection_fail() returns trigger language plpgsql as $$
+          begin raise exception 'company projection fixture failure'; end $$`);
+        await db.execute(sql`create trigger sleep_projection_fail before update on issue_thread_interactions
+          for each row when (new.result->'toolAction'->>'status' = 'failed') execute function sleep_projection_fail()`);
+        await startProjection(); expect(errors).toHaveLength(1); errors.length = 0;
+        const retryAt = coordinator!.nextWakeAt(); expect(retryAt).not.toBeNull();
+        const pending = await request(); await acceptedCard(pending); await savedOutcome(pending);
+        await request(gateway, db, other);
+        await settle(5000);
+        expect(await projection(pending)).toMatchObject({ status: "executed" });
+        expect(await projection(foreign)).toBeUndefined();
+        expect(errors).toEqual([]); expect(coordinator!.nextWakeAt()).toBe(retryAt);
+        await db.execute(sql`drop trigger sleep_projection_fail on issue_thread_interactions`);
+        await settle(); await quiet();
+        expect(await projection(foreign)).toMatchObject({ status: "failed" });
+        expect(await db.select().from(toolCallEvents).where(eq(toolCallEvents.reasonCode, "approved_action_executed"))).toEqual([]);
+      });
+
       it("rechecks the projection under lock when foreground repair wins the race", async () => {
         const pending = await request(); await acceptedCard(pending); await savedOutcome(pending);
         const transaction = db.transaction.bind(db);
@@ -492,8 +571,14 @@ describeEmbeddedPostgres("tool gateway service", () => {
         expect(await projection(pending)).toMatchObject({ status: "failed" });
       });
 
-      it("reactivates when an administrative card mutation overwrites a settled projection", async () => {
+      it.each([false, true])("reactivates when an administrative card mutation overwrites a settled projection (legacy %s)", async legacy => {
         const pending = await request();
+        if (legacy) {
+          const [card] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, pending.interactionId!));
+          const payload = { ...card.payload } as Record<string, unknown>;
+          delete payload.toolAction; delete payload.target;
+          await db.update(issueThreadInteractions).set({ payload }).where(eq(issueThreadInteractions.id, pending.interactionId!));
+        }
         await db.update(issueThreadInteractions).set({ addresseeAgentId: fixture.agent.id,
           result: { version: 1, outcome: "accepted" } }).where(eq(issueThreadInteractions.id, pending.interactionId!));
         await savedOutcome(pending, db, "failed"); await startProjection(); await quiet();
