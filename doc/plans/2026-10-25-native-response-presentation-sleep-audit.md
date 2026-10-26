@@ -123,3 +123,13 @@ assertions that the new entry point rejects under actual source-action lock
 contention and returns false for the existing authorization/binding fences. The
 server typecheck passes (`/tmp/sleep48-contract-typecheck.log`). Worker discovery,
 producer notifications, startup wiring, and periodic removal are not implemented.
+
+## Existing notification boundary to reuse
+
+The current `notifyChatRunMilestones` boundary already covers 102 production call
+sites and fans out lineage/authority changes to native progress, inbound notices,
+confirmations, and GitHub work. Its scope is company plus optional issue because
+source changes can authorize descendants. Audit its coverage for this duty before
+adding caller wrappers. It already reaches status-decision settlement and run
+projection, but raw coordinator-store/session release and accepted-turn journal
+writers need individual inspection. Reuse is not proof that all producers exist.
