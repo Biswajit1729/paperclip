@@ -311,3 +311,56 @@ cleanup safety tests from previous checkpoints remain distinct evidence. Session
 owner release, maintenance completion, full run/finalization producer coverage,
 physical callback ownership, startup wiring, large-history cost, periodic removal,
 publication and full PR acceptance are still open. No polling removal is claimed.
+
+
+## Local session-owner release checkpoint
+
+The executor now signals company/agent scope after its execution scope and
+startup ownership settle, and after backend initialization relinquishes its claim.
+An older retained run can share the physical session with a newer run, so a
+run-only hint would miss supported waiters. Durable candidate discovery and all
+physical authority checks still determine whether cleanup can proceed.
+
+Warm-session removal is centralized in `forgetWarmNativeSession`. It checks the
+expected entry identity, removes that entry, then invokes its captured release
+callback. All existing retirement paths use this owner boundary, including idle
+expiry, explicit shutdown, configuration/instruction changes and quarantine.
+Existing failed-close retention rules remain; a late close cannot delete a newer
+entry. The callback holds the database scope without adding database fields to
+the warm-session record or teaching the scheduler provider behavior. Cleanup's
+own temporary reservation release deliberately does not emit this hint, avoiding
+self-reactivation on every inspection of retained history.
+
+Three real executor lifecycle regressions first failed with zero release hints:
+both startup cancellation variants and warm idle retirement. The strengthened
+warm test holds its original close promise unresolved and proves no release hint
+until that promise settles. These tests use the existing controlled executor/DB
+fixtures. They test actual owner paths; the separate PostgreSQL worker suite
+proves the notification-to-reconciliation lifecycle. They are not a single live
+provider-to-database end-to-end qualification.
+
+- `/tmp/sleep51-local-release-before.log` / `.status` (1): 3 expected failures,
+  810 deliberately unselected cases.
+- `/tmp/sleep51-local-release-after.log` / `.status` (0): 798 executor cases pass,
+  15 embedded-PostgreSQL remote warm ownership cases excluded because of the
+  previously diagnosed host semaphore limitation.
+- `/tmp/sleep51-local-release-types.log` / `.status` (0): server types pass.
+- `/tmp/sleep51-local-release-worker.log` / `.status` (0): 26 real-database worker
+  lifecycle cases pass after local producer wiring.
+- `/tmp/sleep51-local-release-final.log` / `.status` (0): final 798-case executor
+  rerun passes after removing duplicate entry guards from callers. The same 15
+  embedded-database cases remain excluded, not reported as passing.
+
+Next: retained maintenance still has a separate lifetime. Runner tracks active
+roots plus original bounded callbacks, but exposes only idle inspection and an
+all-roots drain. A timed-out callback can still own its root. The scheduler needs
+an owned completion signal for that concrete wait; heartbeat's existing outer
+sweep drain must move inside the common physical-operation lifetime so scheduled,
+manual and shutdown callers join the original work. Do not clear that obligation
+on timeout or add a recurring maintenance-state poll. Runner must expose its own
+completion contract; it must not import server notification policy.
+
+Remaining finalization writer audit, maintenance ownership, initialization-path
+reactivation proof, startup integration, large-history cost, periodic removal,
+publication, and complete PR gates still stand. This slice remains unpublished;
+periodic cleanup remains enabled and the full stack remains unmerged.

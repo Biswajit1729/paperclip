@@ -2655,3 +2655,15 @@ and distinguishes controlled stop evidence from actual physical/provider proof.
 Local session and maintenance releases, remaining finalization producers, callback
 ownership, startup wiring, cost proof, periodic removal and PR gates remain open.
 Periodic cleanup remains enabled. No PR or merge; all original scope stays open.
+
+
+Slice 51 local owner checkpoint: session execution/initialization releases and
+all warm-session retirement paths now emit local scoped hints. Warm removal checks
+the expected owner; the existing close/retention decisions remain authoritative.
+Three lifecycle regressions reproduced missing release notifications. Final
+executor verification passes 798 cases (15 embedded-DB cases excluded), the real
+PostgreSQL worker suite passes 26 cases, and server types pass. Retained maintenance
+completion and physical callback ownership are next; the audit records the exact
+boundary gap. Startup registration, periodic removal, cost proof, remaining
+producers and PR acceptance remain incomplete. Nothing published or merged;
+all original recurring-server duties and older stack gates remain open.

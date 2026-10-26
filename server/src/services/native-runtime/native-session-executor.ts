@@ -1,3 +1,4 @@
+import { releaseRetainedNativeSessionCleanup } from "../retained-native-session-cleanup-notifications.js";
 import type { NativeCleanupOutcome } from "./retained-native-session-cleanup.js";
 import { notifyNativeStatusReassessment } from "../native-status-reassessment-notifications.js";
 import { notifyNativeFinalizationWork } from "../native-finalization-notifications.js";
@@ -479,6 +480,7 @@ export type NativeInstructionWorkingCopy = {
 };
 
 type WarmNativeSession = {
+  onReleased: () => void;
   pluginTaskId?: string;
   observabilityCompatibilityKey?: string;
   runId: string;
@@ -525,6 +527,12 @@ async function closeWarmNativeSession(entry: WarmNativeSession, reason: string, 
 }
 
 const warmNativeSessions = new Map<string, WarmNativeSession>();
+function forgetWarmNativeSession(scope: string, entry: WarmNativeSession) {
+  if (warmNativeSessions.get(scope) !== entry) return;
+  warmNativeSessions.delete(scope);
+  entry.onReleased();
+}
+
 const pluginTaskSessionOwners = new WeakMap<NativeSession, ReturnType<typeof createPluginRunnerTaskOwner>>();
 // Closing a remote owner saves its checkpoint asynchronously. A new turn must
 // not inspect or quarantine that owner's state until the save has finished.
@@ -562,7 +570,7 @@ export async function claimWarmNativeInstructionCopy(input: {
     entry.closeOnReleaseReason = reason;
     try {
       await closeWarmNativeSession(entry, reason);
-      if (warmNativeSessions.get(scope) === entry) warmNativeSessions.delete(scope);
+      forgetWarmNativeSession(scope, entry);
     } finally { entry.busy = false; }
   };
   try {
@@ -614,7 +622,7 @@ export async function reserveWarmNativeInstructionDirectory(input: {
       entry.closeOnReleaseReason = reason;
       try {
         await closeWarmNativeSession(entry, reason);
-        if (warmNativeSessions.get(id) === entry) warmNativeSessions.delete(id);
+        forgetWarmNativeSession(id, entry);
       } finally {
         // Failed containment remains registered and cannot be adopted. The next
         // admission retries retirement instead of launching over a live owner.
@@ -697,10 +705,10 @@ async function closeIdleWarmNativeSessions(input: {
     closingWarmNativeSessions.set(sessionId, closing);
     try {
       await closing;
-      if (warmNativeSessions.get(sessionId) === entry) warmNativeSessions.delete(sessionId);
+      forgetWarmNativeSession(sessionId, entry);
       closed += 1;
     } catch {
-      if (!entry.instructionWorkingCopy?.runId) warmNativeSessions.delete(sessionId);
+      if (!entry.instructionWorkingCopy?.runId) forgetWarmNativeSession(sessionId, entry);
       failed += 1;
     } finally {
       entry.busy = false;
@@ -1819,7 +1827,7 @@ async function retireSupersededWarmNativeSessions(
     entry.closeOnReleaseReason = "warm native session identity changed";
     try {
       await closeWarmNativeSession(entry, entry.closeOnReleaseReason);
-      if (warmNativeSessions.get(scope) === entry) warmNativeSessions.delete(scope);
+      forgetWarmNativeSession(scope, entry);
     } finally {
       // A failed close retains the owner and prevents launch. A later attempt
       // must retry retirement, never adopt this partially closed transport.
@@ -6300,9 +6308,9 @@ async function releaseWarmNativeSession(
     entry.busy = true;
     try {
       await closeWarmNativeSession(entry, entry.closeOnReleaseReason);
-      if (warmNativeSessions.get(sessionId) === entry) warmNativeSessions.delete(sessionId);
+      forgetWarmNativeSession(sessionId, entry);
     } catch (error) {
-      if (!entry.instructionWorkingCopy?.runId) warmNativeSessions.delete(sessionId);
+      if (!entry.instructionWorkingCopy?.runId) forgetWarmNativeSession(sessionId, entry);
       if (requireCleanClose) throw error;
     } finally { entry.busy = false; }
     return;
@@ -6328,8 +6336,8 @@ function armWarmNativeSessionIdleTimer(
     current.busy = true;
     current.closeOnReleaseReason = "warm native session idle timeout";
     const closing = closeWarmNativeSession(current, current.closeOnReleaseReason)
-      .then(() => { if (warmNativeSessions.get(sessionId) === current) warmNativeSessions.delete(sessionId); })
-      .catch(() => { if (!current.instructionWorkingCopy?.runId && warmNativeSessions.get(sessionId) === current) warmNativeSessions.delete(sessionId); })
+      .then(() => { forgetWarmNativeSession(sessionId, current); })
+      .catch(() => { if (!current.instructionWorkingCopy?.runId) forgetWarmNativeSession(sessionId, current); })
       .finally(() => {
         current.busy = false;
         if (closingWarmNativeSessions.get(sessionId) === closing) closingWarmNativeSessions.delete(sessionId);
@@ -7852,6 +7860,9 @@ export async function executePaperclipNativeSession(input: {
         })
         .catch(() => undefined);
     }
+    releaseRetainedNativeSessionCleanup(input.db, {
+      companyId: input.execution.binding.companyId, agentId: input.execution.binding.agentId,
+    });
   }
 }
 
@@ -8726,7 +8737,7 @@ async function executePaperclipNativeSessionWithinScope(
         entry.closeOnReleaseReason = "warm native session configuration changed";
         try {
           await closeWarmNativeSession(entry, entry.closeOnReleaseReason, input.execution.binding.runId);
-          warmNativeSessions.delete(warmSessionId);
+          forgetWarmNativeSession(warmSessionId, entry);
         } finally { entry.busy = false; }
         if (preparedCopy) throw new Error("native_instruction_preparation_configuration_changed");
         persistedWarmSession = loadWarmNativeCheckpoint(
@@ -8743,7 +8754,7 @@ async function executePaperclipNativeSessionWithinScope(
           entry.closeOnReleaseReason = "warm instruction copy changed during preparation";
           try {
             await closeWarmNativeSession(entry, entry.closeOnReleaseReason);
-            warmNativeSessions.delete(warmSessionId);
+            forgetWarmNativeSession(warmSessionId, entry);
           } finally { entry.busy = false; }
           throw new Error("native_instruction_preparation_copy_changed");
         }
@@ -9148,6 +9159,9 @@ async function executePaperclipNativeSessionWithinScope(
                   existing.runId = input.execution.binding.runId;
                 } else
                   warmNativeSessions.set(warmSessionId, {
+                    onReleased: () => releaseRetainedNativeSessionCleanup(input.db, {
+                      companyId: input.execution.binding.companyId, agentId: input.execution.binding.agentId,
+                    }),
                     pluginTaskId: usesPluginTask && input.runnerExecutionTarget?.kind === "remote" && input.runnerExecutionTarget.transport === "sandbox"
                       ? input.runnerExecutionTarget.sandboxLeaseAcquisition?.providerLeaseId : undefined,
                     runId: input.execution.binding.runId,
@@ -9194,7 +9208,7 @@ async function executePaperclipNativeSessionWithinScope(
                   if (existing.idleTimer !== null) {
                     clearTimeout(existing.idleTimer);
                   }
-                  warmNativeSessions.delete(warmSessionId);
+                  forgetWarmNativeSession(warmSessionId, existing);
                 }
               }
               if (session) {
@@ -11608,6 +11622,9 @@ export async function createRunnerdBackend(input: {
     );
   } finally {
     initializingSessionToolAuthorities.delete(sessionScopeId);
+    releaseRetainedNativeSessionCleanup(input.db, {
+      companyId: input.execution.binding.companyId, agentId: input.execution.binding.agentId,
+    });
   }
 }
 

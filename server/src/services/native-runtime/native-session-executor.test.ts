@@ -1,3 +1,4 @@
+import { onRetainedNativeSessionCleanupRelease } from "../retained-native-session-cleanup-notifications.js";
 import * as environmentTaskRuntime from "../environment-task-runtime.js";
 import * as pluginTaskRuntime from "./plugin-runner-task.js";
 import { environmentTaskOperationSchema } from "@paperclipai/plugin-sdk";
@@ -5899,11 +5900,16 @@ describe("native startup cancellation fence", () => {
       }
       throw new Error("provider should not have been submitted");
     });
-    await expect(executePaperclipNativeSession({
-      db: leaseDb(execution, {}, resultJson), execution, runnerInstanceId: "startup-stop",
-    })).rejects.toThrow("native_cancellation_pending_recovery");
-    expect(cancel).toHaveBeenCalledOnce();
-    expect(submit).not.toHaveBeenCalled();
+    const db = leaseDb(execution, {}, resultJson), released = vi.fn();
+    const unsubscribe = onRetainedNativeSessionCleanupRelease(db, released);
+    try {
+      await expect(executePaperclipNativeSession({
+        db, execution, runnerInstanceId: "startup-stop",
+      })).rejects.toThrow("native_cancellation_pending_recovery");
+      expect(cancel).toHaveBeenCalledOnce();
+      expect(submit).not.toHaveBeenCalled();
+      expect(released).toHaveBeenCalledWith({ companyId: execution.binding.companyId, agentId: execution.binding.agentId });
+    } finally { unsubscribe(); }
   });
 });
 
@@ -8682,7 +8688,9 @@ describe("native warm session supervision", () => {
   });
 
   it("reuses one session across distinct governed runs and closes it after idle expiry", async () => {
-    const close = vi.fn(async () => undefined);
+    let releaseClose!: () => void;
+    const closeBarrier = new Promise<void>(resolve => { releaseClose = resolve; });
+    const close = vi.fn(() => closeBarrier);
     const sharedSession = { close };
     const base = {
       ...execution,
@@ -8731,24 +8739,34 @@ describe("native warm session supervision", () => {
         return result;
       });
 
-    await executePaperclipNativeSession({
-      db: leaseDb(base),
-      execution: base,
-      runnerInstanceId: "runner",
-    });
-    await executePaperclipNativeSession({
-      db: leaseDb(second),
-      execution: second,
-      runnerInstanceId: "runner",
-    });
-    expect(close).not.toHaveBeenCalled();
-    await vi.waitFor(
-      () =>
-        expect(close).toHaveBeenCalledWith({
-          reason: "warm native session idle timeout",
-        }),
-      { timeout: 2_000 },
-    );
+    const db = leaseDb(base), released = vi.fn();
+    const unsubscribe = onRetainedNativeSessionCleanupRelease(db, released);
+    try {
+      await executePaperclipNativeSession({
+        db,
+        execution: base,
+        runnerInstanceId: "runner",
+      });
+      await executePaperclipNativeSession({
+        db: leaseDb(second),
+        execution: second,
+        runnerInstanceId: "runner",
+      });
+      expect(close).not.toHaveBeenCalled();
+      released.mockClear();
+      await vi.waitFor(
+        () =>
+          expect(close).toHaveBeenCalledWith({
+            reason: "warm native session idle timeout",
+          }),
+        { timeout: 2_000 },
+      );
+      expect(released).not.toHaveBeenCalled();
+      releaseClose();
+      await vi.waitFor(() => expect(released).toHaveBeenCalledExactlyOnceWith({
+        companyId: base.binding.companyId, agentId: base.binding.agentId,
+      }));
+    } finally { releaseClose(); unsubscribe(); }
   });
 
   it("does not offer a quarantined warm session to the next run", async () => {
