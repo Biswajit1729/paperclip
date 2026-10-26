@@ -9,6 +9,7 @@ export const DELIVERY_QUEUES = {
   instructionCommit: "instruction-commit",
   scheduledRetryCancellation: "scheduled-retry-cancellation",
   executionFinalization: "execution-finalization",
+  workspaceRecovery: "workspace-recovery",
   executionReplacement: "execution-replacement",
   executionContinuation: "execution-continuation",
   executionStatus: "execution-status",
