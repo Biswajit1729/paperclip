@@ -38,11 +38,13 @@ import {
   toolGatewaySessions,
   toolInvocations,
   toolPolicies,
+  toolRateLimitCounters,
 } from "@paperclipai/db";
 import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
 import type { VercelConnectClient } from "../services/vercel-connect.js";
 import { initializeRunIdentity, reserveSteeredIdentity, reconcileSteeredIdentity } from "../services/run-identity.js";
 import { issueService } from "../services/issues.js";
+import { approvalService } from "../services/approvals.js";
 import { commitToolActionReview } from "../services/tool-action-review.js";
 import { materializeNativeInteractionResponses } from "../services/native-runtime/native-interaction-bridge.js";
 import { toolActionDeliveryService } from "../services/tool-action-delivery.js";
@@ -317,7 +319,7 @@ describeEmbeddedPostgres("tool gateway service", () => {
       expect(await db.select().from(toolCallEvents).where(eq(toolCallEvents.reasonCode, "approved_action_executed"))).toEqual([]);
     }
 
-    async function testRequest(provider: NonNullable<ToolGatewayServiceOptions["remoteHttpRequest"]>) {
+    async function testRequest(provider: NonNullable<ToolGatewayServiceOptions["remoteHttpRequest"]>, rateLimited = false) {
       await db.insert(companyMemberships).values({ companyId: fixture.company.id, principalType: "user",
         principalId: "board", status: "active", membershipRole: "owner" });
       const remote = await createRemoteMcpToolFixture(db, fixture.company.id);
@@ -325,6 +327,9 @@ describeEmbeddedPostgres("tool gateway service", () => {
         .where(eq(toolCatalogEntries.id, remote.catalogEntry.id));
       await db.insert(toolPolicies).values({ companyId: fixture.company.id, name: "Review connected writes",
         policyType: "require_approval", priority: 10, selectors: { connectionId: remote.connection.id } });
+      if (rateLimited) await db.insert(toolPolicies).values({ companyId: fixture.company.id, name: "One reviewed test call",
+        policyType: "rate_limit", priority: 1, selectors: { connectionId: remote.connection.id },
+        config: { limit: 1, windowSeconds: 3600, keyBy: ["agent", "tool"] } });
       gateway = createTestToolGatewayService(db, { remoteHttpRequest: provider });
       const result = await gateway.executeTestCall({ companyId: fixture.company.id, connectionId: remote.connection.id,
         agentId: fixture.agent.id, userId: "board", toolName: "needs_input", parameters: { value: "reviewed" } });
@@ -667,6 +672,22 @@ describeEmbeddedPostgres("tool gateway service", () => {
         expect(await db.select().from(toolCallEvents).where(eq(toolCallEvents.reasonCode, "approved_action_executed"))).toHaveLength(1);
       });
 
+      it.each(["foreground", "recovery"] as const)("preserves the admitted rate slot for an agent action through %s approval", async mode => {
+        await db.insert(toolPolicies).values({ companyId: fixture.company.id, name: "One reviewed note",
+          policyType: "rate_limit", priority: 1, selectors: { toolName: "mcp-remote-fixture:update_note" },
+          config: { limit: 1, windowSeconds: 3600, keyBy: ["agent", "tool"] } });
+        const pending = await request();
+        const counters = await db.select().from(toolRateLimitCounters);
+        expect(counters).toHaveLength(1); expect(counters[0].remaining).toBe(0);
+        if (mode === "foreground") {
+          await gateway.approveActionRequest({ companyId: fixture.company.id, actionRequestId: pending.id, actor: { userId: "board" } });
+          await startRecovery();
+        } else { await approve(pending); await startRecovery(); }
+        await settle(); await executed(pending); await quiet();
+        expect(await db.select().from(toolRateLimitCounters)).toEqual(counters);
+        expect(await db.select().from(toolCallEvents).where(eq(toolCallEvents.reasonCode, "approved_action_executed"))).toHaveLength(1);
+      });
+
       it("reconstructs a saved approved action after restart", async () => {
         const pending = await request(); await approve(pending);
         await startRecovery(); await settle(); await executed(pending); await quiet();
@@ -679,6 +700,125 @@ describeEmbeddedPostgres("tool gateway service", () => {
         expect(recover).toHaveBeenCalledTimes(1); expect(coordinator!.nextWakeAt()).not.toBeNull();
         await settle(10_000); expect(recover).toHaveBeenCalledTimes(1);
         recover.mockRestore(); await settle(); await executed(pending); await quiet();
+      });
+
+      it.each([null, "unreadable-old-signature"])("settles an approved invalid signature (%s) without recurring recovery", async signedArguments => {
+        const pending = await request(); await approve(pending);
+        await db.update(toolActionRequests).set({ signedArguments }).where(eq(toolActionRequests.id, pending.id));
+        const dispatch = vi.spyOn(gateway, "approveActionRequest");
+        await startRecovery(); await settle();
+        expect((await db.select().from(toolActionRequests))[0].status).toBe("cancelled");
+        expect((await db.select().from(toolInvocations))[0]).toMatchObject({
+          status: "failed", errorCode: "action_request_invalidated",
+        });
+        expect(dispatch).not.toHaveBeenCalled(); await quiet();
+      });
+
+      it.each(["rejected", "cancelled"])("settles a %s formal approval without recurring recovery", async status => {
+        const pending = await request(); await approve(pending);
+        const [formal] = await db.insert(approvals).values({ companyId: fixture.company.id,
+          type: "request_board_approval", status, payload: {} }).returning();
+        await db.update(toolActionRequests).set({ approvalId: formal.id }).where(eq(toolActionRequests.id, pending.id));
+        const dispatch = vi.spyOn(gateway, "approveActionRequest");
+        await startRecovery(); await settle();
+        expect((await db.select().from(toolActionRequests))[0].status).toBe("cancelled");
+        expect((await db.select().from(toolInvocations))[0]).toMatchObject({
+          status: "denied", errorCode: "formal_approval_unavailable",
+        });
+        expect(dispatch).not.toHaveBeenCalled(); await quiet();
+      });
+
+      it.each([false, true])("parks a formal approval until its decision commits (rollback %s)", async rollback => {
+        const pending = await request(); await approve(pending);
+        const [formal] = await db.insert(approvals).values({ companyId: fixture.company.id,
+          type: "request_board_approval", status: "pending", payload: {} }).returning();
+        await db.update(toolActionRequests).set({ approvalId: formal.id }).where(eq(toolActionRequests.id, pending.id));
+        await startRecovery(); await quiet();
+        let release!: () => void, staged!: () => void;
+        const gate = new Promise<void>(resolve => { release = resolve; });
+        const ready = new Promise<void>(resolve => { staged = resolve; });
+        const aborted = new Error("formal approval rollback fixture");
+        const writing = db.transaction(async tx => {
+          await approvalService(tx as unknown as typeof db).approve(formal.id, "board");
+          staged(); await gate; if (rollback) throw aborted;
+        }).catch(error => { if (error !== aborted) throw error; });
+        await Promise.race([ready, writing]);
+        try {
+          await vi.advanceTimersByTimeAsync(60_000);
+          expect((await db.select().from(toolActionRequests))[0].status).toBe("approved");
+          expect((await db.select().from(toolInvocations))[0].status).toBe("awaiting_approval");
+        } finally { release(); }
+        await writing; await settle();
+        if (rollback) {
+          expect((await db.select().from(toolActionRequests))[0].status).toBe("approved"); await quiet();
+          await approvalService(db).approve(formal.id, "board"); await settle();
+        }
+        await executed(pending); await quiet();
+        expect(await db.select().from(toolCallEvents).where(eq(toolCallEvents.reasonCode, "approved_action_executed"))).toHaveLength(1);
+      });
+
+      it.each(["reject", "cancel"] as const)("wakes a parked revision-requested formal approval on %s", async decision => {
+        const pending = await request(); await approve(pending);
+        const [formal] = await db.insert(approvals).values({ companyId: fixture.company.id,
+          type: "request_board_approval", status: "revision_requested", payload: {} }).returning();
+        await db.update(toolActionRequests).set({ approvalId: formal.id }).where(eq(toolActionRequests.id, pending.id));
+        await startRecovery(); await quiet();
+        const service = approvalService(db);
+        if (decision === "cancel") await service.cancel(formal.id, "Cancelled by user");
+        else await service.reject(formal.id, "board");
+        await settle();
+        expect((await db.select().from(toolActionRequests))[0].status).toBe("cancelled");
+        expect((await db.select().from(toolInvocations))[0]).toMatchObject({ status: "denied", errorCode: "formal_approval_unavailable" });
+        await quiet();
+      });
+
+      it("retains approved work when the signing key is temporarily unavailable", async () => {
+        const pending = await request(); await approve(pending);
+        vi.stubEnv("PAPERCLIP_TOOL_ACTION_SIGNING_SECRET", "");
+        vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "invalid-master-key");
+        gateway = createToolGatewayService(db);
+        await startRecovery();
+        expect(coordinator!.nextWakeAt()).not.toBeNull();
+        expect((await db.select().from(toolActionRequests))[0].status).toBe("approved");
+        expect((await db.select().from(toolInvocations))[0].status).toBe("awaiting_approval");
+        vi.stubEnv("PAPERCLIP_TOOL_ACTION_SIGNING_SECRET", testToolActionSigningSecret);
+        await settle(); await executed(pending); await quiet();
+      });
+
+      it("does not accept another company's formal approval", async () => {
+        const pending = await request(); await approve(pending);
+        const other = await createRunFixture(db);
+        const [formal] = await db.insert(approvals).values({ companyId: other.company.id,
+          type: "request_board_approval", status: "approved", payload: {} }).returning();
+        await db.update(toolActionRequests).set({ approvalId: formal.id }).where(eq(toolActionRequests.id, pending.id));
+        await startRecovery(); await settle();
+        expect((await db.select().from(toolActionRequests))[0].status).toBe("cancelled");
+        expect((await db.select().from(toolInvocations))[0]).toMatchObject({ status: "denied", errorCode: "formal_approval_unavailable" });
+        expect((await db.select().from(approvals))[0]).toEqual(formal);
+        await quiet();
+      });
+
+      it("quarantines a mismatched request without modifying another company's invocation", async () => {
+        const pending = await request(); await approve(pending);
+        const [invocation] = await db.select().from(toolInvocations);
+        const other = await createRunFixture(db);
+        await db.update(toolActionRequests).set({ companyId: other.company.id }).where(eq(toolActionRequests.id, pending.id));
+        await startRecovery(); await settle();
+        expect((await db.select().from(toolActionRequests))[0].status).toBe("failed");
+        expect((await db.select().from(toolInvocations))[0]).toEqual(invocation);
+        await quiet();
+      });
+
+      it("repairs completed agent history without executing the action again", async () => {
+        const pending = await request();
+        await gateway.approveActionRequest({ companyId: fixture.company.id, actionRequestId: pending.id, actor: { userId: "board" } });
+        await executed(pending);
+        const [invocation] = await db.select().from(toolInvocations);
+        await db.update(toolActionRequests).set({ status: "approved", signedArguments: "unreadable-old-signature" })
+          .where(eq(toolActionRequests.id, pending.id));
+        await startRecovery(); await settle(); await executed(pending); await quiet();
+        expect((await db.select().from(toolInvocations))[0]).toEqual(invocation);
+        expect(await db.select().from(toolCallEvents).where(eq(toolCallEvents.reasonCode, "approved_action_executed"))).toHaveLength(1);
       });
 
       it("keeps deliberately inert legacy approvals quiet", async () => {
@@ -743,6 +883,20 @@ describeEmbeddedPostgres("tool gateway service", () => {
         expect(remoteCall.provider).toHaveBeenCalledTimes(1);
       });
 
+      it.each(["foreground", "recovery"] as const)("preserves the admitted rate slot for a Test-tab action through %s approval", async mode => {
+        const remoteCall = providerFixture(); remoteCall.release();
+        const { pending } = await testRequest(remoteCall.provider, true);
+        const counters = await db.select().from(toolRateLimitCounters);
+        expect(counters).toHaveLength(1); expect(counters[0].remaining).toBe(0);
+        if (mode === "foreground") {
+          await gateway.approveActionRequest({ companyId: fixture.company.id, actionRequestId: pending.id, actor: { userId: "board" } });
+          await startRecovery();
+        } else { await approve(pending); await startRecovery(); }
+        await settle(); await executed(pending); await quiet();
+        expect(await db.select().from(toolRateLimitCounters)).toEqual(counters);
+        expect(remoteCall.provider).toHaveBeenCalledOnce();
+      });
+
       it("repairs completed Test-tab history without sending the request again", async () => {
         const remoteCall = providerFixture(); remoteCall.release();
         const { pending } = await testRequest(remoteCall.provider);
@@ -753,6 +907,18 @@ describeEmbeddedPostgres("tool gateway service", () => {
         remoteCall.provider.mockClear();
         await startRecovery(); await settle(); await executed(pending); await quiet();
         expect(remoteCall.provider).not.toHaveBeenCalled();
+      });
+
+      it.each(["pending", "authorized", "cancelled"])("settles inconsistent Test-tab %s history without replay", async status => {
+        const remoteCall = providerFixture(); remoteCall.release();
+        const { pending } = await testRequest(remoteCall.provider); await approve(pending);
+        await db.update(toolInvocations).set({ status }).where(eq(toolInvocations.id, pending.invocationId));
+        await startRecovery(); await settle();
+        expect((await db.select().from(toolActionRequests))[0].status).toBe(status === "cancelled" ? "cancelled" : "failed");
+        expect((await db.select().from(toolInvocations))[0]).toMatchObject(status === "cancelled"
+          ? { status: "cancelled" }
+          : { status: "failed", errorCode: "tool_recovery_state_invalid" });
+        await quiet(); expect(remoteCall.provider).not.toHaveBeenCalled();
       });
 
       it("does not replay an interrupted legacy Test-tab invocation", async () => {
@@ -1225,9 +1391,17 @@ describeEmbeddedPostgres("tool gateway service", () => {
     await expect(gateway.executeTool({ sessionToken: session.token, tool: "mcp-remote-fixture:update_note", parameters: { noteId: "expire" } })).rejects.toMatchObject({ reasonCode: "approval_required" });
     const [request] = await db.select().from(toolActionRequests);
     await db.update(toolActionRequests).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(toolActionRequests.id, request.id));
-    await db.insert(toolActionRequests).values(Array.from({ length: 101 }, (_, i) => ({
+    const [originalInvocation] = await db.select().from(toolInvocations).where(eq(toolInvocations.id, request.invocationId));
+    const blockedInvocations = Array.from({ length: 101 }, (_, i) => ({ ...originalInvocation,
+      id: `10000000-0000-4000-8000-${String(i).padStart(12, "0")}`, approvalState: "approved", idempotencyKey: null,
+    }));
+    await db.insert(toolInvocations).values(blockedInvocations);
+    await db.insert(toolActionRequests).values(blockedInvocations.map((invocation, i) => ({
       ...request, id: `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`,
-      interactionId: null, status: "approved" as const,
+      invocationId: invocation.id, interactionId: null, status: "approved" as const,
+      signedArguments: signToolArguments({ invocationId: invocation.id, toolName: invocation.toolName,
+        canonicalArguments: canonicalToolArguments({ noteId: "blocked" }), executionOnApprove: true,
+        signingSecret: testToolActionSigningSecret }),
     })));
     const recover = vi.spyOn(gateway, "approveActionRequest").mockRejectedValue(new Error("Unavailable approval dependency"));
     expect(await gateway.sweepActionReviews()).toEqual({ scanned: 102 });
