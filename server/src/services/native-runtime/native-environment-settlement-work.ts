@@ -21,6 +21,9 @@ type Settlement = { runId: string; companyId: string; agentId: string; succeeded
 /** Native finalization owes a release, not a new teardown protocol. The existing
  * run-control/environment owners retain workspace, stop and provider checks. */
 export function nativeEnvironmentSettlementWork(db: Db, settle: (input: Settlement) => Promise<void>) {
+  const retryFloors = new Map<string, Entry>();
+  const matches = (item: Entry, scope?: NativeEnvironmentSettlementScope) => !scope || item.companyId === scope.companyId
+    && (!scope.issueId || item.issueId === scope.issueId) && (!scope.runId || item.id === scope.runId);
   function candidates(scope?: NativeEnvironmentSettlementScope, after?: string) {
     return db.select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
       issueId: nativeRunFinalizations.issueId, phase: nativeRunFinalizations.phase,
@@ -48,7 +51,9 @@ export function nativeEnvironmentSettlementWork(db: Db, settle: (input: Settleme
   async function entry(row: Awaited<ReturnType<typeof candidates>>[number]): Promise<Entry | null> {
     const dueAt = await nextRunLeaseReleaseAt(db, row.companyId, row.id,
       nativeEnvironmentSettlementDisposition(row, row.phase === "committed"));
-    return dueAt === null ? null : { id: row.id, companyId: row.companyId, issueId: row.issueId, dueAt };
+    if (dueAt === null) { retryFloors.delete(row.id); return null; }
+    return { id: row.id, companyId: row.companyId, issueId: row.issueId,
+      dueAt: Math.max(dueAt, retryFloors.get(row.id)?.dueAt ?? 0) };
   }
   async function load(scope?: NativeEnvironmentSettlementScope, signal?: AbortSignal, canRun = () => true): Promise<Entry[]> {
     const entries: Entry[] = [];
@@ -60,7 +65,11 @@ export function nativeEnvironmentSettlementWork(db: Db, settle: (input: Settleme
         const pending = await entry(row);
         if (pending) entries.push(pending);
       }
-      if (rows.length < 100) return entries;
+      if (rows.length < 100) {
+        const retained = new Set(entries.map(item => item.id));
+        for (const item of retryFloors.values()) if (matches(item, scope) && !retained.has(item.id)) retryFloors.delete(item.id);
+        return entries;
+      }
       after = rows[rows.length - 1].id;
     }
     throw new Error("Native environment discovery stopped");
@@ -69,7 +78,7 @@ export function nativeEnvironmentSettlementWork(db: Db, settle: (input: Settleme
     if (signal?.aborted) throw new Error("Native environment settlement stopped");
     const scope = { companyId: current.companyId, issueId: current.issueId, runId: current.id };
     const [row] = await candidates(scope);
-    if (!row) return null;
+    if (!row) { retryFloors.delete(current.id); return null; }
     const pending = await entry(row);
     if (!pending || pending.dueAt > Date.now()) return pending;
     if (signal?.aborted) throw new Error("Native environment settlement stopped");
@@ -78,15 +87,19 @@ export function nativeEnvironmentSettlementWork(db: Db, settle: (input: Settleme
     // acknowledgment: only the owning lease records can discharge this work.
     const [remaining] = await candidates(scope);
     const next = remaining ? await entry(remaining) : null;
-    return next ? { ...next, dueAt: Math.max(next.dueAt, Date.now() + 30_000) } : null;
+    if (!next) { retryFloors.delete(current.id); return null; }
+    const floor = Date.now() + 30_000;
+    // A scope reload is a hint, not authority to erase the last attempt's
+    // cooldown. Keep only this process's retry floor; saved deadlines stay live.
+    retryFloors.set(current.id, { ...next, dueAt: floor });
+    return { ...next, dueAt: Math.max(next.dueAt, floor) };
   }
   function register(coordinator: ReturnType<typeof createDeliveryWorkCoordinator>, canRun: () => boolean,
     canRecover: () => Promise<boolean> = async () => true) {
     return registerScopedDeadlineWork(coordinator, {
       queue: DELIVERY_QUEUES.nativeEnvironmentSettlement, batchSize: 1,
       decodeScope: (hint: string): NativeEnvironmentSettlementScope | undefined => hint === "*" ? undefined : JSON.parse(hint),
-      matches: (item: Entry, scope?: NativeEnvironmentSettlementScope) => !scope || item.companyId === scope.companyId
-        && (!scope.issueId || item.issueId === scope.issueId) && (!scope.runId || item.id === scope.runId),
+      matches,
       load: async (scope, signal) => await canRecover() ? load(scope, signal, canRun) : [],
       check: async (item, signal) => {
         if (!canRun()) throw new Error("Native environment settlement paused");

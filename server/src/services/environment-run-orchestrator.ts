@@ -672,6 +672,8 @@ export function environmentRunOrchestrator(
     failureReason?: string;
     /** Explicit Stop during adapter startup; never used for ordinary cleanup. */
     cancelActiveWork?: boolean;
+    /** Background settlement must honor each lease's saved cleanup deadline. */
+    respectCleanupDeadlines?: boolean;
     /** Explicit paperclip_runner resource lifecycle. Omitted for legacy adapters. */
     providerResourceDisposition?: ProviderResourceDisposition;
     nativeLifecycleTelemetry?: {
@@ -694,7 +696,9 @@ export function environmentRunOrchestrator(
         status,
         (leaseId, error) => result.errors.push({ leaseId, error }),
         input.providerResourceDisposition,
-        ...(input.cancelActiveWork ? [true] as const : []),
+        ...(input.respectCleanupDeadlines
+          ? [input.cancelActiveWork, { respectCleanupDeadlines: true }] as const
+          : input.cancelActiveWork ? [true] as const : []),
       );
     } catch (err) {
       result.errors.push({ leaseId: "*", error: err });

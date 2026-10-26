@@ -127,3 +127,30 @@ or fleet cost reduction is claimed. Future deadlines still need their existing
 external-wake/blocker contract before a host can sleep. The next distinct duties
 in this callback are runtime-service lease settlement and agent terminal-status
 projection; descriptor filesystem cleanup is another separate owner.
+
+## Review repair: per-lease deadlines and notification-safe retries
+
+Greptile's first review found two valid gaps at `7126f8e394`:
+
+1. One active lease made the whole run immediately due, and the existing batch
+   release then also attempted a second lease with a future cleanup deadline.
+2. A notification reload rebuilt active debt at deadline zero and erased the
+   worker's 30-second retry floor. Unrelated lease changes could cause one-second
+   retries of the same failed release.
+
+Both defects reproduced before the repair. The mixed-lease test observed an
+unexpected stop attempt. The notification test observed four release attempts
+where one was expected.
+
+The background release capability now passes `respectCleanupDeadlines` through
+run-control and the orchestrator to the existing environment runtime. The runtime
+filters each lease by the shared deadline expression and rechecks that expression
+at a stop-only claim. A stop intent prepared by this very call may make its first
+attempt immediately, fenced by its fresh attempt identity and zero saved retry.
+Manual/live release retains its prior default behavior.
+
+The worker retains a per-run in-memory retry floor across scope reloads. The saved
+cleanup deadline remains authoritative and can change; the map retains only the
+last attempt's minimum spacing. Entries are removed once their scoped debt no
+longer exists. Restart reconstructs durable lease truth as before. No new
+persistence or framework-wide scheduler semantics were added for this repair.

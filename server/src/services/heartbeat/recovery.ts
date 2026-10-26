@@ -151,6 +151,7 @@ export interface HeartbeatRecoveryDependencies extends Pick<HeartbeatRetryDepend
     status: string | null | undefined;
     failureReason?: string | null;
     providerResourceDisposition?: ProviderResourceDisposition;
+    respectCleanupDeadlines?: boolean;
   }) => Promise<void>;
   acknowledgeRemoteStop: (runId: string, companyId: string) => Promise<void>;
   resumeRemoteStopComments: (run: HeartbeatRun) => Promise<void>;
@@ -1871,6 +1872,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       status: settledRun?.status,
       failureReason: settledRun?.error ?? undefined,
       providerResourceDisposition: nativeEnvironmentSettlementDisposition(settledRun, input.succeeded),
+      ...(onlyTerminal ? { respectCleanupDeadlines: true } : {}),
     });
   }
 

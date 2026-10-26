@@ -36,6 +36,7 @@ describe("native environment release scheduling", () => {
   let worker: ReturnType<ReturnType<typeof nativeEnvironmentSettlementWork>["register"]> | undefined;
   let release: ReturnType<typeof vi.fn<EnvironmentDriver["releaseRunLease"]>>;
   let failing = false, admitted = true;
+  let stopOnly: ReturnType<typeof vi.fn>;
   const companyId = randomUUID(), agentId = randomUUID();
   let environmentId: string;
   const priorLogs = process.env.WORKSPACE_OPERATION_LOG_BASE_PATH;
@@ -52,6 +53,7 @@ describe("native environment release scheduling", () => {
   }, 30_000);
   beforeEach(() => {
     admitted = true; failing = false; errors.length = 0;
+    stopOnly = vi.fn(async () => ({ state: "stopped" }));
     release = vi.fn(async input => {
       if (failing) throw new Error("fixture release unavailable");
       return environmentService(db).releaseLease(input.lease.id, input.status ?? "released", { cleanupStatus: "success" });
@@ -70,7 +72,7 @@ describe("native environment release scheduling", () => {
     else process.env.WORKSPACE_OPERATION_LOG_BASE_PATH = priorLogs;
   });
   async function start(runtimeEnv?: NodeJS.ProcessEnv) {
-    const runtime = environmentRuntimeService(db, { drivers: [{ driver: "local", releaseRunLease: release } as EnvironmentDriver] });
+    const runtime = environmentRuntimeService(db, { drivers: ["local", "sandbox"].map(driver => ({ driver, releaseRunLease: release, retryPendingSandboxTeardown: stopOnly }) as EnvironmentDriver) });
     coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => admitted, canReconcile: () => admitted,
       onError: error => errors.push(error) });
     worker = heartbeatService(db, { environmentRuntime: runtime, runtimeEnv }).registerNativeEnvironmentSettlementWork(coordinator, () => admitted);
@@ -251,7 +253,7 @@ describe("native environment release scheduling", () => {
   it.each([true, false])("delegates only periodic environment settlement, keeping manual behavior and other callbacks: %s", async delegated => {
     const binding = await committed(), acquired = await lease(binding);
     const runtimeRelease = vi.spyOn(workspaceRuntime, "releaseRuntimeServicesForRun");
-    const runtime = environmentRuntimeService(db, { drivers: [{ driver: "local", releaseRunLease: release } as EnvironmentDriver] });
+    const runtime = environmentRuntimeService(db, { drivers: ["local", "sandbox"].map(driver => ({ driver, releaseRunLease: release, retryPendingSandboxTeardown: stopOnly }) as EnvironmentDriver) });
     await heartbeatService(db, { environmentRuntime: runtime }).reapOrphanedRuns({ staleThresholdMs: 300_000,
       skipScheduledRetryCancellation: true, skipCapturedInstructionCommit: true, skipInstructionDirectoryCleanup: true,
       skipStoppedInstructionCollection: true, skipCancelledWorkspacePreservation: true, skipObsoletePolicyReviews: true,
@@ -286,9 +288,46 @@ describe("native environment release scheduling", () => {
     });
     const starting = start(); await began;
     const later = await lease(binding); await vi.advanceTimersByTimeAsync(2000);
-    expect(release).toHaveBeenCalledTimes(1); finish(); await starting; await flush();
+    expect(release).toHaveBeenCalledTimes(1); finish(); await starting;
+    await vi.advanceTimersByTimeAsync(30_000); await flush();
     expect(release).toHaveBeenCalledTimes(2);
     expect((await environmentService(db).getLeaseById(later.id))?.status).toBe("released"); await quiet();
+  });
+
+  it("does not let an active lease pull a second lease's cleanup deadline forward", async () => {
+    const binding = await committed(); const active = await lease(binding), deferred = await lease(binding);
+    await environmentService(db).updateLeaseMetadata(deferred.id, {
+      nativeWorkspaceExportResume: {}, pendingCleanupRetryAfterMs: Date.now() + 600_000,
+    });
+    await environmentService(db).releaseLease(deferred.id, "pending_cleanup", { cleanupStatus: "failed" });
+    await start();
+    expect((await environmentService(db).getLeaseById(active.id))?.status).toBe("released");
+    expect(stopOnly).not.toHaveBeenCalled();
+    expect((await environmentService(db).getLeaseById(deferred.id))?.metadata?.pendingCleanupInFlight).not.toBe(true);
+    await environmentService(db).releaseLease(deferred.id, "released", { cleanupStatus: "success" }); await quiet();
+  });
+  it("preserves a failed release's retry floor across unrelated lease notifications", async () => {
+    const binding = await committed(); await lease(binding); failing = true;
+    await start(); expect(release).toHaveBeenCalledTimes(1);
+    const other = await seed(), otherLease = await lease(other);
+    for (let i = 0; i < 3; i++) {
+      await environmentService(db).updateLeaseMetadata(otherLease.id, { change: i });
+      await vi.advanceTimersByTimeAsync(2000); await delay(10);
+    }
+    expect(release).toHaveBeenCalledTimes(1);
+    failing = false; await vi.advanceTimersByTimeAsync(30_000); await flush();
+    expect(release).toHaveBeenCalledTimes(2); await quiet();
+  });
+
+  it("permits the first attempt for a freshly prepared stop without bypassing an old retry", async () => {
+    const binding = await committed(), sandboxId = randomUUID();
+    await db.insert(environments).values({ id: sandboxId, name: "Fresh stop", driver: "sandbox" });
+    const acquired = await environmentService(db).acquireLease({ companyId, environmentId: sandboxId,
+      heartbeatRunId: binding.runId, issueId: binding.issueId, leasePolicy: "ephemeral", provider: "e2b", providerLeaseId: "fresh-stop" });
+    await start(); expect(stopOnly).toHaveBeenCalledTimes(1);
+    // The fixture proves dispatch, not a provider stop receipt. Explicitly settle
+    // its row so the test does not leave synthetic cleanup debt behind.
+    await environmentService(db).releaseLease(acquired.id, "released", { cleanupStatus: "success" }); await quiet();
   });
 
 });

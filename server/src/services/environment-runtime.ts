@@ -1,4 +1,4 @@
-import { pendingRunLeaseReleaseCondition } from "./environment-lease-release-state.js";
+import { dueRunLeaseReleaseCondition, pendingRunLeaseReleaseCondition } from "./environment-lease-release-state.js";
 import { flushDeferredEnvironmentCleanup, registerDeferredEnvironmentCleanup, writeEnvironmentCleanup } from "./environment-cleanup-notifications.js";
 import { executeEnvironmentTask, pluginEnvironmentSupportsTasks, settleDispatchedEnvironmentTask } from "./environment-task-runtime.js";
 import type { PluginEnvironmentTaskOperation } from "@paperclipai/plugin-sdk";
@@ -4199,6 +4199,7 @@ export function environmentRuntimeService(
       onLeaseReleaseError?: (leaseId: string, error: unknown) => void,
       providerResourceDisposition?: ProviderResourceDisposition,
       cancelActiveWork?: boolean,
+      releaseOptions?: { respectCleanupDeadlines?: boolean },
     ): Promise<EnvironmentRuntimeLeaseRecord[]> {
       const leaseRows = await db
         .select()
@@ -4207,6 +4208,7 @@ export function environmentRuntimeService(
           and(
             eq(environmentLeases.heartbeatRunId, heartbeatRunId),
             pendingRunLeaseReleaseCondition(providerResourceDisposition === "destroy"),
+            releaseOptions?.respectCleanupDeadlines ? dueRunLeaseReleaseCondition() : undefined,
           ),
         );
       if (leaseRows.length === 0) {
@@ -4234,6 +4236,7 @@ export function environmentRuntimeService(
             ? await environmentsSvc.getById(leaseRow.environmentId)
             : null;
           let leaseSnapshot = toEnvironmentLeaseSnapshot(leaseRow);
+          let preparedStopAttemptId: unknown;
           if (hasNativeWorkspaceExportResume(leaseSnapshot) && providerResourceDisposition === "destroy") {
             const completed = await releaseCompletedNativeWorkspaceExportRetention(db, leaseSnapshot);
             if (completed) leaseSnapshot = toEnvironmentLeaseSnapshot(completed);
@@ -4243,6 +4246,7 @@ export function environmentRuntimeService(
             const prepared = await prepareSandboxStopAndRetain(db, leaseSnapshot);
             if (!prepared) continue;
             leaseSnapshot = toEnvironmentLeaseSnapshot(prepared);
+            preparedStopAttemptId = prepared.metadata?.pendingCleanupAttemptId;
           }
           if (hasStopOnlyCleanup(leaseSnapshot)) {
             const intentKey = stopOnlyCleanupKey(leaseSnapshot);
@@ -4254,6 +4258,13 @@ export function environmentRuntimeService(
             }).where(and(eq(environmentLeases.id, leaseRow.id), eq(environmentLeases.heartbeatRunId, heartbeatRunId),
               inArray(environmentLeases.status, ["active", "pending_cleanup"]),
               sql`coalesce(${environmentLeases.metadata}->>'pendingCleanupInFlight', 'false') = 'false'`,
+              releaseOptions?.respectCleanupDeadlines ? or(dueRunLeaseReleaseCondition(),
+                // This call just prepared a new stop intent. It may make the
+                // first attempt immediately, but cannot inherit an older retry.
+                typeof preparedStopAttemptId === "string" ? and(
+                  sql`${environmentLeases.metadata}->>'pendingCleanupAttemptId' = ${preparedStopAttemptId}`,
+                  sql`${environmentLeases.metadata}->>'pendingCleanupRetryAfterMs' = '0'`,
+                ) : undefined) : undefined,
               sql`${environmentLeases.metadata}->${intentKey} = ${JSON.stringify(leaseSnapshot.metadata?.[intentKey])}::jsonb`,
             )).returning());
             if (!claimed) continue;

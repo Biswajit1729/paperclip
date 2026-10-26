@@ -354,6 +354,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     status: string | null | undefined;
     failureReason?: string | null;
     providerResourceDisposition?: ProviderResourceDisposition;
+    respectCleanupDeadlines?: boolean;
     nativeLifecycleTelemetry?: {
       provider: string;
       harness: string;
@@ -455,6 +456,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
         status: leaseReleaseStatusForRunStatus(status),
         failureReason: input.failureReason ?? undefined,
         providerResourceDisposition,
+        ...(input.respectCleanupDeadlines ? { respectCleanupDeadlines: true } : {}),
         nativeLifecycleTelemetry: input.nativeLifecycleTelemetry,
       })
       .catch((err) => {
