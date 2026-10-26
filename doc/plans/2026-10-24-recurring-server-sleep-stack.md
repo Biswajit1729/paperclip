@@ -2535,3 +2535,14 @@ question-history fixture passes on recheck, and server types pass. Dependency an
 remaining authority/producer audits, task-history/query costs, wiring, periodic
 removal and remote gates remain outstanding. The full stack remains incomplete;
 nothing merged.
+
+
+Slice 50 dependency checkpoint: seven stale-completion races are reproduced and
+fixed through the existing dependency-readiness owner. Scheduled status commit
+locks/rechecks prerequisite and workspace-finalization sources with nonblocking
+contention handling; ordinary readers retain their behavior. All 181 distinct
+status/lifecycle/dependency consumer cases and server types pass. The audit keeps
+the initial unordered assertion and misconfigured embedded-test invocation
+failures and their repairs. Remaining authority/producer coverage, cost, startup
+integration, periodic removal, remote gates, earlier stack findings and the full
+original scope remain open. Nothing merged.

@@ -1606,7 +1606,7 @@ export async function commitNativeStatusDecision(input: {
   requireNoPendingChildCompletion?: NativeChildCompletionRecipient;
   requireReassessmentSource?: {
     phase: string; resultId: string; assessmentId: string; decisionId: string | null; agentId: string;
-    retiredAutomaticReview: { contractId: string; governanceGate: NativeGovernanceGate | null } | null;
+    retiredAutomaticReview: { contractId: string; governanceGate: NativeGovernanceGate | null; hasUnresolvedIssueBlockers: boolean } | null;
   };
   requireModelRejectionOwner?: { agentId: string; reviewContext: NativeReviewAssignmentContext | null };
   requireProviderFailureOwner?: { agentId: string; reviewContext: NativeReviewAssignmentContext | null };
@@ -1699,6 +1699,10 @@ export async function commitNativeStatusDecision(input: {
             issueId: input.issueId, runId: input.runId, executionState });
           const expectedGate = expected.retiredAutomaticReview.governanceGate;
           if (gate?.kind !== expectedGate?.kind || gate?.id !== expectedGate?.id) throw new NativeStatusRaceError();
+          const readiness = await issueService(tx as unknown as Db).getDependencyReadiness(input.issueId, tx, { lockSources: true });
+          if ((readiness.unresolvedBlockerCount > 0) !== expected.retiredAutomaticReview.hasUnresolvedIssueBlockers) {
+            throw new NativeStatusRaceError();
+          }
         } catch (error) {
           if (record(error).code === "55P03" || record(record(error).cause).code === "55P03") throw new NativeStatusRaceError();
           throw error;

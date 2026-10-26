@@ -2470,6 +2470,7 @@ async function listPendingFinalizeBlockerIssueIds(
     blockerIssueId: string;
     executionWorkspaceId: string;
   }>,
+  lockSources = false,
 ): Promise<Set<string>> {
   const pending = new Set<string>();
   const blockerIssueIds = [
@@ -2486,7 +2487,14 @@ async function listPendingFinalizeBlockerIssueIds(
     ),
   );
 
-  const rows = await dbOrTx
+  if (lockSources) {
+    // Fence new operations, including ones without an issue attribution, through
+    // their workspace FK. Existing operation changes are locked below.
+    await dbOrTx.select({ id: executionWorkspaces.id }).from(executionWorkspaces)
+      .where(and(eq(executionWorkspaces.companyId, companyId), inArray(executionWorkspaces.id, executionWorkspaceIds)))
+      .for("update", { noWait: true });
+  }
+  const query = dbOrTx
     .select({
       issueId: workspaceOperations.issueId,
       executionWorkspaceId: workspaceOperations.executionWorkspaceId,
@@ -2504,6 +2512,8 @@ async function listPendingFinalizeBlockerIssueIds(
         ),
       ),
     );
+
+  const rows = await (lockSources ? query.for("share", { noWait: true }) : query);
 
   const latestAttributedByBlockerWorkspace = new Map<
     string,
@@ -2654,6 +2664,7 @@ async function listIssueDependencyReadinessMap(
   dbOrTx: Pick<Db, "select">,
   companyId: string,
   issueIds: string[],
+  lockSources = false,
 ) {
   const uniqueIssueIds = [...new Set(issueIds.filter(Boolean))];
   const readinessMap = new Map<string, IssueDependencyReadiness>();
@@ -2662,7 +2673,7 @@ async function listIssueDependencyReadinessMap(
   }
   if (uniqueIssueIds.length === 0) return readinessMap;
 
-  const blockerRows = await dbOrTx
+  const blockerQuery = dbOrTx
     .select({
       issueId: issueRelations.relatedIssueId,
       blockerIssueId: issueRelations.issueId,
@@ -2678,6 +2689,10 @@ async function listIssueDependencyReadinessMap(
         inArray(issueRelations.relatedIssueId, uniqueIssueIds),
       ),
     );
+
+  // Callers opting into locks already hold the dependent issue FOR UPDATE,
+  // which fences new relation FKs. NOWAIT avoids reversing graph-writer order.
+  const blockerRows = await (lockSources ? blockerQuery.for("update", { noWait: true }) : blockerQuery);
 
   // Collect issue/workspace pairs of "done" blockers — these are the only ones
   // subject to the workspace-finalize barrier. Blockers that aren't done already
@@ -2699,6 +2714,7 @@ async function listIssueDependencyReadinessMap(
       dbOrTx,
       companyId,
       doneBlockerWorkspacePairs,
+      lockSources,
     );
 
   for (const row of blockerRows) {
@@ -9193,7 +9209,13 @@ export function issueService(db: Db) {
       };
     },
 
-    getDependencyReadiness: async (issueId: string, dbOrTx: any = db) => {
+    // lockSources requires a transaction holding the dependent issue FOR UPDATE.
+    // The ordinary read path retains its existing query/locking behavior.
+    getDependencyReadiness: async (
+      issueId: string,
+      dbOrTx: any = db,
+      options: { lockSources?: boolean } = {},
+    ) => {
       const issue = await dbOrTx
         .select({ id: issues.id, companyId: issues.companyId })
         .from(issues)
@@ -9206,6 +9228,7 @@ export function issueService(db: Db) {
         dbOrTx,
         issue.companyId,
         [issueId],
+        options.lockSources,
       );
       return readiness.get(issueId) ?? createIssueDependencyReadiness(issueId);
     },

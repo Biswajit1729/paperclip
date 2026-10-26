@@ -23,6 +23,8 @@ import {
   agentWakeupRequests,
   companies,
   completionContracts,
+  executionWorkspaces,
+  issueRelations,
   createDb,
   heartbeatRuns,
   issueThreadInteractions,
@@ -2491,7 +2493,7 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
         id: replacementRunId, companyId, agentId, status: "running", runtimeMode: "native",
         nativeIssueId: seeded.issueId, contextSnapshot: { issueId: seeded.issueId },
       });
-      const originalEffects = await db.select().from(statusDecisionEffects).where(eq(statusDecisionEffects.decisionId, selected.decisionId!));
+      const originalEffects = await db.select().from(statusDecisionEffects).where(eq(statusDecisionEffects.decisionId, selected.decisionId!)).orderBy(statusDecisionEffects.ordinal);
       expect(originalEffects.length).toBeGreaterThan(0);
       const transaction = db.transaction.bind(db);
       let newContractId: string | undefined;
@@ -2562,7 +2564,7 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       expect(await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, seeded.issueId))).toHaveLength(1);
       if (change) expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, seeded.runId)))[0]).toMatchObject(change);
       if (changed === "effects") {
-        expect(await db.select().from(statusDecisionEffects).where(eq(statusDecisionEffects.decisionId, selected.decisionId!)))
+        expect(await db.select().from(statusDecisionEffects).where(eq(statusDecisionEffects.decisionId, selected.decisionId!)).orderBy(statusDecisionEffects.ordinal))
           .toEqual(originalEffects.map(effect => ({ ...effect, deliveryState: "pending" })));
         for (const effect of originalEffects) await db.update(statusDecisionEffects).set({ deliveryState: effect.deliveryState })
           .where(eq(statusDecisionEffects.id, effect.id));
@@ -2683,6 +2685,70 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       if (changed === "approval link") await db.delete(issueApprovals).where(eq(issueApprovals.approvalId, approvalId));
       if (changed === "approval reopening") await db.update(approvals).set({ status: "approved" }).where(eq(approvals.id, approvalId));
       if (changed === "interaction") await db.delete(issueThreadInteractions).where(eq(issueThreadInteractions.id, interactionId));
+      expect(await reassessNativeStatusFromSource(db, selected, { onlyWhenDue: true })).toMatchObject({ kind: "committed" });
+      expect((await issueService(db).getById(seeded.issueId))!.status).toBe("done");
+    }, 30_000,
+  );
+
+  it.each(["new blocker", "reopened blocker", "blocker writer", "workspace operation", "workspace status", "workspace writer", "workspace insert writer"] as const)(
+    "fences reassessment against changed dependency readiness: %s", async changed => {
+      const seeded = await seedAutomaticReview();
+      await dismissAutomaticCompletionReviews(db, seeded.issueId);
+      const [source] = await db.select({
+        runId: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
+        issueId: issues.id, issueStatus: issues.status, issueStatusVersion: issues.statusVersion,
+        issueDecisionId: issues.lastStatusDecisionId, coordinatorPhase: nativeRunFinalizations.phase,
+        assessmentId: nativeRunFinalizations.assessmentId, decisionId: nativeRunFinalizations.decisionId,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      }).from(nativeRunFinalizations).innerJoin(heartbeatRuns, eq(heartbeatRuns.id, nativeRunFinalizations.runId))
+        .innerJoin(issues, eq(issues.id, nativeRunFinalizations.issueId))
+        .where(eq(nativeRunFinalizations.runId, seeded.runId));
+      const selected = { ...source, assessmentId: source.assessmentId! };
+      const blockerId = randomUUID(), workspaceId = randomUUID(), operationId = randomUUID();
+      const workspaceCase = changed.startsWith("workspace");
+      if (workspaceCase) await db.insert(executionWorkspaces).values({ id: workspaceId, companyId,
+        mode: "isolated", strategyType: "git_worktree", name: "Dependency workspace" });
+      await db.insert(issues).values({ id: blockerId, companyId, title: "Prerequisite",
+        status: changed === "new blocker" ? "todo" : "done", executionWorkspaceId: workspaceCase ? workspaceId : null });
+      if (changed !== "new blocker") await db.insert(issueRelations).values({ companyId, issueId: blockerId, relatedIssueId: seeded.issueId, type: "blocks" });
+      if (changed === "workspace status" || changed === "workspace writer") await db.insert(workspaceOperations).values({
+        id: operationId, companyId, issueId: blockerId, executionWorkspaceId: workspaceId, phase: "workspace_finalize", status: "succeeded" });
+      expect((await issueService(db).getDependencyReadiness(seeded.issueId)).isDependencyReady).toBe(true);
+      const transaction = db.transaction.bind(db);
+      let release!: () => void;
+      let writer: Promise<void> | undefined;
+      const pendingOperation = { id: operationId, companyId, executionWorkspaceId: workspaceId,
+        phase: "workspace_finalize", status: "running" };
+      const intercept = vi.spyOn(db, "transaction").mockImplementationOnce((async (callback, options) => {
+        if (changed === "new blocker") await db.insert(issueRelations).values({ companyId, issueId: blockerId, relatedIssueId: seeded.issueId, type: "blocks" });
+        if (changed === "reopened blocker") await db.update(issues).set({ status: "todo" }).where(eq(issues.id, blockerId));
+        if (changed === "workspace operation") await db.insert(workspaceOperations).values(pendingOperation);
+        if (changed === "workspace status") await db.update(workspaceOperations).set({ status: "failed" }).where(eq(workspaceOperations.id, operationId));
+        if (changed.endsWith("writer")) {
+          let entered!: () => void;
+          const ready = new Promise<void>(resolve => { entered = resolve; });
+          const released = new Promise<void>(resolve => { release = resolve; });
+          const rollback = new Error("rollback dependency writer");
+          writer = transaction(async tx => {
+            if (changed === "blocker writer") await tx.update(issues).set({ status: "todo" }).where(eq(issues.id, blockerId));
+            if (changed === "workspace writer") await tx.update(workspaceOperations).set({ status: "failed" }).where(eq(workspaceOperations.id, operationId));
+            if (changed === "workspace insert writer") await tx.insert(workspaceOperations).values(pendingOperation);
+            entered(); await released; throw rollback;
+          }).catch(error => { if (error !== rollback) throw error; });
+          await Promise.race([ready, writer]);
+        }
+        return transaction(async tx => {
+          await tx.execute(sql`set local statement_timeout = '2s'`);
+          return callback(tx);
+        }, options);
+      }) as typeof db.transaction);
+      try {
+        expect(await reassessNativeStatusFromSource(db, selected, { onlyWhenDue: true })).toEqual({ kind: "deferred", retry: true });
+      } finally { intercept.mockRestore(); release?.(); await writer; }
+      expect((await issueService(db).getById(seeded.issueId))!.status).toBe("in_review");
+      expect(await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, seeded.issueId))).toHaveLength(1);
+      if (changed === "new blocker" || changed === "reopened blocker") await db.update(issues).set({ status: "done" }).where(eq(issues.id, blockerId));
+      if (changed === "workspace operation" || changed === "workspace status") await db.update(workspaceOperations).set({ status: "succeeded" }).where(eq(workspaceOperations.id, operationId));
       expect(await reassessNativeStatusFromSource(db, selected, { onlyWhenDue: true })).toMatchObject({ kind: "committed" });
       expect((await issueService(db).getById(seeded.issueId))!.status).toBe("done");
     }, 30_000,

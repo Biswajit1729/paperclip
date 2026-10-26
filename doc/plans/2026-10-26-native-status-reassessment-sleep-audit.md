@@ -685,3 +685,52 @@ Dependency/readiness and remaining selected-authority/evidence races, remaining
 producers (including handoffs and OAuth reopening), discovery/backlog costs,
 startup wiring, periodic removal and complete PR gates remain outstanding. No
 slice 50 PR or merge is claimed; the original full stack scope remains open.
+
+
+## Dependency readiness commit guard (2026-10-26)
+
+Seven real database races reproduced unsafe completion: a new blocker relation,
+a reopened blocker, an uncommitted blocker status writer, a newly recorded
+unattributed workspace operation, a changed finalize receipt, an uncommitted
+receipt update, and an uncommitted unattributed operation insert. Before the
+repair all seven committed a status decision despite stale dependency readiness.
+Evidence: /tmp/sleep50-dependencies-before.log and .status (exit 1).
+
+Dependency semantics remain in issueService.getDependencyReadiness. Its opt-in
+lockSources mode requires an existing transaction holding the dependent task
+FOR UPDATE. It locks relation/blocker rows FOR UPDATE NOWAIT, then relevant
+execution workspaces FOR UPDATE NOWAIT and their existing operation rows FOR
+SHARE NOWAIT. The workspace lock fences new operations through the existing FK,
+including operations without an issue attribution. Ordinary readiness consumers
+retain their previous query and locking behavior. The attributed/unattributed
+operation selection and later successful finalization rules are unchanged.
+
+The scheduled retired-review commit compares the readiness boolean used by the
+policy with this locked read; contention or a changed predicate defers through
+the existing NativeStatusRaceError retry. It does not create a queue/table or
+introduce an independent timer. Locks only cover the current task's prerequisites
+and relevant workspaces. History-dependent locking cost still needs measurement
+as part of the outstanding discovery/commit cost audit.
+
+Initial combined verification passed 135 corpus cases (including all seven new
+races), but an older effect-state assertion compared unordered SQL results and
+failed when physical row order changed. Both reads now order by effect ordinal.
+The lifecycle suite also failed before setup because the invocation used an
+incorrect external DB variable and fell back to broken embedded PostgreSQL.
+These failures remain in /tmp/sleep50-dependencies-after.log/.status; neither was
+counted as passing. The dependency consumer selection passed 15 cases, and the
+initial typecheck passed. The consumer suite now supports the standard validated
+dedicated external test database contract and closes its pool.
+
+Final verification (all commands terminal):
+- /tmp/sleep50-dependencies-final.log/.status: 136 status corpus plus 30 worker
+  lifecycle cases, all 166 passing. Fresh corpus DB and retained lifecycle history.
+- /tmp/sleep50-dependencies-consumers-final.log/.status: all 15 existing dependency
+  readiness/blocker consumer cases passing; other suites deliberately not selected.
+- /tmp/sleep50-dependencies-final-types.log/.status: server typecheck passing.
+
+The seven regressions also restore or roll back the competing state and prove
+that reassessment can subsequently complete. Remaining authority/evidence races,
+producer coverage (including handoffs and OAuth reopening), task-history/backlog
+cost, startup wiring, periodic removal and remote PR acceptance remain open.
+No new PR or merge, and no whole-instance sleep claim.
