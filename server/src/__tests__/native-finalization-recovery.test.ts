@@ -28,7 +28,7 @@ import {
   reconcileRetainedNativeSessionCleanups,
 } from "../services/native-runtime/native-finalization-reconciler.js";
 import { PaperclipControlPlanePort } from "../services/native-runtime/paperclip-control-plane-port.js";
-import { assertRetainedNativeSourceArchiveSettled } from "../services/native-runtime/native-session-executor.js";
+import { assertRetainedNativeSourceArchiveSettled, reconcileRetainedNativeSessionCleanup } from "../services/native-runtime/native-session-executor.js";
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_NATIVE_FINALIZATION_TEST_DATABASE_URL");
 
@@ -502,6 +502,15 @@ describe("retained native cleanup discovery", () => {
     });
     return runId;
   }
+
+  it("does not misclassify a real competing row lock as ineligible retained history", async () => {
+    const runId = await candidate();
+    await db.transaction(async tx => {
+      await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).for("update");
+      await expect(reconcileRetainedNativeSessionCleanup(db, { companyId, runId }))
+        .rejects.toMatchObject({ cause: { code: "55P03" } });
+    });
+  });
 
   it("reconstructs future lease deadlines without authorizing early legacy cleanup", async () => {
     const leaseExpiresAt = new Date(Date.now() + 60_000);

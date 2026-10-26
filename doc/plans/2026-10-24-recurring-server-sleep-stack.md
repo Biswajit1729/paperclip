@@ -2617,3 +2617,16 @@ finalization cases, 72 exact physical-cleanup cases and server types pass. See
 [the audit](2026-10-26-retained-native-session-cleanup-sleep-audit.md) for producer,
 physical-owner, shutdown and outcome gaps. No scheduled cleanup worker is wired
 and periodic cleanup remains enabled. The full scope remains incomplete.
+
+
+Slice 51 outcome checkpoint: pre-claim database/commit failures now propagate
+instead of being discarded as ineligible history. Typed waiting outcomes preserve
+process/session/environment/maintenance ownership and the actual coordinator lease
+expiry. Four injected failures, a real PostgreSQL row-lock regression and six
+waiting-state regressions reproduced the old behavior. The repaired source passes
+798 executor cases (15 embedded-DB cases excluded), 36 database cases and server
+types; strengthened physical reactivation tests pass all 80 selected cases again.
+The owner audit preserves the reused-fixture failure and initial fixture type error.
+Worker registration, producer/release notifications, quiet/lifecycle/cost proof,
+periodic removal and a slice 51 PR remain outstanding. No polling duty is claimed
+removed by this checkpoint; all original stack scope stays active and unmerged.

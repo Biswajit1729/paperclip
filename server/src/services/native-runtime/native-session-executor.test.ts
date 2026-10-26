@@ -31,6 +31,7 @@ import { inspect } from "node:util";
 import { dirname, join } from "node:path";
 import {
   heartbeatRuns,
+  environmentLeases,
   heartbeatRunEvents,
   issues,
   nativeRunFinalizations,
@@ -3433,6 +3434,18 @@ const execution = {
 
 describe("retained native cleanup activation", () => {
   it.each([
+    Object.assign(new Error("database disconnected"), { code: "CONNECTION_CLOSED" }),
+    new Error("query failed", { cause: Object.assign(new Error("row locked"), { code: "55P03" }) }),
+    new Error("commit acknowledgement unavailable"),
+  ])("preserves a pre-claim database failure for recovery: %s", async failure => {
+    const db = { transaction: vi.fn().mockRejectedValue(failure) } as unknown as Db;
+    await expect(reconcileRetainedNativeSessionCleanup(db, { companyId: "company", runId: "run" }))
+      .rejects.toBe(failure);
+    expect(state.cleanup).not.toHaveBeenCalled();
+    expect(state.retireCleanup).not.toHaveBeenCalled();
+  });
+
+  it.each([
     "settled",
     "provider_transport_failed",
     "canonical_source",
@@ -3505,6 +3518,11 @@ describe("retained native cleanup activation", () => {
     "legacy_activation",
     "released_identity",
     "released_identity_unproven",
+    "invalid_execution_input",
+    "invalid_state_json",
+    "active_environment",
+    "active_finalization_lease",
+    "active_provider_process",
   ])("preserves exact original evidence for %s", async (mode) => {
     const directory = await mkdtemp(
       join(tmpdir(), "paperclip-maintenance-activation-"),
@@ -3594,7 +3612,7 @@ describe("retained native cleanup activation", () => {
       payload: {
         providerSessionId: "exact-thread",
         providerAccountSessionId,
-        processId: 99_999_998,
+        processId: mode === "active_provider_process" ? process.pid : 99_999_998,
       },
     };
     const normalizedIdentity = {
@@ -3775,13 +3793,14 @@ describe("retained native cleanup activation", () => {
       resultId: "result",
       assessmentId: "assessment",
       decisionId: "decision",
-      leaseOwner: null,
-      leaseExpiresAt: null,
+      leaseOwner: mode === "active_finalization_lease" ? "another-owner" : null,
+      leaseExpiresAt: mode === "active_finalization_lease" ? new Date(Date.now() + 60_000) : null,
       nextAttemptAt: null,
       recoveryHistory: [],
     };
     let transactionOpen = false;
     let stopReceiptRead = false;
+    let environmentReleased = false;
     let releaseCommit!: () => void;
     const commitGate = new Promise<void>((release) => {
       releaseCommit = release;
@@ -3790,6 +3809,7 @@ describe("retained native cleanup activation", () => {
       select: () => ({
         from: (table: unknown) => {
           const rows =
+            table === environmentLeases && mode === "active_environment" && !environmentReleased ? [{ id: "active-environment" }] :
             table === heartbeatRuns
               ? [run]
               : table === nativeRunFinalizations
@@ -4231,6 +4251,8 @@ describe("retained native cleanup activation", () => {
             identity: { ...identity, runId: "foreign-run" },
           }),
         );
+      if (mode === "invalid_execution_input") run.runnerProfileJson.nativeExecutionInput = {} as typeof execution;
+      if (mode === "invalid_state_json") await writeFile(join(quarantine, source[0][0]), "{");
       const original = await Promise.all(
         source.map(([file]) => readFile(join(quarantine, file), "utf8")),
       );
@@ -4565,6 +4587,15 @@ describe("retained native cleanup activation", () => {
         ).rejects.toThrow("native_session_supervisor_busy");
         releaseCommit();
       }
+      if (mode === "canonical_claim_commit_failure") {
+        await expect(pendingOutcome).rejects.toThrow("injected source claim commit failure");
+        expect(state.cleanup).not.toHaveBeenCalled();
+        expect(state.retireCleanup).not.toHaveBeenCalled();
+        expect(coordinator.leaseOwner).toBeNull();
+        expect(coordinator.recoveryHistory).toEqual([]);
+        expect(await Promise.all(source.map(([file]) => readFile(join(root, file), "utf8")))).toEqual(original);
+        return;
+      }
       const outcome = await pendingOutcome;
       if (canonicalSource) {
         const prepared = (
@@ -4601,6 +4632,14 @@ describe("retained native cleanup activation", () => {
         expect(cleanupEnvironment).not.toHaveProperty("OPENAI_API_KEY");
         expect(cleanupEnvironment).not.toHaveProperty("CODEX_API_KEY");
       }
+      const waitingFor = mode.endsWith("live_owner") || mode === "active_provider_process" ? "process_exit"
+        : mode === "legacy_busy_copy" ? "maintenance_settlement"
+        : mode === "active_environment" ? "environment_release"
+        : mode === "active_finalization_lease" ? "lease_expiry" : null;
+      if (waitingFor) {
+        expect(outcome).toMatchObject({ status: "deferred", waitFor: waitingFor, runId: run.id });
+        if (waitingFor === "lease_expiry") expect(outcome).toHaveProperty("retryAt", coordinator.leaseExpiresAt);
+      }
       const ineligible = [
         "canonical_live_owner",
         "canonical_foreign_owner",
@@ -4630,6 +4669,8 @@ describe("retained native cleanup activation", () => {
         "foreign_semantic_scope",
         "wrong_provider_account",
         "released_identity_unproven",
+        "invalid_execution_input",
+        "invalid_state_json",
       ].includes(mode);
       const succeeds = [
         "digest_only_command",
@@ -4650,7 +4691,7 @@ describe("retained native cleanup activation", () => {
         "released_identity",
       ].includes(mode);
       expect(outcome.status).toBe(
-        succeeds
+        waitingFor ? "deferred" : succeeds
           ? "settled"
           : ineligible
             ? "not_eligible"
@@ -4694,7 +4735,7 @@ describe("retained native cleanup activation", () => {
         "home_selected_reverted_rollout",
       ].includes(mode);
       expect(state.cleanup).toHaveBeenCalledTimes(
-        ineligible || deniedBeforeLaunch ? 0 : 1,
+        ineligible || waitingFor || deniedBeforeLaunch ? 0 : 1,
       );
       expect(state.retireCleanup).toHaveBeenCalledTimes(succeeds ? 1 : 0);
       expect(coordinator.phase).toBe("committed");
@@ -4898,6 +4939,22 @@ describe("retained native cleanup activation", () => {
           ),
         ).toEqual(["started", "staged", "launch_intent", "operator_required"]);
         await expect(access(root)).rejects.toMatchObject({ code: "ENOENT" });
+      }
+      if (waitingFor && mode !== "active_provider_process") {
+        // The same physical operation can settle after the named blocker ends;
+        // deferral must release its temporary in-process session reservation.
+        if (waitingFor === "process_exit") {
+          run.processPid = 99_999_999;
+          run.processGroupId = 99_999_999;
+        }
+        if (waitingFor === "maintenance_settlement") state.maintenanceIdle.mockReturnValue(true);
+        if (waitingFor === "environment_release") environmentReleased = true;
+        if (waitingFor === "lease_expiry") coordinator.leaseExpiresAt = new Date(Date.now() - 1000);
+        await expect(reconcileRetainedNativeSessionCleanup(db as unknown as Db, {
+          companyId: run.companyId, runId: run.id,
+        })).resolves.toEqual({ status: "settled", runId: run.id });
+        expect(state.cleanup).toHaveBeenCalledTimes(1);
+        expect(state.retireCleanup).toHaveBeenCalledTimes(1);
       }
     } finally {
       providerHomeDatabase?.close();

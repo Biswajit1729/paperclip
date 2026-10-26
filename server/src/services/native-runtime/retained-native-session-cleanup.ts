@@ -105,9 +105,18 @@ export function findRetainedNativeSessionCleanupCandidates(db: Db, options: {
     .limit(options.limit);
 }
 
-type NativeCleanupOutcome = {
+export type NativeCleanupOutcome = {
   runId: string;
   status: "settled" | "not_eligible" | "operator_required";
+} | {
+  runId: string;
+  status: "deferred";
+  waitFor: "process_exit" | "session_release" | "environment_release" | "maintenance_settlement";
+} | {
+  runId: string;
+  status: "deferred";
+  waitFor: "lease_expiry";
+  retryAt: Date;
 };
 type NativeCleanupSweep = {
   cursor: string | null;
