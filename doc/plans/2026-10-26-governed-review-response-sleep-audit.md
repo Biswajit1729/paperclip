@@ -1,7 +1,7 @@
 # Governed-review response recovery: sleep migration audit
 
-Status: owner and producer audit only; no worker or periodic removal implemented.
-Inspected parent: `c4beddad1e` (slice 48, draft PR #17696).
+Status: raw owner contract and initial worker verified; producer wiring and periodic removal remain incomplete.
+Inspected parent: `fad35f2d7a` (slice 48, draft PR #17696).
 
 ## One reason for work
 
@@ -136,3 +136,27 @@ files. Establish a baseline before editing the owner. Cover:
 
 No deployment, database suspension, Cloud alarm coverage, or cost-savings claim
 follows from this migration. The full original stack remains in scope.
+
+## Owner-contract checkpoint
+
+The scheduled entry point holds the issue transaction, checks the coordinator
+claim and actual retry deadline under lock, restores the proof through its owner,
+and publishes through addComment in that same transaction. Operational errors
+propagate to the worker; existing foreground callers retain their logging contract.
+The scoped worker reconstructs existing coordinators and excludes materialized
+receipts, including deleted comments. No startup registration or periodic removal
+has happened yet.
+
+The unchanged owner baseline passed 156 cases. The first expanded run passed
+164 of 165; the new principal-revocation fixture incorrectly wrote a nonexistent
+principal status field, also caught by typechecking. Using the existing company
+membership suspension path repaired the fixture. The complete expanded suite now
+passes all 165 cases and server typecheck passes. Evidence:
+`/tmp/sleep49-baseline.log`, `/tmp/sleep49-contract-tests.log`,
+`/tmp/sleep49-contract-tests-v2.log`, `/tmp/sleep49-contract-typecheck-v3.log`,
+and `/tmp/sleep49-contract-v2.status`. The cases exercise concurrency, late claim/
+deadline races, real authorization-lock contention and rollback, revoked authority,
+startup reconstruction, deleted receipts, and actual quiet SQL after settlement.
+
+The producer audit, query-cost measurements, startup/periodic wiring, remaining
+lifecycle acceptance, full verification and remote gates are still outstanding.

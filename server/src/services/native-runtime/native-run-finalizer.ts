@@ -721,64 +721,61 @@ async function projectCommittedRun(input: {
   }
 }
 
-async function materializeCommittedReviewResponse(db: Db, runId: string) {
-  try {
-    const [run] = await db
-      .select()
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.id, runId))
-      .limit(1);
-    if (!run?.nativeIssueId || !run.resultJson?.externalChatReviewPresentation)
-      return;
-    const decisionId = record(
-      run.resultJson.externalChatReviewPresentation,
-    ).decisionId;
-    if (
-      typeof decisionId !== "string" ||
-      (await hasMaterializedNativeReviewResponse(db, {
-        companyId: run.companyId,
-        issueId: run.nativeIssueId,
-        runId,
-        decisionId,
-      }))
-    )
-      return;
-    const summary = record(run.resultJson.nativeResult).summary;
-    if (
-      typeof summary !== "string" ||
-      !(await authorizeNativeChatReviewPresentation(db, {
-        companyId: run.companyId,
-        issueId: run.nativeIssueId,
-        runId,
-        resultJson: run.resultJson,
-      }))
-    )
-      return;
-    // The coordinator transaction is already committed. addComment owns a
-    // fresh issue transaction, rechecks the proof and carries selected files;
-    // its same-run/text and publication keys make recovery replay idempotent.
-    await issueService(db).addComment(
-      run.nativeIssueId,
-      summary,
-      { agentId: run.agentId, runId },
-      {
-        authorizationReason: "allow_chat_run_presentation",
-      },
-    );
-    publishChatPublicationCommitSignal({
+async function materializeNativeReviewResponse(db: Db, runId: string, dbOrTx: Db = db) {
+  const [run] = await dbOrTx
+    .select()
+    .from(heartbeatRuns)
+    .where(eq(heartbeatRuns.id, runId))
+    .limit(1);
+  if (!run?.nativeIssueId || !run.resultJson?.externalChatReviewPresentation)
+    return null;
+  const decisionId = record(
+    run.resultJson.externalChatReviewPresentation,
+  ).decisionId;
+  if (
+    typeof decisionId !== "string" ||
+    (await hasMaterializedNativeReviewResponse(dbOrTx, {
       companyId: run.companyId,
       issueId: run.nativeIssueId,
-      runId: run.id,
-      agentId: run.agentId,
-      eventType: "run.presentation.resolved",
-    });
+      runId,
+      decisionId,
+    }))
+  )
+    return null;
+  const summary = record(run.resultJson.nativeResult).summary;
+  if (
+    typeof summary !== "string" ||
+    !(await authorizeNativeChatReviewPresentation(dbOrTx, {
+      companyId: run.companyId,
+      issueId: run.nativeIssueId,
+      runId,
+      resultJson: run.resultJson,
+    }))
+  )
+    return null;
+  await issueService(db).addComment(
+    run.nativeIssueId,
+    summary,
+    { agentId: run.agentId, runId },
+    {
+      authorizationReason: "allow_chat_run_presentation",
+    },
+    dbOrTx,
+  );
+  return run;
+}
+
+function publishNativeReviewResponse(run: typeof heartbeatRuns.$inferSelect) {
+  publishChatPublicationCommitSignal({ companyId: run.companyId, issueId: run.nativeIssueId!,
+    runId: run.id, agentId: run.agentId, eventType: "run.presentation.resolved" });
+}
+
+async function materializeCommittedReviewResponse(db: Db, runId: string) {
+  try {
+    const run = await materializeNativeReviewResponse(db, runId);
+    if (run) publishNativeReviewResponse(run);
   } catch (error) {
-    // The durable committed proof remains retryable by the next reconciler
-    // sweep. Presentation failure must not reclassify a successful native run.
-    logger.warn(
-      { runId, error },
-      "Committed chat review response is awaiting presentation retry",
-    );
+    logger.warn({ runId, error }, "Committed chat review response is awaiting presentation retry");
   }
 }
 
@@ -1153,6 +1150,22 @@ export async function repairCommittedNativeReviewResponse(
   );
   if (restored) await materializeCommittedReviewResponse(db, input.runId);
 }
+export async function recoverCommittedNativeReviewResponse(db: Db, input: {
+  companyId: string; issueId: string; runId: string; decisionId: string;
+  resultId: string; assessmentId: string; onlyWhenDue?: boolean;
+}): Promise<boolean> {
+  const materialized = await db.transaction(async transaction => {
+    const tx = transaction as unknown as Db;
+    const [issue] = await tx.select({ id: issues.id }).from(issues)
+      .where(and(eq(issues.companyId, input.companyId), eq(issues.id, input.issueId))).for("update");
+    if (!issue || await hasMaterializedNativeReviewResponse(tx, input)) return null;
+    if (!await restoreNativeChatReviewPresentationInTransaction(tx, input)) return null;
+    return materializeNativeReviewResponse(db, input.runId, tx);
+  });
+  if (materialized) publishNativeReviewResponse(materialized);
+  return materialized !== null;
+}
+
 export async function finalizeNativeRun(input: {
   db: Db;
   runId: string;

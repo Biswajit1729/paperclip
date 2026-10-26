@@ -47,7 +47,10 @@ import type {
 } from "../../vendor/paperclip-runner/index.js";
 
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
-import { finalizeNativeRun } from "./native-run-finalizer.js";
+import { finalizeNativeRun, recoverCommittedNativeReviewResponse } from "./native-run-finalizer.js";
+import { nativeReviewResponseWork } from "./native-review-response-work.js";
+import { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
+import { idleWorkSnapshot } from "../task-admission.js";
 import { nativeCompletionFeedback } from "./native-completion-feedback.js";
 import { hasPublishedGitHubReview } from "../chat-channels/github/review-wait.js";
 import { PaperclipControlPlanePort } from "./paperclip-control-plane-port.js";
@@ -2780,6 +2783,110 @@ describe("native external-chat response wait", () => {
       .where(eq(heartbeatRuns.id, fixture.runId));
     return run!.resultJson!;
   }
+
+  async function seedRecoverableReviewResponse() {
+    const fixture = await seedWaitTurn();
+    const gate = await seedPriorCompletionReview(fixture);
+    await finalizeNativeRun({ db, runId: fixture.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: false });
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, fixture.runId));
+    const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fixture.runId));
+    expect(coordinator!.phase).toBe("committed");
+    const input = { companyId: fixture.companyId, issueId: fixture.issueId, runId: fixture.runId,
+      decisionId: coordinator!.decisionId!, resultId: coordinator!.resultId!, assessmentId: coordinator!.assessmentId!, onlyWhenDue: true };
+    return { ...fixture, gate, input };
+  }
+
+  it("recovers scheduled governed responses once under concurrent callers and preserves deleted receipts", async () => {
+    const fixture = await seedRecoverableReviewResponse();
+    const work = nativeReviewResponseWork(db);
+    const [entry] = await work.load({ companyId: fixture.companyId });
+    expect(entry?.id).toBe(fixture.runId);
+    expect(await Promise.all([recoverCommittedNativeReviewResponse(db, fixture.input),
+      recoverCommittedNativeReviewResponse(db, fixture.input)])).toEqual(expect.arrayContaining([true, false]));
+    const comments = await db.select().from(issueComments).where(eq(issueComments.createdByRunId, fixture.runId));
+    expect(comments).toHaveLength(1);
+    expect(await db.select().from(chatPublications).where(eq(chatPublications.commentId, comments[0].id))).toHaveLength(1);
+    expect(await work.load({ companyId: fixture.companyId })).toEqual([]);
+    await db.update(issueComments).set({ deletedAt: new Date() }).where(eq(issueComments.id, comments[0].id));
+    expect(await work.load({ companyId: fixture.companyId })).toEqual([]);
+    expect(await recoverCommittedNativeReviewResponse(db, fixture.input)).toBe(false);
+    expect(await db.select().from(issueComments).where(eq(issueComments.createdByRunId, fixture.runId))).toHaveLength(1);
+  });
+
+  it.each(["future", "claim"])("defers scheduled governed responses behind a new %s under the owner lock", async kind => {
+    const fixture = await seedRecoverableReviewResponse();
+    const work = nativeReviewResponseWork(db);
+    const [entry] = await work.load({ companyId: fixture.companyId });
+    const at = new Date(Date.now() + 60_000);
+    const transaction = db.transaction.bind(db);
+    const intercept = vi.spyOn(db, "transaction").mockImplementationOnce((async (callback, options) => {
+      await transaction(async tx => {
+        await tx.update(nativeRunFinalizations).set(kind === "future" ? { nextAttemptAt: at }
+          : { leaseOwner: "another-finalizer", leaseExpiresAt: at }).where(eq(nativeRunFinalizations.runId, fixture.runId));
+      });
+      return transaction(callback, options);
+    }) as typeof db.transaction);
+    try {
+      expect(await work.check(entry)).toEqual(kind === "future" ? { ...entry, dueAt: at.getTime() } : null);
+    } finally { intercept.mockRestore(); }
+    expect(await db.select().from(issueComments).where(eq(issueComments.createdByRunId, fixture.runId))).toHaveLength(0);
+    await db.update(nativeRunFinalizations).set({ nextAttemptAt: null, leaseOwner: null, leaseExpiresAt: null })
+      .where(eq(nativeRunFinalizations.runId, fixture.runId));
+    expect(await recoverCommittedNativeReviewResponse(db, fixture.input)).toBe(true);
+  });
+
+  it("propagates scheduled governed response contention and rolls back its proof restoration", async () => {
+    const fixture = await seedRecoverableReviewResponse();
+    await db.update(heartbeatRuns).set({ resultJson: sql`${heartbeatRuns.resultJson} - 'externalChatReviewPresentation'` })
+      .where(eq(heartbeatRuns.id, fixture.runId));
+    let release!: () => void, observed!: () => void;
+    const hold = new Promise<void>(resolve => { release = resolve; });
+    const locked = new Promise<void>(resolve => { observed = resolve; });
+    const holder = db.transaction(async tx => {
+      await tx.select().from(chatEndpoints).where(eq(chatEndpoints.id, fixture.endpointId)).for("update");
+      observed(); await hold;
+    });
+    await locked;
+    try {
+      await expect(recoverCommittedNativeReviewResponse(db, fixture.input)).rejects.toBeDefined();
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+      expect(run.resultJson?.externalChatReviewPresentation).toBeUndefined();
+      expect(await db.select().from(issueComments).where(eq(issueComments.createdByRunId, fixture.runId))).toHaveLength(0);
+    } finally { release(); await holder; }
+    expect(await recoverCommittedNativeReviewResponse(db, fixture.input)).toBe(true);
+  });
+
+  it.each(["gate", "agent", "principal", "company"])("leaves scheduled governed response authority with its owner after %s changes", async kind => {
+    const fixture = await seedRecoverableReviewResponse();
+    if (kind === "gate") await db.update(issueThreadInteractions).set({ status: "accepted" }).where(eq(issueThreadInteractions.id, fixture.gate.id));
+    if (kind === "agent") await db.update(agents).set({ status: "paused" }).where(eq(agents.id, fixture.agentId));
+    if (kind === "principal") await db.update(companyMemberships).set({ status: "suspended" })
+      .where(and(eq(companyMemberships.companyId, fixture.companyId), eq(companyMemberships.principalId, fixture.userId)));
+    expect(await recoverCommittedNativeReviewResponse(db, { ...fixture.input,
+      ...(kind === "company" ? { companyId: randomUUID() } : {}) })).toBe(false);
+    expect(await db.select().from(issueComments).where(eq(issueComments.createdByRunId, fixture.runId))).toHaveLength(0);
+  });
+
+  it("reconstructs scheduled governed responses at startup and leaves their history quiet", async () => {
+    const fixture = await seedRecoverableReviewResponse();
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    const worker = nativeReviewResponseWork(db).register(coordinator, () => true);
+    try {
+      await worker.ready;
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+        { timeout: 10_000 }).toEqual({ active: 0, next: null });
+      expect(await db.select().from(issueComments).where(eq(issueComments.createdByRunId, fixture.runId))).toHaveLength(1);
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      const previousDebug = db.$client.options.debug;
+      const queries: string[] = [];
+      db.$client.options.debug = (_connection, query) => { queries.push(query); };
+      try { await vi.advanceTimersByTimeAsync(120_000); expect(queries).toEqual([]); }
+      finally { db.$client.options.debug = previousDebug; }
+      expect(errors).toEqual([]);
+    } finally { await coordinator.stop(); vi.useRealTimers(); }
+  });
 
   it.each(["telegram", "discord"] as const)(
     "presents the exact %s response without resolving a pre-existing native completion review",
