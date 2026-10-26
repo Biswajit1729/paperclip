@@ -138,10 +138,25 @@ describeDatabase("Muse commit and deadline maintenance", () => {
     expect(effects.endQualification).not.toHaveBeenCalled();
     expect(coordinator.nextWakeAt()).toBeNull();
   });
-  it("retains recovery only until an outstanding assignment settles", async () => {
+  it("does not poll a running Muse assignment waiting for a real event", async () => {
     const b = await fixture();
     const [run] = await db.insert(heartbeatRuns).values({ companyId: b.companyId, agentId: b.agentId,
       invocationSource: "automation", status: "running" }).returning();
+    await db.insert(museRunnerAssignments).values({ companyId: b.companyId,
+      agentId: b.agentId, bindingId: b.id, bindingGeneration: b.generation, runId: run.id,
+      normalizedSessionId: randomUUID(), turnId: randomUUID(), controllerGeneration: 1,
+      catalogDigest: "test", status: "accepted", projection: {}, acceptBy: new Date(), expiresAt: new Date(Date.now() + 3_600_000) });
+    await start();
+    expect(coordinator.nextWakeAt()).toBeNull();
+    const baseline = [...calls];
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(calls).toEqual(baseline);
+  });
+
+  it("retries a terminal assignment only until its concrete settlement completes", async () => {
+    const b = await fixture();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: b.companyId, agentId: b.agentId,
+      invocationSource: "automation", status: "succeeded", finishedAt: new Date() }).returning();
     const [assignment] = await db.insert(museRunnerAssignments).values({ companyId: b.companyId,
       agentId: b.agentId, bindingId: b.id, bindingGeneration: b.generation, runId: run.id,
       normalizedSessionId: randomUUID(), turnId: randomUUID(), controllerGeneration: 1,
@@ -149,7 +164,7 @@ describeDatabase("Muse commit and deadline maintenance", () => {
     await start();
     expect(coordinator.nextWakeAt()).toBeGreaterThan(Date.now());
     effects.reconcileTerminalAssignments.mockImplementationOnce(async () => {
-      await db.update(museRunnerAssignments).set({ status: "settled", acceptedResultAt: new Date(), finalizedAt: new Date() })
+      await db.update(museRunnerAssignments).set({ status: "settled", acceptedResultAt: new Date(), finalizedAt: run.finishedAt })
         .where(eq(museRunnerAssignments.id, assignment.id));
     });
     await vi.advanceTimersByTimeAsync(5000); await settle();

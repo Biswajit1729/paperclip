@@ -1,3 +1,4 @@
+import { pendingMuseTerminalAssignmentCondition } from "./muse-terminal-settlement.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../services/delivery-work-notifications.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { and, asc, desc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
@@ -104,8 +105,8 @@ function createMuseBroker(db:Db, publicOrigin?:string) {
       ||(company.budgetMonthlyCents>0&&company.spentMonthlyCents>=company.budgetMonthlyCents)||(agent.budgetMonthlyCents>0&&agent.spentMonthlyCents>=agent.budgetMonthlyCents)) throw forbidden("Native run no longer owns execution authority.");
     return {b,a,run};
   }
-  async function fence(tx:ExternalAdmissionTransaction,b:typeof bindings.$inferSelect,reason:string) {
-    const live=await tx.select().from(assignments).where(and(eq(assignments.bindingId,b.id),eq(assignments.bindingGeneration,b.generation),sql`(${assignments.status} in ('offered','claimed','accepted') or (${assignments.status}='settled' and exists(select 1 from ${holds} where ${holds.assignmentId}=${assignments.id} and ${holds.provider}='muse' and ${holds.releasedAt} is null)))`));
+  async function fence(tx:ExternalAdmissionTransaction,b:typeof bindings.$inferSelect,reason:string,assignmentId?:string) {
+    const live=await tx.select().from(assignments).where(and(eq(assignments.bindingId,b.id),eq(assignments.bindingGeneration,b.generation),assignmentId?eq(assignments.id,assignmentId):undefined,sql`(${assignments.status} in ('offered','claimed','accepted') or (${assignments.status}='settled' and exists(select 1 from ${holds} where ${holds.assignmentId}=${assignments.id} and ${holds.provider}='muse' and ${holds.releasedAt} is null)))`));
     for(const a of live) {
       const [last]=await tx.select({id:operations.requestId}).from(operations).where(eq(operations.assignmentId,a.id)).orderBy(desc(operations.createdAt)).limit(1);
       const boundary:MuseStopBoundary={bindingId:b.id,generation:b.generation,assignmentId:a.id,runId:a.runId,turnId:a.turnId,assignmentRevision:a.revision,stopNonce:randomUUID(),operationBoundary:last?.id??null};
@@ -291,14 +292,19 @@ function createMuseBroker(db:Db, publicOrigin?:string) {
     async reconcileTerminalAssignments(companyId:string,agentId:string,bindingId:string) {
       await db.transaction(tx=>withExternalAdmissionGuard(tx,companyId,agentId,async()=>{
         const [b]=await tx.select().from(bindings).where(and(eq(bindings.id,bindingId),eq(bindings.companyId,companyId),eq(bindings.agentId,agentId))).for("update");if(!b)return;
-        const terminal=await tx.select({a:assignments,run:heartbeatRuns}).from(assignments).innerJoin(heartbeatRuns,eq(heartbeatRuns.id,assignments.runId)).where(and(eq(assignments.bindingId,b.id),inArray(heartbeatRuns.status,["succeeded","failed","cancelled","timed_out","interrupted"])));
+        const terminal=await tx.select({a:assignments,run:heartbeatRuns}).from(assignments)
+          .innerJoin(heartbeatRuns,and(eq(heartbeatRuns.id,assignments.runId),eq(heartbeatRuns.companyId,assignments.companyId),eq(heartbeatRuns.agentId,assignments.agentId)))
+          .where(and(eq(assignments.bindingId,b.id),eq(assignments.bindingGeneration,b.generation),
+            eq(assignments.companyId,b.companyId),eq(assignments.agentId,b.agentId),pendingMuseTerminalAssignmentCondition()))
+          .orderBy(asc(assignments.id)).limit(100);
         for(const {a,run}of terminal) {
           if(a.status==="settled"&&a.acceptedResultAt) {
-            await tx.update(assignments).set({finalizedAt:run.finishedAt}).where(eq(assignments.id,a.id));
+            if(a.finalizedAt?.getTime()!==run.finishedAt?.getTime())
+              await tx.update(assignments).set({finalizedAt:run.finishedAt}).where(eq(assignments.id,a.id));
             const [unknown]=await tx.select({id:operations.id}).from(operations).where(and(eq(operations.assignmentId,a.id),inArray(operations.status,["unknown","dispatched","pending"]))).limit(1);
-            if(run.status!=="succeeded"||unknown) {await fence(tx,b,"run_terminal_after_result");continue;}
+            if(run.status!=="succeeded"||unknown) {await fence(tx,b,"run_terminal_after_result",a.id);continue;}
             if(!unknown&&run.status==="succeeded")await tx.update(holds).set({workerUnknown:false,releasedAt:new Date(),updatedAt:new Date()}).where(and(eq(holds.provider,"muse"),eq(holds.assignmentId,a.id),eq(holds.nativeEffectsUnknown,false),isNull(holds.releasedAt)));
-          } else if(["offered","claimed","accepted"].includes(a.status)) await fence(tx,b,"run_terminal");
+          } else if(["offered","claimed","accepted"].includes(a.status)) await fence(tx,b,"run_terminal",a.id);
         }
       }));
     },

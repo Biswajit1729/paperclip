@@ -1,3 +1,4 @@
+import { notifyExternalAgentSettlement } from "./muse-terminal-settlement.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../services/delivery-work-notifications.js";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
@@ -298,6 +299,7 @@ export function createNativeExternalBroker<S>(db:Db,provider:Provider,identity:I
             // the same fact must preserve later work and its original evidence.
             return;
           }
+          if (provider === "muse") await notifyExternalAgentSettlement(tx, { companyId: a.companyId, bindingId: a.bindingId });
           if (provider === "openai_dot") await notifyDeliveryWork(tx, DELIVERY_QUEUES.dotEvents, `binding:${a.bindingId}`);
           await tx.execute(sql`update ${operationTable} set status=${provider==="muse"&&outcome.status==="rejected"?"rejected":store.completed},outcome=${JSON.stringify(outcome)}::jsonb,source_event_id=${event.sourceEventId},updated_at=now() where id=${op.id}::uuid`);
           const action=op.command.action;
