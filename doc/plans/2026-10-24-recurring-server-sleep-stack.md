@@ -2692,3 +2692,24 @@ probe measures broad discovery at 28–30 ms locally and run-scoped discovery at
 0.030 ms; broad discovery remains linear in history and no deployed claim is made.
 Full workspace acceptance, PR publication/review, older gates and every remaining
 duty stay open. No merge has occurred.
+
+
+Slice 51 publication: [#17717](https://github.com/paperclipai/paperclip/pull/17717)
+is draft on #17709. Published head `8c62a6b0c0` passed workspace types/build and
+received Greptile 5/5, but three CI gates failed: two tests retained the old
+heartbeat-owned maintenance drain, and the Copilot transport identity was stale.
+The repair follows the cleanup-owned lifetime and creates a new attestation while
+preserving old profile history. Full affected recovery/process suites (34 + 408)
+and profile tests (69) pass. The local whole-suite OAuth timeout is retained in
+the audit alongside a passing complete 472-case isolated rerun. Latest-head CI
+and review acceptance are still pending; no stack PR is merged.
+
+The next native finalization audit identifies three distinct remaining duties:
+workspace copy-back/validation; accepted-result commit/projection; and resource
+settlement after finalization. Current committed-history upkeep repeatedly calls
+finalization and best-effort cleanup, including swallowed resource-release
+failures. A completed result cannot be used as proof that those residual duties
+are finished. Audit first-result publication in `paperclip-control-plane-port.ts`,
+workspace operation writes, durable workspace-owner release, retry updates and
+cleanup completion before disabling their existing recovery paths. No migration
+of these next duties is claimed by slice 51.

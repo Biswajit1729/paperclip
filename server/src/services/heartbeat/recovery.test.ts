@@ -21,8 +21,7 @@ const native = vi.hoisted(() => ({
   closeIdle: vi.fn(async () => ({ closed: 0, failed: 0 })),
   detach: vi.fn(async () => 0),
   finalizations: vi.fn(async (_db: Db, _ids?: string[], _options?: unknown) => undefined),
-  cleanups: vi.fn(async () => undefined),
-  drainMaintenance: vi.fn<() => Promise<void>>(async () => undefined),
+  cleanups: vi.fn<() => Promise<void>>(async () => undefined),
   claims: vi.fn<() => Promise<NativeRestartRecoveryDisposition[]>>(async () => []),
 }));
 const hotRestart = vi.hoisted(() => ({
@@ -37,12 +36,12 @@ vi.mock("../native-runtime/index.js", async (importOriginal) => ({
   closeIdleWarmNativeSessionsForRestart: native.closeIdle,
   detachNativeSessionsForRestart: native.detach,
   reconcileNativeFinalizations: native.finalizations,
-  reconcileRetainedNativeSessionCleanups: native.cleanups,
   claimNativeRestartRecoveries: native.claims,
 }));
-vi.mock("../../vendor/paperclip-runner/index.js", async (importOriginal) => ({
-  ...await importOriginal<typeof import("../../vendor/paperclip-runner/index.js")>(),
-  drainRetainedRunnerdMaintenanceOperations: native.drainMaintenance,
+
+vi.mock("../native-runtime/retained-native-session-cleanup.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../native-runtime/retained-native-session-cleanup.js")>(),
+  reconcileRetainedNativeSessionCleanups: native.cleanups,
 }));
 
 function callbacks(db: Db) {
@@ -95,7 +94,6 @@ beforeEach(() => {
   native.closeIdle.mockResolvedValue({ closed: 0, failed: 0 });
   native.finalizations.mockResolvedValue(undefined);
   native.cleanups.mockResolvedValue(undefined);
-  native.drainMaintenance.mockResolvedValue(undefined);
   native.claims.mockResolvedValue([]);
 });
 
@@ -650,9 +648,9 @@ describePostgres("heartbeat recovery module ownership", () => {
   it("retains shutdown ownership until background native cleanup physically settles", async () => {
     const deps = callbacks(db);
     let settle!: () => void;
-    native.drainMaintenance.mockReturnValueOnce(new Promise<void>(resolve => { settle = resolve; }));
+    native.cleanups.mockReturnValueOnce(new Promise<void>(resolve => { settle = resolve; }));
     await createHeartbeatRecovery(db, deps).recoverNativeRunsAfterRestart();
-    await vi.waitFor(() => expect(native.drainMaintenance).toHaveBeenCalled());
+    await vi.waitFor(() => expect(native.cleanups).toHaveBeenCalled());
     expect(deps.activeRunExecutionPromises.size).toBe(1);
     settle();
     await Promise.all([...deps.activeRunExecutionPromises]);

@@ -473,3 +473,48 @@ Broader workspace verification, publication and all remote CI/review gates remai
 The four older stack gates were refreshed and still need repair: #17490/#17572
 E2E shard 3, #17576 security/review findings, and #17580 review findings.
 Nothing in this stack is merged or authorized for merge.
+
+
+## Published PR and CI repair checkpoint
+
+Draft [#17717](https://github.com/paperclipai/paperclip/pull/17717) was published
+at `8c62a6b0c0c381326ab94fd5c75c78e0dd426e1a`, based on #17709. Workspace
+typecheck and build passed there. Greptile reviewed that exact head at 5/5 with
+no actionable findings. CI run `40323191795` found three failures:
+
+- The heartbeat recovery module test still mocked cleanup through the old barrel
+  import and expected heartbeat to drain Runner maintenance itself. It now mocks
+  the extracted cleanup owner and holds its operation promise. The complete
+  34-case module suite passes after correcting the mock target.
+- The assembled heartbeat process-recovery test also expected the old outer
+  drain call. Its controlled physical cleanup now retains its original callback
+  inside the cleanup operation, matching the executor contract. It still proves
+  startup/reaping stay responsive, duplicate cleanup joins, shutdown stays
+  non-quiescent, no provider turn starts, and persisted results remain unchanged.
+  The complete 408-case process-recovery file passes. Actual Runner callback
+  settlement remains covered in the executor and Runner suites, rather than
+  asserted through this controlled boundary alone.
+- The Copilot source attestation still bound the old transport bytes. Preserve
+  the v58 fixture and add v59 using `copilot-profile-identity.mjs`; regenerate
+  TypeScript/Rust admission from the shared manifest. Historical v58 remains
+  decodable, but exact launch admission uses the new identity. The identity also
+  catches inherited source drift in native runtime instructions, native-session
+  runtime and transport contracts. No source changes to those three files are
+  included here. All 69 installation/compatibility cases pass, including rejection
+  of the old launch identity and preservation of its history. This is source
+  identity verification, not a claim of new live Copilot qualification.
+
+Local repair evidence preserves unsuccessful attempts: the first module repair
+still targeted the old import; the initial identity update retained an old digest
+literal; an overbroad replacement changed an unrelated historical expectation and
+was restored before acceptance. The first isolated Runner settlement attempt had
+no built `paperclip-runnerd` and failed all 19 cases at setup; the new checkout
+must build that binary before those tests count as executed.
+
+The full default local suite at the published head remains separate. It reported
+an OAuth scope/catalog-refresh test timing out at 15 seconds. A separate complete
+472-case tool-access suite passed with a disposable PostgreSQL database under the
+same host load. This rerun does not erase the original full-suite failure or
+establish that its whole command passed. The original checkout remains unchanged
+while that command runs. Latest-head remote gates, complete suite disposition,
+and repaired-head review remain required before acceptance.
