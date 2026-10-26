@@ -1829,8 +1829,12 @@ async function startServerWithDatabaseTeardown(
       () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready;
     if (config.heartbeatSchedulerEnabled) await heartbeat.registerNativeRecoveryNoticeWork(deliveryWork,
       () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready;
-    if (config.heartbeatSchedulerEnabled) await heartbeat.registerNativeEnvironmentSettlementWork(deliveryWork,
-      () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready;
+    if (config.heartbeatSchedulerEnabled) {
+      const worker = heartbeat.registerNativeEnvironmentSettlementWork(deliveryWork,
+        () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby());
+      // Provider release remains owned by drain/shutdown, without gating readiness.
+      trackHeartbeatSchedulerWork(worker.ready);
+    }
     if (config.heartbeatSchedulerEnabled) await heartbeat.registerNativeRunProjectionWork(deliveryWork,
       () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready;
     if (config.heartbeatSchedulerEnabled) await heartbeat.registerNativeResultCommitWork(deliveryWork,

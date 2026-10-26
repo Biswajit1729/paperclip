@@ -1192,19 +1192,22 @@ describe("startServer feedback export wiring", () => {
     }
   });
 
-  it("becomes ready while retained cleanup is held but joins it at shutdown", async () => {
+  it.each(["retained cleanup", "environment settlement"] as const)("becomes ready while %s is held but joins it at shutdown", async owner => {
     loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: true }));
     let releaseCleanup!: () => void;
     const ready = new Promise<void>(resolve => { releaseCleanup = resolve; });
     const stop = vi.fn();
-    heartbeatServiceMock.registerRetainedNativeSessionCleanupWork.mockReturnValueOnce({ ready, stop });
+    const register = owner === "retained cleanup" ? heartbeatServiceMock.registerRetainedNativeSessionCleanupWork
+      : heartbeatServiceMock.registerNativeEnvironmentSettlementWork;
+    const worker = { ready, stop };
+    register.mockReturnValueOnce(worker);
     const timer = vi.spyOn(globalThis, "setInterval").mockImplementation(() => 1 as unknown as ReturnType<typeof setInterval>);
     let started = false;
     const starting = startServer().then(server => { started = true; return server; });
     let stopping: Promise<void> | undefined;
     let stopped = false;
     try {
-      await vi.waitFor(() => expect(heartbeatServiceMock.registerRetainedNativeSessionCleanupWork).toHaveBeenCalledOnce());
+      await vi.waitFor(() => expect(register).toHaveBeenCalledOnce());
       await settleStartupHousekeeping();
       expect(started).toBe(true);
       expect(getStartupRecoveryState().phase).toBe("ready");
@@ -1212,7 +1215,7 @@ describe("startServer feedback export wiring", () => {
       const server = await starting;
       stopping = server.shutdown().then(() => { stopped = true; });
       await settleStartupHousekeeping();
-      expect(stop).toHaveBeenCalledOnce();
+      if (owner === "retained cleanup") expect(stop).toHaveBeenCalledOnce();
       expect(stopped).toBe(false);
     } finally {
       releaseCleanup();

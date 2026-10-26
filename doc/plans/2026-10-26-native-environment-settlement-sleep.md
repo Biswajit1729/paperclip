@@ -154,3 +154,20 @@ cleanup deadline remains authoritative and can change; the map retains only the
 last attempt's minimum spacing. Entries are removed once their scoped debt no
 longer exists. Restart reconstructs durable lease truth as before. No new
 persistence or framework-wide scheduler semantics were added for this repair.
+
+## Review repair: readiness during physical cleanup
+
+The environment-settlement registration awaited its initial worker pass. A saved
+stop handoff from exhausted workspace finalization can be eligible here while
+excluded from the earlier startup scan, so a slow provider release could block
+HTTP readiness and registration of later workers.
+
+Startup now registers the worker and tracks its ready promise with the existing
+heartbeat work owner instead of awaiting physical cleanup inline. The delivery
+coordinator still owns the worker, and drain/shutdown still join the same work.
+The held-cleanup readiness/shutdown test is shared with retained-session cleanup;
+its environment-settlement case failed before the fix. All 84 startup cases and
+20 real-database environment-settlement lifecycle cases pass, as do workspace
+typechecking and the full build. Full local test:run remains unqualified for the
+previously recorded embedded-PostgreSQL capacity reason; remote checks remain
+required. No provider resource debt was dropped and no deployed-sleep claim is made.

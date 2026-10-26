@@ -3027,3 +3027,12 @@ No stack PR was merged. Earlier CI debts, other review findings (including nativ
 notice lock order), the eight native facade suppression audits, the next native
 agent-status projection duty, and the rest of the original inventory remain in
 scope. These repairs do not establish deployed instance/database suspension.
+
+Slice 58 readiness follow-up: fresh review found its first physical provider
+release could block HTTP readiness, just as retained-session cleanup had done.
+The startup/shutdown regression reproduced that blockage. Registration now tracks
+the worker's ready promise through the existing heartbeat work owner without
+awaiting provider cleanup inline. All 84 startup and 20 real-database environment
+settlement cases pass, plus workspace typechecking and the full build. This
+changes only the last PR; earlier stack qualification and unresolved scope remain
+as recorded above. Fresh CI is required and nothing is merged.
