@@ -4,6 +4,7 @@ import { signalDatabaseWork, subscribeDatabaseWork } from "@paperclipai/db";
 export const DELIVERY_QUEUES = {
   externalConversationSettlement: "external-conversation-settlement",
   nativeRecoveryNotices: "native-recovery-notices",
+  nativeEnvironmentSettlement: "native-environment-settlement",
   nativeRunProjection: "native-run-projection",
   nativeResultCommit: "native-result-commit",
   nativeWorkspaceFinalization: "native-workspace-finalization",

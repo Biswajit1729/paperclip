@@ -1798,6 +1798,8 @@ async function startServerWithDatabaseTeardown(
       () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready;
     if (config.heartbeatSchedulerEnabled) await heartbeat.registerNativeRecoveryNoticeWork(deliveryWork,
       () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready;
+    if (config.heartbeatSchedulerEnabled) await heartbeat.registerNativeEnvironmentSettlementWork(deliveryWork,
+      () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready;
     if (config.heartbeatSchedulerEnabled) await heartbeat.registerNativeRunProjectionWork(deliveryWork,
       () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready;
     if (config.heartbeatSchedulerEnabled) await heartbeat.registerNativeResultCommitWork(deliveryWork,
@@ -1953,7 +1955,7 @@ async function startServerWithDatabaseTeardown(
           // Periodically reap orphaned runs (5-min staleness threshold) and make sure
           // persisted queued work is still being driven forward.
           trackHeartbeatSchedulerWork(heartbeat
-            .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000, skipScheduledRetryCancellation: true, skipCapturedInstructionCommit: true, skipInstructionDirectoryCleanup: true, skipStoppedInstructionCollection: true, skipCancelledWorkspacePreservation: true, skipObsoletePolicyReviews: true, skipAutomaticCompletionReviews: true, skipUnsafeWorkspaceExports: true, skipNativePendingEffects: true, skipNativeResponsePresentation: true, skipNativeReviewResponse: true, skipNativeStatusReassessment: true, skipRetainedNativeSessionCleanup: true, skipNativeWorkspaceFinalization: true, skipNativeResultCommit: true, skipNativeRunProjection: true, skipNativeRecoveryNotices: true, skipExternalConversationSettlement: true, skipExternalAgentSettlement: true })
+            .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000, skipScheduledRetryCancellation: true, skipCapturedInstructionCommit: true, skipInstructionDirectoryCleanup: true, skipStoppedInstructionCollection: true, skipCancelledWorkspacePreservation: true, skipObsoletePolicyReviews: true, skipAutomaticCompletionReviews: true, skipUnsafeWorkspaceExports: true, skipNativePendingEffects: true, skipNativeResponsePresentation: true, skipNativeReviewResponse: true, skipNativeStatusReassessment: true, skipRetainedNativeSessionCleanup: true, skipNativeWorkspaceFinalization: true, skipNativeResultCommit: true, skipNativeRunProjection: true, skipNativeRecoveryNotices: true, skipExternalConversationSettlement: true, skipExternalAgentSettlement: true, skipNativeEnvironmentSettlement: true })
             .then(() => heartbeat.promoteDueScheduledRetries())
             .then(async (promotion) => {
               await heartbeat.resumeQueuedRuns();

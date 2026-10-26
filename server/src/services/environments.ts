@@ -1,3 +1,4 @@
+import { notifyNativeEnvironmentSettlement } from "./native-environment-settlement-notifications.js";
 import { notifyRetainedNativeSessionCleanup } from "./retained-native-session-cleanup-notifications.js";
 import { notifyChatInboundWakeNotices } from "./chat-inbound-wake-notice-notifications.js";
 import { writeEnvironmentCleanup, notifyEnvironmentCleanup } from "./environment-cleanup-notifications.js";
@@ -1507,6 +1508,9 @@ export function environmentService(db: Db) {
         input.replacesReusableLeaseId ||
         input.reusesReusableLeaseId
           ? await db.transaction(async (tx) => {
+              if (input.heartbeatRunId) await notifyNativeEnvironmentSettlement(tx, {
+                companyId: input.companyId, runId: input.heartbeatRunId,
+              });
               if (input.assertCompanyBinding) {
                 // Lock the environment row first. Managed reconciliation locks the
                 // same sandbox environment rows with `for update` before it writes a
@@ -1648,11 +1652,12 @@ export function environmentService(db: Db) {
                 .returning()
                 .then((rows) => rows[0] ?? null);
             })
-          : await db
-              .insert(environmentLeases)
-              .values(values)
-              .returning()
-              .then((rows) => rows[0] ?? null);
+          : await db.transaction(async tx => {
+              if (input.heartbeatRunId) await notifyNativeEnvironmentSettlement(tx, {
+                companyId: input.companyId, runId: input.heartbeatRunId,
+              });
+              return tx.insert(environmentLeases).values(values).returning().then(rows => rows[0] ?? null);
+            });
       if (!row) {
         throw new Error("Failed to acquire environment lease");
       }

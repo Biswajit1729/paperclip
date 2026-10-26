@@ -1,3 +1,4 @@
+import { notifyNativeEnvironmentSettlement } from "./native-environment-settlement-notifications.js";
 import { notifyExternalAgentSettlement } from "../modules/external-agents/index.js";
 import { notifyExternalConversationSettlement } from "./external-conversation-settlement-notifications.js";
 import { notifyNativeRecoveryNotices } from "./native-recovery-notice-notifications.js";
@@ -17,6 +18,7 @@ export async function notifyNativeFinalizationWork(transaction: object, scope: N
   await notifyExternalConversationSettlement(transaction, scope);
   await notifyNativeRecoveryNotices(transaction, scope);
   await notifyNativeRunProjection(transaction, scope);
+  await notifyNativeEnvironmentSettlement(transaction, scope);
   await notifyNativeResultCommit(transaction, scope);
   await notifyNativeWorkspaceFinalization(transaction, scope);
   await notifyRetainedNativeSessionCleanup(transaction, scope);

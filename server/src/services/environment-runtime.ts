@@ -1,3 +1,4 @@
+import { pendingRunLeaseReleaseCondition } from "./environment-lease-release-state.js";
 import { flushDeferredEnvironmentCleanup, registerDeferredEnvironmentCleanup, writeEnvironmentCleanup } from "./environment-cleanup-notifications.js";
 import { executeEnvironmentTask, pluginEnvironmentSupportsTasks, settleDispatchedEnvironmentTask } from "./environment-task-runtime.js";
 import type { PluginEnvironmentTaskOperation } from "@paperclipai/plugin-sdk";
@@ -4205,11 +4206,7 @@ export function environmentRuntimeService(
         .where(
           and(
             eq(environmentLeases.heartbeatRunId, heartbeatRunId),
-            or(eq(environmentLeases.status, "active"), and(eq(environmentLeases.status, "pending_cleanup"),
-              sql`(${environmentLeases.metadata} ? 'nativeWorkspaceExportResume' or ${environmentLeases.metadata} ? 'sandboxStopAndRetain')`),
-              providerResourceDisposition === "destroy"
-                ? and(eq(environmentLeases.status, "retained"), eq(environmentLeases.cleanupStatus, "failed"))
-                : undefined),
+            pendingRunLeaseReleaseCondition(providerResourceDisposition === "destroy"),
           ),
         );
       if (leaseRows.length === 0) {

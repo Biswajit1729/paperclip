@@ -2879,3 +2879,26 @@ Whole-stack master integration, older failed gates and suppression audits, and
 all remaining inventory reasons remain active. Nothing was merged. Existing
 active-transport replay polling remains a separate reason to inventory and
 migrate, rather than a false claim of whole-instance quiet.
+
+## Slice 57 acceptance and slice 58 environment settlement
+
+Slice 57 [#17793](https://github.com/paperclipai/paperclip/pull/17793) is published
+at `be8f3284c2c8a05903f2eca000ad86d046780fec`. Latest-head checks show 53 success
+and one neutral result, and the PR is mergeable. Greptile is 5/5 with no unresolved
+threads. One failed-job rerun recovered initial runner shutdowns and missing or
+truncated logs. The latter individual causes remain unknown. No source change
+was needed for that rerun. Nothing was merged.
+
+Slice 58, `codex/sleep-58-native-environment-settlement`, moves the environment
+release duty out of periodic native finalization replay. Existing lease records
+and the existing release owner's predicate supply debt. Existing native and lease
+transactions wake the shared coordinator. Saved cleanup deadlines, workspace
+preservation, provider stop evidence, and warm-retention policy keep their owners.
+See the [owner and lifecycle audit](2026-10-26-native-environment-settlement-sleep.md).
+The initial combined run passed 127 affected tests. Final workspace checks and
+remote acceptance remain required before this slice is accepted.
+
+The compound callback's runtime-service release and agent-status projection are
+still outstanding. Workspace descriptor cleanup remains separate. All earlier
+inventory reasons, master propagation, older failed gates, and suppression debts
+remain active; this section does not narrow the original goal.

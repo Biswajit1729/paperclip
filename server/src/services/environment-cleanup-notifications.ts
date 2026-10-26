@@ -1,7 +1,9 @@
+import { notifyNativeEnvironmentSettlement } from "./native-environment-settlement-notifications.js";
 import type { Db } from "@paperclipai/db";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 
 export async function notifyEnvironmentCleanup(transaction: object): Promise<void> {
+  await notifyNativeEnvironmentSettlement(transaction);
   await notifyDeliveryWork(transaction, DELIVERY_QUEUES.environmentCleanup);
   await notifyDeliveryWork(transaction, DELIVERY_QUEUES.historicalCleanup);
 }

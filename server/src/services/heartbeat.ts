@@ -1022,6 +1022,7 @@ export function heartbeatService(
     registerScheduledRetryCancellationWork,
     registerRetainedNativeSessionCleanupWork,
     registerNativeWorkspaceFinalizationWork,
+    registerNativeEnvironmentSettlementWork,
   } = createHeartbeatRecovery(db, {
     pluginWorkerManager: options.pluginWorkerManager,
     enterShutdown: () => { shutdownInProgress = true; },
@@ -4104,6 +4105,14 @@ export function heartbeatService(
     registerNativeResultCommitWork: (
       coordinator: Parameters<ReturnType<typeof nativeResultCommitWork>["register"]>[0], canRun: () => boolean,
     ) => nativeResultCommitWork(db).register(coordinator,
+      () => canRun() && readTaskDrain(new Date()) === null,
+      async () => {
+        const state = await getSchedulingSuppression(true);
+        return !state.suppressed || state.reason === "task_drain";
+      }),
+    registerNativeEnvironmentSettlementWork: (
+      coordinator: Parameters<typeof registerNativeEnvironmentSettlementWork>[0], canRun: () => boolean,
+    ) => registerNativeEnvironmentSettlementWork(coordinator,
       () => canRun() && readTaskDrain(new Date()) === null,
       async () => {
         const state = await getSchedulingSuppression(true);

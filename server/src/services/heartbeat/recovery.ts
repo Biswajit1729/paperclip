@@ -1,3 +1,4 @@
+import { nativeEnvironmentSettlementDisposition, nativeEnvironmentSettlementWork } from "../native-runtime/native-environment-settlement-work.js";
 import { nativeWorkspaceFinalizationWork } from "../native-runtime/native-workspace-finalization-work.js";
 import { attemptNativeWorkspaceFinalization } from "../native-runtime/native-workspace-finalizer.js";
 import { retainedNativeSessionCleanupWork } from "../native-runtime/retained-native-session-cleanup-work.js";
@@ -1855,26 +1856,31 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     return blocked;
   }
 
-  async function settleRecoveredNativeWorkspace(input: {
+  async function settleRecoveredNativeEnvironment(input: {
     runId: string;
     companyId: string;
     agentId: string;
     succeeded: boolean;
-  }) {
+  }, onlyTerminal = false) {
     const settledRun = await getRun(input.runId);
-    const workspaceSyncReference = readNativeWorkspaceSyncReference(
-      parseObject(settledRun?.runnerProfileJson).nativeWorkspaceSync,
-    );
+    if (!settledRun || onlyTerminal && !["succeeded", "failed", "cancelled", "timed_out", "interrupted"].includes(settledRun.status)) return;
     await releaseEnvironmentLeasesForRun({
       runId: input.runId,
       companyId: input.companyId,
       agentId: input.agentId,
       status: settledRun?.status,
       failureReason: settledRun?.error ?? undefined,
-      providerResourceDisposition: input.succeeded && (!parseObject(settledRun?.resultJson).workspaceExportRetry || workspaceSyncReference?.resourceDisposition === "destroy")
-        ? (workspaceSyncReference?.resourceDisposition ?? "stop_and_retain")
-        : "stop_and_retain",
+      providerResourceDisposition: nativeEnvironmentSettlementDisposition(settledRun, input.succeeded),
     });
+  }
+
+  const nativeEnvironmentSettlement = nativeEnvironmentSettlementWork(db, input => settleRecoveredNativeEnvironment(input, true));
+
+  async function settleRecoveredNativeWorkspace(input: {
+    runId: string; companyId: string; agentId: string; succeeded: boolean;
+  }, options?: { skipEnvironmentSettlement?: boolean }) {
+    if (!options?.skipEnvironmentSettlement) await settleRecoveredNativeEnvironment(input);
+    const settledRun = await getRun(input.runId);
     await releaseRuntimeServicesForRun(input.runId).catch(() => undefined);
     await finalizeAgentStatus(
       input.agentId,
@@ -1935,7 +1941,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
 
   let settledProcessesDiscovered = false;
 
-  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; skipScheduledRetryCancellation?: boolean; skipCapturedInstructionCommit?: boolean; skipInstructionDirectoryCleanup?: boolean; skipStoppedInstructionCollection?: boolean; skipCancelledWorkspacePreservation?: boolean; skipObsoletePolicyReviews?: boolean; skipAutomaticCompletionReviews?: boolean; skipUnsafeWorkspaceExports?: boolean; skipNativePendingEffects?: boolean; skipNativeResponsePresentation?: boolean; skipNativeReviewResponse?: boolean; skipNativeStatusReassessment?: boolean; skipRetainedNativeSessionCleanup?: boolean; skipNativeWorkspaceFinalization?: boolean; skipNativeResultCommit?: boolean; skipNativeRunProjection?: boolean; skipNativeRecoveryNotices?: boolean; skipExternalConversationSettlement?: boolean; skipExternalAgentSettlement?: boolean }) {
+  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; skipScheduledRetryCancellation?: boolean; skipCapturedInstructionCommit?: boolean; skipInstructionDirectoryCleanup?: boolean; skipStoppedInstructionCollection?: boolean; skipCancelledWorkspacePreservation?: boolean; skipObsoletePolicyReviews?: boolean; skipAutomaticCompletionReviews?: boolean; skipUnsafeWorkspaceExports?: boolean; skipNativePendingEffects?: boolean; skipNativeResponsePresentation?: boolean; skipNativeReviewResponse?: boolean; skipNativeStatusReassessment?: boolean; skipRetainedNativeSessionCleanup?: boolean; skipNativeWorkspaceFinalization?: boolean; skipNativeResultCommit?: boolean; skipNativeRunProjection?: boolean; skipNativeRecoveryNotices?: boolean; skipExternalConversationSettlement?: boolean; skipExternalAgentSettlement?: boolean; skipNativeEnvironmentSettlement?: boolean }) {
     if (!opts?.skipCancelledWorkspacePreservation) await preserveCancelledNativeWorkspaces(db);
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const now = new Date();
@@ -1968,7 +1974,9 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       skipNativeRecoveryNotices: opts?.skipNativeRecoveryNotices,
       environmentRuntime,
       pluginWorkerManager: dependencies.pluginWorkerManager,
-      onWorkspaceSettled: settleRecoveredNativeWorkspace,
+      onWorkspaceSettled: input => settleRecoveredNativeWorkspace(input, {
+        skipEnvironmentSettlement: opts?.skipNativeEnvironmentSettlement,
+      }),
     }).catch((error) => {
       logger.warn(
         { err: error },
@@ -2563,6 +2571,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
   return {
     registerRetainedNativeSessionCleanupWork: retainedNativeCleanup.register,
     registerNativeWorkspaceFinalizationWork: nativeWorkspaceFinalization.register,
+    registerNativeEnvironmentSettlementWork: nativeEnvironmentSettlement.register,
     registerScheduledRetryCancellationWork: scheduledRetryCancellation.register,
     sweepPendingCleanupLeases,
     markNativeOwnershipUnverified,
