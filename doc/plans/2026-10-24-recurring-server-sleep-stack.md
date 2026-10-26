@@ -2601,3 +2601,19 @@ The owner audit preserves the wrong initial ordinary-release completion assertio
 and its authority-preserving correction. Fresh-head gates remain pending; nothing
 merged. Earlier E2E failures on #17490/#17572 and voice findings on #17576/#17580
 were revalidated and remain unresolved. All original remaining duties stay in scope.
+
+
+Slice 50 repaired-head acceptance: #17709 at
+`9a9e4262bb9beb39d67d26320c14e99651b6d6bd` now has all 53 checks passing,
+Greptile 5/5 at that exact head and zero unresolved review threads. Its PR body
+records the result and retains the local embedded-database limitation. It remains
+draft and unmerged. `/tmp/sleep50-release-latest-gates.json` records fresh CI.
+Older stack findings and master reconciliation remain outstanding.
+
+Slice 51 is now `codex/sleep-51-retained-native-session-cleanup`, based on that
+repaired head. The existing joined discovery has a cohesive native cleanup owner;
+scoped reconstruction preserves future lease deadlines. All 35 database discovery/
+finalization cases, 72 exact physical-cleanup cases and server types pass. See
+[the audit](2026-10-26-retained-native-session-cleanup-sleep-audit.md) for producer,
+physical-owner, shutdown and outcome gaps. No scheduled cleanup worker is wired
+and periodic cleanup remains enabled. The full scope remains incomplete.

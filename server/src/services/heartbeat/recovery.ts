@@ -1,3 +1,4 @@
+import { reconcileRetainedNativeSessionCleanups } from "../native-runtime/retained-native-session-cleanup.js";
 import { createScheduledRetryCancellationRecovery } from "./scheduled-retry-cancellation.js";
 import { pendingCleanupDeadlineSql } from "../environment-cleanup-state.js";
 import { writeEnvironmentCleanup } from "../environment-cleanup-notifications.js";
@@ -55,7 +56,6 @@ import {
   type NativeRestartRecoveryClaim,
   reconcileNativeFinalizations,
   reconcileRetainedNativeSessionCleanup,
-  reconcileRetainedNativeSessionCleanups,
 } from "../native-runtime/index.js";
 import { drainRetainedRunnerdMaintenanceOperations } from "../../vendor/paperclip-runner/index.js";
 import { runningProcesses } from "../../adapters/index.js";
