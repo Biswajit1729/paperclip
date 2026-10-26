@@ -1,5 +1,6 @@
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { registerSecretProposalExpiryWork } from "../services/secret-proposal-expiry-work.js";
+import { deleteCompany } from "../services/company-deletion.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 import { randomUUID } from "node:crypto";
@@ -87,8 +88,7 @@ describeEmbeddedPostgres("secret proposal routes", () => {
     rmSync(secretsTmpDir, { recursive: true, force: true });
   });
 
-  async function seedRun() {
-    const companyId = randomUUID();
+  async function seedRun(identifier = "SEC-1", companyId = randomUUID()) {
     const agentId = randomUUID();
     const heartbeatRunId = randomUUID();
     const issueId = randomUUID();
@@ -120,7 +120,7 @@ describeEmbeddedPostgres("secret proposal routes", () => {
       id: issueId,
       companyId,
       title: "Needs credential",
-      identifier: "SEC-1",
+      identifier,
       status: "in_progress",
       responsibleUserId: "user-1",
       executionRunId: heartbeatRunId,
@@ -275,6 +275,135 @@ describeEmbeddedPostgres("secret proposal routes", () => {
       bindingTargetPolicy: "self_and_reports",
     });
 
+    async function createWithExpiry(expiresAt: Date) {
+      return db.transaction(async tx => {
+        const proposal = await create(createSecretProposalsService(tx as unknown as typeof db));
+        const [updated] = await tx.update(companySecretProposals).set({ expiresAt })
+          .where(eq(companySecretProposals.id, proposal.id)).returning();
+        return updated;
+      });
+    }
+
+    it("honors a saved five-second expiry without clamping it to recovery spacing", async () => {
+      const delay = 5000;
+      await start(); await quiet();
+      const expiresAt = new Date(Date.now() + delay);
+      const proposal = await createWithExpiry(expiresAt); await settle(1);
+      expect(coordinator!.nextWakeAt()).toBe(expiresAt.getTime());
+      await settle(delay / 2);
+      expect(await proposals.getById(fixture.companyId, proposal.id)).toMatchObject({ status: "pending" });
+      await settle(delay);
+      expect(await proposals.getById(fixture.companyId, proposal.id)).toMatchObject({ status: "expired", valueCiphertext: null });
+      await quiet();
+    });
+
+    it("moves to an earlier committed proposal deadline without losing the later one", async () => {
+      await start(); await quiet();
+      const later = await createWithExpiry(new Date(Date.now() + 120_000)); await settle(1);
+      expect(coordinator!.nextWakeAt()).toBe(later.expiresAt.getTime());
+      const earlier = await createWithExpiry(new Date(Date.now() + 5000)); await settle(1);
+      expect(coordinator!.nextWakeAt()).toBe(earlier.expiresAt.getTime());
+      await settle(6000);
+      expect(await proposals.getById(fixture.companyId, earlier.id)).toMatchObject({ status: "expired", valueCiphertext: null });
+      expect(await proposals.getById(fixture.companyId, later.id)).toMatchObject({ status: "pending" });
+      expect(coordinator!.nextWakeAt()).toBe(later.expiresAt.getTime());
+      await settle(120_000); await quiet();
+    });
+
+    it("keeps sequential tenant writes from scanning another company's proposals", async () => {
+      const other = await seedRun("OTHER-1");
+      const foreign = await proposals.createSecret({ ...other, registerForRedaction: () => {} }, {
+        name: "dev/other/secret", value: "other-expiry-only", justification: "Another company's deadline",
+      });
+      await start(); await settle(1);
+      const reads: Array<{ query: string; params: unknown[] }> = [];
+      const debug = db.$client.options.debug;
+      db.$client.options.debug = (_id, query, params) => {
+        if (/^select/i.test(query) && query.includes('"company_secret_proposals"') &&
+          (query.includes('min(') || query.includes('"expires_at" <='))) reads.push({ query, params: [...params] });
+      };
+      try {
+        for (let i = 0; i < 3; i++) { await create(); await settle(1000); }
+      } finally { db.$client.options.debug = debug; }
+      expect(reads.length).toBeGreaterThan(0);
+      for (const read of reads) {
+        expect(read.query).toContain('"company_secret_proposals"."company_id" =');
+        expect(read.params).toContain(fixture.companyId);
+        expect(read.params).not.toContain(other.companyId);
+      }
+      expect(await proposals.getById(other.companyId, foreign.id)).toMatchObject({ status: "pending", valueCiphertext: foreign.valueCiphertext });
+    });
+
+    it("expires only the company whose saved deadline is due", async () => {
+      const other = await seedRun("OTHER-1");
+      const foreign = await proposals.createSecret({ ...other, registerForRedaction: () => {} }, {
+        name: "dev/other/secret", value: "other-expiry-only", justification: "Another company's deadline",
+      });
+      const due = await createWithExpiry(new Date(Date.now() + 5000));
+      await start(); await settle(1);
+      const reads: Array<{ query: string; params: unknown[] }> = [];
+      const debug = db.$client.options.debug;
+      db.$client.options.debug = (_id, query, params) => {
+        if (/^select/i.test(query) && query.includes('"company_secret_proposals"') &&
+          (query.includes('min(') || query.includes('"expires_at" <='))) reads.push({ query, params: [...params] });
+      };
+      try { await settle(6000); } finally { db.$client.options.debug = debug; }
+      expect(reads.some(read => read.query.includes('"expires_at" <='))).toBe(true);
+      for (const read of reads) {
+        expect(read.query).toContain('"company_secret_proposals"."company_id" =');
+        expect(read.params).toContain(fixture.companyId);
+        expect(read.params).not.toContain(other.companyId);
+      }
+      expect(await proposals.getById(fixture.companyId, due.id)).toMatchObject({ status: "expired", valueCiphertext: null });
+      expect(await proposals.getById(other.companyId, foreign.id)).toMatchObject({ status: "pending", valueCiphertext: foreign.valueCiphertext });
+      expect(coordinator!.nextWakeAt()).toBe(foreign.expiresAt.getTime());
+    });
+
+    it.each([0, 3000])("keeps a failed company on backoff while another company expires on time (offset %s)", async offset => {
+      // Make the failing company first in the fair dispatch order.
+      const other = await seedRun("OTHER-1", "ffffffff-ffff-ffff-ffff-ffffffffffff");
+      const failing = await createWithExpiry(new Date(Date.now() + 5000));
+      const healthy = await db.transaction(async tx => {
+        const proposal = await createSecretProposalsService(tx as unknown as typeof db).createSecret(
+          { ...other, registerForRedaction: () => {} },
+          { name: "dev/other/secret", value: "other-expiry-only", justification: "Independent expiry" });
+        const [saved] = await tx.update(companySecretProposals).set({ expiresAt: new Date(failing.expiresAt.getTime() + offset) })
+          .where(eq(companySecretProposals.id, proposal.id)).returning();
+        return saved;
+      });
+      const sweep = proposals.sweepExpiredForCompany;
+      let unavailable = true;
+      const attempts = vi.spyOn(proposals, "sweepExpiredForCompany").mockImplementation(async companyId => {
+        if (unavailable && companyId === fixture.companyId) throw new Error("company expiry unavailable");
+        return sweep(companyId);
+      });
+      await start(); await settle(10_000);
+      expect(errors).toHaveLength(1); errors.length = 0;
+      expect(await proposals.getById(other.companyId, healthy.id)).toMatchObject({ status: "expired", valueCiphertext: null });
+      expect(await proposals.getById(fixture.companyId, failing.id)).toMatchObject({ status: "pending" });
+      // A new write must refresh this company without erasing its failed sweep's backoff.
+      await create(); await settle(1000);
+      expect(attempts.mock.calls.filter(([id]) => id === fixture.companyId)).toHaveLength(1);
+      unavailable = false; await settle(30_000);
+      expect(await proposals.getById(fixture.companyId, failing.id)).toMatchObject({ status: "expired", valueCiphertext: null });
+      await settle(expiryMs); await quiet();
+    });
+
+    it("removes the cached expiry when the company deletion owner commits", async () => {
+      await create(); await start(); await settle(1);
+      expect(coordinator!.nextWakeAt()).not.toBeNull();
+      await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() })
+        .where(eq(heartbeatRuns.id, fixture.heartbeatRunId));
+      await db.update(issues).set({ executionRunId: null }).where(eq(issues.id, fixture.issueId));
+      // The deletion fixture has no live resources; its agent has already
+      // finished termination before entering the company deletion transaction.
+      await db.update(agents).set({ status: "terminated", lifecycleState: "terminated" })
+        .where(eq(agents.id, fixture.agentId));
+      expect(await deleteCompany(db, fixture.companyId)).toMatchObject({ id: fixture.companyId });
+      await quiet();
+      expect(await proposals.expiryDeadlines()).toEqual([]);
+    });
+
     it("stays quiet until the real proposal deadline, scrubs ciphertext, and leaves terminal history quiet", async () => {
       await start(); await quiet();
       const secret = await create();
@@ -321,8 +450,8 @@ describeEmbeddedPostgres("secret proposal routes", () => {
       let release!: () => void, reading!: () => void;
       const gate = new Promise<void>(resolve => { release = resolve; });
       const entered = new Promise<void>(resolve => { reading = resolve; });
-      const readDeadline = proposals.nextExpiryAt;
-      vi.spyOn(proposals, "nextExpiryAt").mockImplementationOnce(async () => {
+      const readDeadline = proposals.expiryDeadlines;
+      vi.spyOn(proposals, "expiryDeadlines").mockImplementationOnce(async () => {
         const stale = await readDeadline();
         reading(); await gate;
         return stale;
@@ -352,7 +481,7 @@ describeEmbeddedPostgres("secret proposal routes", () => {
       if (mode === "first_write") { await quiet(); draining = true; }
       const secret = await create();
       if (mode === "failed_pass") {
-        vi.spyOn(proposals, "sweepExpired").mockRejectedValueOnce(new Error("database unavailable"));
+        vi.spyOn(proposals, "expiryDeadlines").mockRejectedValueOnce(new Error("database unavailable"));
         await vi.advanceTimersByTimeAsync(30_000);
         await vi.waitFor(() => expect(errors).toHaveLength(1)); errors.length = 0;
         draining = true;
