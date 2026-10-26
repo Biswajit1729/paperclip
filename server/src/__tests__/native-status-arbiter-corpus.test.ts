@@ -1,3 +1,5 @@
+import { NativeRunCoordinatorStore } from "../services/native-runtime/native-run-coordinator-store.js";
+import { registerNativePendingEffectWork } from "../services/native-runtime/native-pending-effect-work.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 import { dismissAutomaticCompletionReviews, registerAutomaticCompletionReviewWork } from "../services/native-runtime/automatic-completion-reviews.js";
@@ -417,7 +419,8 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
 
   afterAll(async () => { await db?.$client.end({ timeout: 1 }); await temporary?.cleanup(); });
 
-  async function seedFixture(fixture: Fixture) {
+  async function seedFixture(fixture: Fixture, tenant = { companyId, agentId }) {
+    const { companyId, agentId } = tenant;
     const issueId = randomUUID();
     const runId = randomUUID();
     const contractId = randomUUID();
@@ -2049,6 +2052,186 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     return { ...seeded, decision: decision!, interaction: interaction! };
   }
 
+
+  describe("native pending-effect scheduling", () => {
+    let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
+    let admitted = true;
+    const errors: unknown[] = [];
+    beforeEach(async () => {
+      await db.update(statusDecisionEffects).set({ deliveryState: "delivered" }).where(eq(statusDecisionEffects.companyId, companyId));
+      admitted = true; errors.length = 0;
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    });
+    afterEach(async () => {
+      await coordinator?.stop(); coordinator = undefined;
+      vi.useRealTimers(); vi.restoreAllMocks(); expect(errors).toEqual([]);
+    });
+    async function seedEffects(state = "pending", tenant = { companyId, agentId }) {
+      const { companyId } = tenant;
+      const template = corpus.fixtures.find(candidate => candidate.mode === "native")!;
+      const f = await seedFixture({ ...template, id: `pending-effects-${randomUUID()}`,
+        given: { ...template.given, priorIssueStatus: "in_progress", completionState: "pending_effect_recovery" } }, tenant);
+      const commitInput: Parameters<typeof commitNativeStatusDecision>[0] = { db, companyId, issueId: f.issueId, runId: f.runId,
+        assessmentId: f.assessmentId, priorStatus: "in_progress", priorStatusVersion: 0, priorDecisionId: null,
+        decision: { policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION, statusAction: "preserve", toStatus: "in_progress",
+          reasonCode: "live_continuation_registered", unblockDescriptor: null, effects: [{ kind: "release_checkout" }] } };
+      const committed = await commitNativeStatusDecision(commitInput);
+      const [effect] = await db.update(statusDecisionEffects).set({ deliveryState: state })
+        .where(eq(statusDecisionEffects.decisionId, committed.decision.id)).returning();
+      return { ...f, decisionId: committed.decision.id, effect, commitInput };
+    }
+    async function start() {
+      coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => admitted, canReconcile: () => admitted,
+        onError: error => errors.push(error) });
+      await registerNativePendingEffectWork(db, coordinator, () => admitted).ready;
+    }
+    async function flush() {
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(idleWorkSnapshot().active).toBe(0); expect(coordinator!.nextWakeAt()).toBeNull();
+      }, { timeout: 15_000 });
+    }
+    async function quiet(milliseconds = 120_000) {
+      const read = vi.spyOn(db, "select"), write = vi.spyOn(db, "transaction");
+      try { await vi.advanceTimersByTimeAsync(milliseconds); expect(read).not.toHaveBeenCalled(); expect(write).not.toHaveBeenCalled(); }
+      finally { read.mockRestore(); write.mockRestore(); }
+    }
+    const effect = async (id: string) => (await db.select().from(statusDecisionEffects).where(eq(statusDecisionEffects.id, id)))[0];
+    it.each(["empty", "delivered"])("stays quiet with %s history", async state => {
+      if (state === "delivered") await seedEffects(state);
+      await start(); await flush(); await quiet();
+    });
+    it.each(["pending", "failed"])("recovers %s effects without materializing another target or decision", async state => {
+      const f = await seedEffects(state);
+      await start(); await flush();
+      expect(await effect(f.effect.id)).toMatchObject({ deliveryState: "delivered", attemptCount: f.effect.attemptCount + 1 });
+      expect(await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, f.issueId))).toHaveLength(1);
+      expect(await db.select().from(statusDecisionEffects).where(eq(statusDecisionEffects.issueId, f.issueId))).toHaveLength(1);
+      expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].status).toBe("in_progress");
+      await quiet();
+    });
+    it("leaves terminal-failure history dormant", async () => {
+      const f = await seedEffects();
+      await db.update(nativeRunFinalizations).set({ phase: "terminal_failure" }).where(eq(nativeRunFinalizations.runId, f.runId));
+      await start(); await flush(); expect((await effect(f.effect.id)).deliveryState).toBe("pending"); await quiet();
+    });
+    it.each(["retry", "lease", "empty lease owner"])("honors the saved %s deadline without polling before it", async kind => {
+      const f = await seedEffects(); const due = new Date(Date.now() + 180_000);
+      await db.update(nativeRunFinalizations).set(kind === "retry" ? { nextAttemptAt: due } : { leaseOwner: kind === "empty lease owner" ? "" : "current-owner", leaseExpiresAt: due })
+        .where(eq(nativeRunFinalizations.runId, f.runId));
+      await start(); expect(coordinator!.nextWakeAt()).toBe(due.getTime());
+      await quiet(120_000); expect((await effect(f.effect.id)).deliveryState).toBe("pending");
+      await vi.advanceTimersByTimeAsync(60_000); await flush();
+      expect((await effect(f.effect.id)).deliveryState).toBe("delivered"); await quiet();
+    });
+    it.each([["retry", 180_000], ["lease", 180_000], ["retry", 10_000]] as const)("rechecks a concurrent %s extension of %i ms under the coordinator lock", async (kind, delay) => {
+      const f = await seedEffects();
+      const due = new Date(Date.now() + delay);
+      const original = db.transaction.bind(db);
+      const transaction = vi.spyOn(db, "transaction").mockImplementationOnce(async (callback, config) => {
+        await db.update(nativeRunFinalizations).set(kind === "retry"
+          ? { nextAttemptAt: due } : { leaseOwner: "new-owner", leaseExpiresAt: due })
+          .where(eq(nativeRunFinalizations.runId, f.runId));
+        return original(callback, config);
+      });
+      await start();
+      await vi.waitFor(() => expect(coordinator!.nextWakeAt()).toBe(due.getTime()));
+      transaction.mockRestore();
+      expect((await effect(f.effect.id)).deliveryState).toBe("pending");
+      await quiet(delay / 2);
+      await vi.advanceTimersByTimeAsync(delay / 2); await flush();
+      expect((await effect(f.effect.id)).deliveryState).toBe("delivered"); await quiet();
+    });
+    it("leaves pending effects to their owner during periodic finalization and preserves explicit recovery", async () => {
+      const f = await seedEffects();
+      expect(await reconcileNativeFinalizations(db, [f.runId], { skipNativePendingEffects: true })).toEqual([]);
+      expect((await effect(f.effect.id)).deliveryState).toBe("pending");
+      expect(await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, f.issueId))).toHaveLength(1);
+      await reconcileNativeFinalizations(db, [f.runId]);
+      expect((await effect(f.effect.id)).deliveryState).toBe("delivered");
+      expect(await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, f.issueId))).toHaveLength(1);
+    });
+    it("limits a committed run wake to its owner and recovers other durable work on restart", async () => {
+      const local = await seedEffects();
+      const other = await seedEffects("pending", { companyId: outsideCompanyId, agentId: outsideAgentId });
+      for (const f of [local, other]) await db.update(nativeRunFinalizations).set({ phase: "terminal_failure" })
+        .where(eq(nativeRunFinalizations.runId, f.runId));
+      await start(); await flush();
+      await db.update(nativeRunFinalizations).set({ phase: "committed" }).where(eq(nativeRunFinalizations.runId, other.runId));
+      await commitNativeStatusDecision(local.commitInput); await flush();
+      expect((await effect(local.effect.id)).deliveryState).toBe("delivered");
+      expect((await effect(other.effect.id)).deliveryState).toBe("pending"); await quiet();
+      await coordinator!.stop(); coordinator = undefined;
+      await start(); await flush();
+      expect((await effect(other.effect.id)).deliveryState).toBe("delivered"); await quiet();
+    });
+    it("drains more than one discovery page and stops querying delivered history", async () => {
+      const fixtures = [];
+      for (let index = 0; index < 103; index++) fixtures.push(await seedEffects());
+      await start(); await flush();
+      for (const f of fixtures) expect((await effect(f.effect.id)).deliveryState).toBe("delivered");
+      await quiet();
+    }, 60_000);
+    it("preserves failed target verification and retries only that obligation", async () => {
+      const f = await seedEffects();
+      await db.update(statusDecisionEffects).set({ targetId: randomUUID() }).where(eq(statusDecisionEffects.id, f.effect.id));
+      await start(); await vi.waitFor(() => expect(errors.length).toBeGreaterThan(0));
+      expect((await effect(f.effect.id)).deliveryState).toBe("pending"); errors.length = 0;
+      await db.update(statusDecisionEffects).set({ targetId: f.effect.targetId }).where(eq(statusDecisionEffects.id, f.effect.id));
+      await vi.advanceTimersByTimeAsync(30_000); await flush();
+      expect((await effect(f.effect.id)).deliveryState).toBe("delivered"); await quiet();
+    });
+    it("reactivates dormant history when the real decision replay restores its binding", async () => {
+      const f = await seedEffects();
+      await db.update(nativeRunFinalizations).set({ phase: "terminal_failure" }).where(eq(nativeRunFinalizations.runId, f.runId));
+      await start(); await flush(); await quiet();
+      expect((await commitNativeStatusDecision(f.commitInput)).replayed).toBe(true);
+      await flush(); expect((await effect(f.effect.id)).deliveryState).toBe("delivered"); await quiet();
+    });
+    it.each(["commit", "rollback"] as const)("defers decision reactivation until the outer transaction %s", async outcome => {
+      const f = await seedEffects();
+      await db.update(nativeRunFinalizations).set({ phase: "terminal_failure" }).where(eq(nativeRunFinalizations.runId, f.runId));
+      await start(); await flush();
+      const writing = db.transaction(async tx => {
+        await commitNativeStatusDecision({ ...f.commitInput, db: tx as unknown as typeof db });
+        await vi.advanceTimersByTimeAsync(1000);
+        expect((await effect(f.effect.id)).deliveryState).toBe("pending");
+        if (outcome === "rollback") throw new Error("roll back decision replay");
+      });
+      if (outcome === "rollback") await expect(writing).rejects.toThrow("roll back decision replay");
+      else await writing;
+      await flush(); expect((await effect(f.effect.id)).deliveryState).toBe(outcome === "rollback" ? "pending" : "delivered"); await quiet();
+    });
+    it.each(["releases", "shortens"])("moves a future ownership deadline earlier when the real store %s its lease", async change => {
+      const f = await seedEffects();
+      const due = new Date(Date.now() + 300_000);
+      await db.update(nativeRunFinalizations).set({ leaseOwner: "release-owner", leaseExpiresAt: due }).where(eq(nativeRunFinalizations.runId, f.runId));
+      await start(); expect(coordinator!.nextWakeAt()).toBe(due.getTime()); await quiet();
+      const store = new NativeRunCoordinatorStore(db, { companyId, issueId: f.issueId, runId: f.runId, agentId,
+        normalizedSessionId: "pending-effects", runnerSourceInstanceId: "pending-effects", completionContractId: f.contractId!,
+        completionContractSha256: "test", completionContractRevision: "test", completionContractCriterionIds: [] });
+      if (change === "shortens") await store.claimFinalization({ leaseOwner: "release-owner", leaseTtlMs: 1000 });
+      else await store.markFinalizationRetry({ leaseOwner: "release-owner", failureCode: "temporary_failure", retryAfterMs: 1000 });
+      await flush(); expect(Date.now()).toBeLessThan(due.getTime());
+      expect((await effect(f.effect.id)).deliveryState).toBe("delivered"); await quiet();
+    });
+    it("retains a first reactivation arriving during drain without passive reads", async () => {
+      const f = await seedEffects();
+      await db.update(nativeRunFinalizations).set({ phase: "terminal_failure" }).where(eq(nativeRunFinalizations.runId, f.runId));
+      await start(); await flush(); admitted = false;
+      await commitNativeStatusDecision(f.commitInput); await quiet();
+      expect((await effect(f.effect.id)).deliveryState).toBe("pending");
+      admitted = true; await vi.advanceTimersByTimeAsync(30_000); await flush();
+      expect((await effect(f.effect.id)).deliveryState).toBe("delivered"); await quiet();
+    });
+    it("retains startup work through drain and reconstructs an owed retry after shutdown", async () => {
+      const f = await seedEffects(); admitted = false;
+      await start(); await quiet(); expect((await effect(f.effect.id)).deliveryState).toBe("pending");
+      await coordinator!.stop(); coordinator = undefined;
+      admitted = true; await start(); await flush();
+      expect((await effect(f.effect.id)).deliveryState).toBe("delivered"); await quiet();
+    });
+  });
 
   describe.each(["obsolete policy", "automatic completion"] as const)("%s review scheduling", kind => {
     let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;

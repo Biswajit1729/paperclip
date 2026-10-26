@@ -1,3 +1,4 @@
+import { notifyNativePendingEffects } from "../native-pending-effect-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "../unsafe-workspace-export-notifications.js";
 import { notifyAutomaticCompletionReviews } from "../automatic-completion-review-notifications.js";
 import { notifyObsoletePolicyReviews } from "../obsolete-policy-review-notifications.js";
@@ -77,6 +78,15 @@ export class NativeStatusRaceError extends Error {
   }
 }
 
+export function nativePendingEffectDueAt(coordinator: {
+  phase: string; resultId: string | null; nextAttemptAt: Date | null;
+  leaseOwner: string | null; leaseExpiresAt: Date | null;
+}): number | null {
+  if (coordinator.phase === "terminal_failure" || coordinator.resultId === null) return null;
+  return Math.max(coordinator.nextAttemptAt?.getTime() ?? 0,
+    coordinator.leaseOwner !== null ? coordinator.leaseExpiresAt?.getTime() ?? 0 : 0);
+}
+
 /** Reconciliation delivery resumes ledger work only; it never re-arbitrates. */
 export async function dispatchPendingNativeStatusEffects(input: {
   db: Db;
@@ -84,11 +94,17 @@ export async function dispatchPendingNativeStatusEffects(input: {
   issueId: string;
   decisionId: string;
   runId: string;
+  onlyWhenDue?: boolean;
 }) {
   return input.db.transaction(async (tx) => {
     const coordinator = await tx
       .select({
         decisionId: nativeRunFinalizations.decisionId,
+        phase: nativeRunFinalizations.phase,
+        resultId: nativeRunFinalizations.resultId,
+        nextAttemptAt: nativeRunFinalizations.nextAttemptAt,
+        leaseOwner: nativeRunFinalizations.leaseOwner,
+        leaseExpiresAt: nativeRunFinalizations.leaseExpiresAt,
       })
       .from(nativeRunFinalizations)
       .where(
@@ -103,6 +119,10 @@ export async function dispatchPendingNativeStatusEffects(input: {
       .then((rows) => rows[0] ?? null);
     if (!coordinator || coordinator.decisionId !== input.decisionId) {
       throw new Error("native_pending_effect_decision_binding_mismatch");
+    }
+    if (input.onlyWhenDue) {
+      const dueAt = nativePendingEffectDueAt(coordinator);
+      if (dueAt === null || dueAt > Date.now()) return [];
     }
     const pending = await tx
       .select({
@@ -131,6 +151,7 @@ export async function dispatchPendingNativeStatusEffects(input: {
         targetId: effect.targetId,
       });
     }
+    await notifyNativePendingEffects(tx, input);
     await notifyChatRunMilestones(tx, input);
     await tx
       .update(statusDecisionEffects)
@@ -1217,6 +1238,7 @@ async function materializeDecisionEffect(input: {
       )
       .for("update");
     if (pending.length === 0) throw new Error("native_pending_effect_missing");
+    await notifyNativePendingEffects(input.tx, { companyId: input.companyId });
     await input.tx
       .update(statusDecisionEffects)
       .set({
@@ -1866,6 +1888,7 @@ export async function commitNativeStatusDecision(input: {
         effect => effect.kind === "record_finalization_error",
       );
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, input.companyId);
+      await notifyNativePendingEffects(tx, input);
       await tx
         .update(nativeRunFinalizations)
         .set({

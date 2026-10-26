@@ -1,3 +1,4 @@
+import { notifyNativePendingEffects } from "../native-pending-effect-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "../unsafe-workspace-export-notifications.js";
 import type { Db } from "@paperclipai/db";
 import type { NativeInteractionResponseEnvelope } from "../../vendor/paperclip-runner/index.js";
@@ -631,26 +632,29 @@ export async function routePersistedNativeResultAttention(input: {
         const effects = Array.isArray(decisionJson.effects) ? decisionJson.effects.map(record) : [];
         const delegation = effects.find((effect) => effect.kind === "create_delegated_issue");
         const finalizationError = effects.find((effect) => effect.kind === "record_finalization_error");
-        await input.db.update(nativeRunFinalizations).set({
-          phase: finalizationError ? "retryable_failure" : "committed",
-          assessmentId: existingAssessment.id,
-          decisionId: existingDecision.id,
-          leaseOwner: null,
-          leaseExpiresAt: null,
-          recoveryState: null,
-          recoveryRequestId: null,
-          failureCode: nonEmptyText(finalizationError?.cause),
-          failureDetail: finalizationError ? {
-            originalFailureCode: finalizationError.cause,
-            nextAction: finalizationError.nextAction,
-          } : null,
-          nextAttemptAt: finalizationError ? new Date(Date.now() + 30_000) : null,
-          updatedAt: new Date(),
-        }).where(and(
-          eq(nativeRunFinalizations.runId, input.runId),
-          eq(nativeRunFinalizations.companyId, binding.companyId),
-          eq(nativeRunFinalizations.issueId, binding.issueId),
-        ));
+        await input.db.transaction(async tx => {
+          await notifyNativePendingEffects(tx, { companyId: binding.companyId, runId: input.runId });
+          await tx.update(nativeRunFinalizations).set({
+            phase: finalizationError ? "retryable_failure" : "committed",
+            assessmentId: existingAssessment.id,
+            decisionId: existingDecision.id,
+            leaseOwner: null,
+            leaseExpiresAt: null,
+            recoveryState: null,
+            recoveryRequestId: null,
+            failureCode: nonEmptyText(finalizationError?.cause),
+            failureDetail: finalizationError ? {
+              originalFailureCode: finalizationError.cause,
+              nextAction: finalizationError.nextAction,
+            } : null,
+            nextAttemptAt: finalizationError ? new Date(Date.now() + 30_000) : null,
+            updatedAt: new Date(),
+          }).where(and(
+            eq(nativeRunFinalizations.runId, input.runId),
+            eq(nativeRunFinalizations.companyId, binding.companyId),
+            eq(nativeRunFinalizations.issueId, binding.issueId),
+          ));
+        });
         receipts.push({
           requestId,
           route: candidate.route,

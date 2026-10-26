@@ -1,3 +1,4 @@
+import { pendingNativeStatusEffectsCondition } from "./native-pending-effect-work.js";
 import { notifyUnsafeWorkspaceExportRunChange } from "../unsafe-workspace-export-notifications.js";
 import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-preservation-notifications.js";
 import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
@@ -636,6 +637,7 @@ type NativeReconciliationOptions = {
   skipObsoletePolicyReviews?: boolean;
   skipAutomaticCompletionReviews?: boolean;
   skipUnsafeWorkspaceExports?: boolean;
+  skipNativePendingEffects?: boolean;
   pluginWorkerManager?: WorkspaceWorkers;
   environmentRuntime?: EnvironmentRuntimeService;
   onWorkspaceSettled?: (input: {
@@ -770,6 +772,7 @@ async function reconcileNativeFinalizationsPass(
       eq(heartbeatRuns.runtimeMode, "native"),
       isNotNull(nativeRunFinalizations.resultId),
       notInArray(nativeRunFinalizations.phase, ["terminal_failure"]),
+      options.skipNativePendingEffects ? not(pendingNativeStatusEffectsCondition(db)) : undefined,
       or(
         isNull(nativeRunFinalizations.nextAttemptAt),
         lte(nativeRunFinalizations.nextAttemptAt, new Date()),
@@ -799,6 +802,7 @@ async function reconcileNativeFinalizationsPass(
         ))
       : [];
     if (row.decisionId && pendingEffects.length > 0) {
+      if (options.skipNativePendingEffects) continue;
       const decision = resolveNativeReconciliationStatus({
         facts: { undeliveredEffectCount: pendingEffects.length },
         priorIssueStatus: row.issueStatus as NativeAuthoritativeIssueStatus,

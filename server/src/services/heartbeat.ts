@@ -1,3 +1,4 @@
+import { registerNativePendingEffectWork } from "./native-runtime/native-pending-effect-work.js";
 import { registerUnsafeWorkspaceExportWork } from "./native-runtime/native-workspace-export-recovery.js";
 import { registerAutomaticCompletionReviewWork } from "./native-runtime/automatic-completion-reviews.js";
 import { registerObsoletePolicyReviewWork } from "./native-runtime/obsolete-policy-reviews.js";
@@ -4066,6 +4067,8 @@ export function heartbeatService(
     triggerIssueMonitor,
 
     reportRunActivity: clearDetachedRunWarning,
+    registerNativePendingEffectWork: (coordinator: Parameters<typeof registerNativePendingEffectWork>[1], canRun: () => boolean) =>
+      registerNativePendingEffectWork(db, coordinator, () => canRun() && readTaskDrain(new Date()) === null),
     registerUnsafeWorkspaceExportWork: (coordinator: Parameters<typeof registerUnsafeWorkspaceExportWork>[1], canRun: () => boolean) =>
       registerUnsafeWorkspaceExportWork(db, coordinator, () => canRun() && readTaskDrain(new Date()) === null),
     registerAutomaticCompletionReviewWork: (coordinator: Parameters<typeof registerAutomaticCompletionReviewWork>[1], canRun: () => boolean) =>
