@@ -96,3 +96,31 @@ broader scopes; ordinary writes must not reload every company run.
 
 This is an audit, not an implemented migration. No polling entrance is removed
 by this document. No Cloud alarm coverage or host sleep eligibility changes.
+
+
+## Owner extraction checkpoint
+
+The status-authority corpus passes all 94 cases before extraction on a fresh
+PostgreSQL database. Reassessment now lives in native-status-reassessment.ts;
+its pure arbitration policy lives in native-reconciliation-status.ts. Existing
+imports through the reconciler remain compatible. The combined reconciler
+delegates to the extracted owner and retains all periodic behavior for now.
+It avoids the legacy review-response lookup when that repair is disabled.
+
+The extracted owner distinguishes unchanged, superseded, deferred and committed
+outcomes. Operational errors still propagate; the existing status-race behavior
+remains deferred. All 94 status-authority cases and 187 governed-response cases
+pass after extraction, as does server typecheck. Evidence: /tmp/sleep50-baseline.log,
+/tmp/sleep50-extract-corpus.log, /tmp/sleep50-extract-responses.log and
+/tmp/sleep50-extract-types.log. Each corpus run uses a fresh database because its
+company prefixes persist beyond the suite.
+
+The scheduler entry point is not ready yet. The status committer locks the
+coordinator before the task and publishes activity after its own transaction.
+Wrapping it in a new outer transaction would publish before that outer commit;
+do not do that. Add any scheduled source/lease/deadline guard at the committer's
+existing transaction boundary, and exercise competing source/claim changes there.
+The new worker must reload source facts and preserve deferred races/retries; it
+must not treat an extracted snapshot-based helper as fresh scheduling authority.
+Producer notifications, discovery cost, lifecycle tests and periodic removal
+remain outstanding. No slice 50 PR has been published.

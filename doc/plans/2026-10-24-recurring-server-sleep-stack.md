@@ -2452,3 +2452,12 @@ draft and unmerged. /tmp/sleep49-final-gates.json, /tmp/sleep49-comments.json
 and /tmp/sleep49-review-threads.json preserve the observations. The PR body
 records the passing remote gates and keeps the local embedded-database failure
 visible. Slice 50 and all other remaining original obligations are incomplete.
+
+
+Slice 50 extraction checkpoint: reassessment and its pure policy now have native
+runtime owners, with the original reconciler delegating to them. All 94 status
+corpus cases pass before and after extraction; all 187 governed-response cases
+and server types pass afterward. No polling duty has been removed. The audit
+records the critical transaction boundary: scheduled guards belong inside the
+status committer, which publishes after its own transaction. Producer coverage,
+worker selection, lifecycle/cost proof and a new PR remain outstanding.
