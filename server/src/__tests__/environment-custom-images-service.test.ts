@@ -269,6 +269,22 @@ describeEmbeddedPostgres("environmentCustomImageService", () => {
       await quiet();
     });
 
+    it("honors a committed expiry inside the retry window", async () => {
+      await start();
+      const created = await create();
+      await settle();
+      const earlier = new Date(Date.now() + 5_000);
+      provider.call.mockResolvedValueOnce({ providerLeaseId: created.session.providerLeaseId,
+        status: "waiting_for_user", expiresAt: earlier.toISOString() } as never);
+      await service.refreshSetupSession({ sessionId: created.session.id });
+      await vi.waitFor(() => expect(coordinator!.nextWakeAt()).toBe(earlier.getTime()));
+      expect(cancellations()).toHaveLength(0);
+      await settle(Math.max(0, earlier.getTime() - Date.now()));
+      await vi.waitFor(() => expect(cancellations()).toHaveLength(1));
+      expect(await service.getSessionById(created.session.id)).toMatchObject({ status: "timed_out" });
+      await quiet();
+    });
+
     it("replaces an expiry when the provider moves it earlier and disarms on user cancellation", async () => {
       await start();
       const created = await create(); await settle();
