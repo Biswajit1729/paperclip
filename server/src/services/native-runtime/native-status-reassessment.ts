@@ -16,7 +16,7 @@ export type NativeStatusReassessmentSource = {
   runId: string; companyId: string; agentId: string; issueId: string;
   issueStatus: string; issueStatusVersion: number; issueDecisionId: string | null;
   coordinatorPhase: string; assessmentId: string; decisionId: string | null;
-  contextSnapshot: Record<string, unknown> | null;
+  nativeStatusWakeIntentId: unknown;
 };
 
 type Outcome = { kind: "unchanged" | "superseded" } | { kind: "deferred"; retry?: boolean } | {
@@ -184,8 +184,7 @@ export async function reassessNativeStatusFromSource(
     if (reviewBarrier && reviewBarrier.status !== "succeeded") return { kind: "deferred" };
     const childCompletionRecipient = {
       companyId: row.companyId, issueId: row.issueId, agentId: row.agentId, runId: row.runId,
-      sourceIntentId: typeof record(row.contextSnapshot).nativeStatusWakeIntentId === "string"
-        ? record(row.contextSnapshot).nativeStatusWakeIntentId as string : null,
+      sourceIntentId: typeof row.nativeStatusWakeIntentId === "string" ? row.nativeStatusWakeIntentId : null,
     };
     const hasPendingChildCompletion = await hasPendingNativeChildCompletion(db, childCompletionRecipient);
     const reassessmentRow = await recordNativeWorkAssessment({
