@@ -1,3 +1,4 @@
+import { notifyUnsafeWorkspaceExportRecovery } from "../unsafe-workspace-export-notifications.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { logger } from "../../middleware/logger.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -466,6 +467,9 @@ export async function reconcileSafeNativeReplacements(
           eq(issueRecoveryActions.cause, current.failureCode!),
           sql`${issueRecoveryActions.evidence}->>'runId' = ${run.id}`,
         )).for("update");
+        if (holds.some(hold => hold.status === "active" || hold.status === "escalated")) {
+          await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: run.companyId, issueId: task.id });
+        }
         for (const hold of holds) {
           await tx.update(issueRecoveryActions).set({
             status: "resolved", outcome: "handed_back", resolvedAt: now, updatedAt: now,

@@ -1,3 +1,4 @@
+import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
 import { notifyChatResponseAvailability } from "./chat-response-availability.js";
 import { notifyChatInboundWakeNotices } from "./chat-inbound-wake-notice-notifications.js";
 import { and, asc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
@@ -983,6 +984,7 @@ export function issueTreeControlService(db: Db) {
         for (const issueId of issueIdsForStatus) {
           await notifyTerminalWorkspaceWork(tx, `issue:${issueId}`);
           await notifyChatResponseAvailability(tx, { companyId, issueId });
+          if (status === "blocked" || status === "in_review") await notifyUnsafeWorkspaceExportRecovery(tx, { companyId, issueId });
         }
         const rows = await tx
           .update(issues)

@@ -1,3 +1,4 @@
+import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
 import { notifyChatRunMilestones } from "./chat-run-milestone-notifications.js";
 import { notifyVoiceChange } from "./voice/voice-recovery-notifications.js";
 import { notifyChatEndpointWork } from "./chat-work-notifications.js";
@@ -751,6 +752,7 @@ export function accessService(db: Db) {
         })
         .where(and(assignedOpenIssueWhere, eq(issues.status, "in_progress")))
         .returning({ id: issues.id });
+      if (assignmentPatch.assigneeAgentId) await notifyUnsafeWorkspaceExportRecovery(tx, { companyId });
       const reassigned = await tx
         .update(issues)
         .set(assignmentPatch)

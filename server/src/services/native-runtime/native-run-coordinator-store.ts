@@ -1,3 +1,4 @@
+import { notifyUnsafeWorkspaceExportRecovery } from "../unsafe-workspace-export-notifications.js";
 import { isSafeNativeChatProgressEventType } from "../safe-native-chat-progress.js";
 import { notifyChatNativeProgress } from "../chat-native-progress-notifications.js";
 import { createHash } from "node:crypto";
@@ -562,7 +563,11 @@ export class NativeRunCoordinatorStore {
     ) {
       throw new Error("native_finalization_retry_invalid");
     }
-    const [updated] = await this.#db
+    const [updated] = await this.#db.transaction(async tx => {
+      if (input.failureCode === "native_workspace_sync_out_unsafe_archive") {
+        await notifyUnsafeWorkspaceExportRecovery(tx, this.#binding);
+      }
+      return tx
       .update(nativeRunFinalizations)
       .set({
         leaseOwner: null,
@@ -580,6 +585,7 @@ export class NativeRunCoordinatorStore {
         ),
       )
       .returning({ runId: nativeRunFinalizations.runId });
+    });
     if (!updated) throw new Error("native_finalization_lease_lost");
   }
 }

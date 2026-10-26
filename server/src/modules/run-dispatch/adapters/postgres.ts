@@ -1,3 +1,4 @@
+import { notifyUnsafeWorkspaceExportRecovery } from "../../../services/unsafe-workspace-export-notifications.js";
 import { notifyCancelledWorkspacePreservation } from "../../../services/cancelled-workspace-preservation-notifications.js";
 import { notifyInstructionCollection } from "../../../services/instruction-collection-notifications.js";
 import { notifyScheduledRetryCancellation } from "../../../services/scheduled-retry-cancellation-notifications.js";
@@ -717,6 +718,7 @@ export function createPostgresRunDispatchAdapter(
     await notifyInstructionCollection(tx, { companyId: input.companyId, runId: input.runId });
     await notifyCancelledWorkspacePreservation(tx, { companyId: input.companyId, runId: input.runId });
     await notifyScheduledRetryCancellation(tx, { companyId: input.companyId, runId: input.runId });
+    await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: input.companyId, issueId: input.issueId ?? undefined });
     await notifyChatRunMilestones(tx, { companyId: input.companyId, issueId: input.issueId ?? undefined });
     const [row] = await tx
       .update(heartbeatRuns)
@@ -926,6 +928,7 @@ export function createPostgresRunDispatchAdapter(
       await notifyInstructionCollection(tx, { companyId: run.companyId, runId: run.id });
       await notifyCancelledWorkspacePreservation(tx, { companyId: run.companyId, runId: run.id });
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, run.companyId);
+      await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: run.companyId, issueId });
       await notifyChatRunMilestones(tx, { companyId: run.companyId, issueId });
       const [row] = await tx
         .update(heartbeatRuns)
@@ -1097,6 +1100,7 @@ export function createPostgresRunDispatchAdapter(
     const scheduledRetryAt = new Date(now.getTime() + 30_000);
     const executionWait = { issueId, runId: blocker.runId, cause: blocker.cause };
     await notifyScheduledRetryCancellation(tx, { companyId: run.companyId, runId: run.id });
+    if (run.status === "queued") await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: run.companyId, issueId });
     const [waiting] = await tx.update(heartbeatRuns)
       .set({
         status: "scheduled_retry",

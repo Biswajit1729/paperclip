@@ -1,0 +1,194 @@
+# Historical unsafe workspace export recovery
+
+Status: implementation in progress on `codex/sleep-46-unsafe-export-recovery`.
+Parent: slice 45, commit `be668fb975f119efeb4830405d4bb1ab65791f87`, PR #17680.
+The parent has 53 successful gates and a 5/5 review at that head. This slice has
+not been published. Startup now registers the worker when maintenance is enabled;
+the periodic reaper skips this duty. Explicit/manual recovery remains available.
+
+## Problem and owner
+
+`native-runtime/native-workspace-export-recovery.ts` recovers old controllers'
+`native_workspace_sync_out_unsafe_archive` failures. It does not retry an unsafe
+archive or launch another provider turn. It can retire stale repair notices and
+readmit an already accepted result after recording an explicit workspace omission.
+
+The old caller in `native-finalization-reconciler.ts` visits 25 terminal failure
+rows per pass. Ineligible historical rows remain in that set forever. Merely
+putting those same rows on a 30-second deadline would preserve idle polling.
+
+The new scoped worker uses the existing delivery coordinator, transaction-aware
+notifications, scoped deadline helper, and scheduler. No table, provider branch,
+independent timer, or host-sleep exemption is added. One partial index supports
+scoped discovery without scanning completed history. The existing recovery owner
+still performs all mutations and validates current state under its original
+physical-owner and database-lock boundaries. The manual/startup scan still uses
+that owner; extraction alone does not remove its existing behavior.
+
+## Work predicate
+
+Discovery joins the coordinator, exact native run, issue, and accepted result.
+Company, issue, run, completion-contract, and result identities must agree.
+The coordinator must still have the historical unsafe terminal failure.
+One of two obligations must exist:
+
+1. A stale unsafe action for this run is active/escalated, or resolved with the
+   old `new_source_execution_path` note. Retire that notice even if later work
+   prevents result readmission.
+2. The existing readmission conditions hold: no explicit action settlement,
+   no newer run or other queued/running run for this issue, no competing active
+   recovery action, the latest contract matches, the issue is blocked/in-review
+   and assigned to this run's agent, the run is failed/succeeded with terminal
+   native failure, and checkout/execution ownership is absent or belongs to it.
+
+A cancelled recovery action is an explicit veto. A resolved action with a null
+or other non-automatic resolution note is also a veto. These are preserved.
+Only the old automatic-resolution notes permit readmission.
+
+A coordinator lease or physical owner can delay an actual obligation. The worker
+retains its retry; it does not infer that the owner stopped because time elapsed.
+Dormant history has no retry. Relevant committed state changes must rediscover
+it. The producer audit below records the supported local writers.
+
+Discovery uses 100-row keyset pages. Dispatch uses the shared fair company batch
+with a five-entry limit. Exact pending work retries after 30 seconds; exceptions
+use the shared bounded backoff. The check reads the exact run again before
+calling the owner, then retains a deadline only if the work predicate still
+holds. Successful recovery leaves an omission barrier, never a copyback receipt.
+
+## Producer coverage checkpoint
+
+Implemented:
+
+- The real finalization-failure writer signals before committing an unsafe
+  terminal failure. It does not signal unrelated failure codes.
+- `issueService.update` signals changed status, assignee-agent, execution-run,
+  and checkout-run fields in its existing transaction.
+- Recovery-action insertion, identity supersession, and relevant cause/run
+  identity changes signal in their existing transactions.
+- Recovery-action resolution checks for a matching active action before
+  registering an intent. Repeated resolution of an already-settled action does
+  not wake this worker. Operator-guidance/attempt metadata alone does not wake it.
+- The shared heartbeat run-status writer signals changed status, using the
+  already-loaded native issue and context issue identities. No extra lookup is
+  needed to identify those issues. Both distinct issue references are covered.
+
+Additional producer coverage:
+
+| State that changes eligibility | Existing owner paths now signalling before their writes |
+| --- | --- |
+| Task status, assignment, or stale ownership | Task update, terminal checkout/execution release, admin force release, task-tree restoration, archived-member reassignment, chat conversation settlement, queued-comment release, status-decision effects, queue dependency blocking, stale-lock recovery |
+| Competing queued/running run becomes terminal or leaves that set | Lifecycle status writes, queue cancellation, dispatch suppression/stale-run cancellation, retry deferral, active-run watchdog, execution-control recovery, orphan recovery, legacy settlement, native finalizer, finalization reconciler, restart recovery, and session executor |
+| Recovery action status or lineage | Recovery-action service, issue repair routes, execution/legacy recovery resolution, workspace reconstruction, safe replacement, explicit continuation |
+| Historical unsafe failure first appears | Finalizer failure, interaction bridge finalization error, coordinator-store retry marking |
+| Deletion removes a competing run | Agent and company deletion signal the company before deleting runs |
+
+Signals carry only company and optional issue IDs. Run writers use their already
+loaded native issue and legacy context issue; both distinct references are sent.
+Signals do not pass service contexts, provider data, or database objects through
+JSON. Existing transaction owners remain authoritative. The few root writes
+without a transaction now wrap only their database mutation and signal, not
+provider calls. No caller gains new recovery authority.
+
+The writer inventory inspected issue status/assignment/ownership, run status/
+native phase/context, and action status/cause/evidence writes, including variable
+patches. Metadata-only writes do not create eligibility. Monitor patches change
+only monitor policy/state/deadlines. Workspace-binding patches change workspace
+fields. Ordinary checkout/adoption moves to in-progress, and ordinary release
+clears assignment; neither enables this accepted-result path. New-run ownership
+also introduces a newer or active run, which prevents old-result readmission.
+Queued-run suppression restores queued state, which remains a competing run.
+Run coalescence retains the admitted task scope; ordinary context enrichment adds
+comments, routing, session, or delivery metadata. Accepted result identity and
+completion-contract history are immutable in supported service paths. The raw
+SQL audit found no additional relevant state mutation.
+
+Independent SQL writers and another server process are outside the existing
+process-local notification contract. Startup reconstructs committed work. This
+slice adds no cross-process listener or provider wake contract.
+
+The heartbeat facade supplies admission state. Startup registers only in the
+enabled-maintenance branch. The periodic reaper passes
+`skipUnsafeWorkspaceExports`; direct/manual calls default to the old scan.
+Shutdown stops the shared coordinator and joins its work. Ownership contention
+keeps a concrete retry; stopped/drained execution cannot silently discard it.
+
+## Query cost and migration
+
+The measured SQL was captured from the actual worker through the PostgreSQL
+client debug callback. A rolled-back fixture retained 10,000 completed native
+results/coordinators and one stale unsafe notice. Without an index, the startup
+query visited 10,074 result rows and took 9.827 ms. Scoped discovery removed
+10,075 coordinator rows by filter and took 2.625 ms. LIMIT alone did not bound
+history work.
+
+The partial index on `(company_id, issue_id, run_id)`, restricted to the exact
+unsafe terminal-failure state, reduced these measurements to 0.105 ms and
+0.046 ms. The plans selected one coordinator from the partial index. These are
+local fixture timings, not deployment latency or fleet cost claims. Dormant
+unsafe history still requires eligibility evaluation when its scope changes.
+
+Migration `0398_shocking_molecule_man.sql` creates the index concurrently with
+`IF NOT EXISTS` through the existing top-level migration runner. Fresh database
+application, migration replay, direct SQL replay, and ready/valid index inspection
+passed. The generated snapshot set retains 0394–0398. Historical SQL and journal
+entries remain intact. The index adds write/storage cost only for matching rows.
+
+## Evidence and preserved failures
+
+Baseline: 51 existing export tests passed on fresh PostgreSQL in
+`/tmp/sleep46-baseline.log`.
+
+Initial worker run: 65 passed, four failed (`/tmp/sleep46-owner-v1.log`). The new
+producer fixture incorrectly inserted a preexisting unsafe action with a
+non-production fingerprint. The actual failure writer superseded it with a
+cancelled record. The existing explicit-settlement veto correctly prevented
+readmission. The fixture now starts before that recovery action exists. No
+production veto was weakened. The failed database remains available as
+`paperclip_sleep46_owner_v1_20261025_test` on the local test Postgres instance.
+
+The next export run passed all 70 cases (`/tmp/sleep46-owner-v2.log`). Real issue
+and recovery-action producers then replaced the direct-hint fixture; all 71
+export cases passed. A combined command also ran one non-database recovery test
+but skipped 88 PostgreSQL cases because their separate environment variable was
+unset (`/tmp/sleep46-owner-v3.log`). Those skips are not acceptance evidence.
+With its dedicated database explicitly set, all 89 recovery-action tests passed
+(`/tmp/sleep46-recovery-v1.log`).
+
+Server typechecks passed after the worker, producer, and no-op notification
+changes. The final combined run passed all 161 tests with no skips: 72 export-owner
+cases and 89 recovery-action cases, including the no-op notification regression,
+with separate explicit databases (`/tmp/sleep46-producers-v4.log`).
+
+Current tests establish empty/history quiet, explicit settlement fences, stale
+notice retirement without result replay, real failure creation, outer transaction
+commit/rollback, restart, drain/resume, coordinator-lease retry, failed discovery,
+and real task/recovery-action reactivation. The post-wiring selection below adds startup, ownership, and direct-producer
+coverage beyond this initial checkpoint.
+
+Post-wiring verification:
+
+- The first expanded selection passed 226 cases and failed one new physical-owner
+  assertion (`/tmp/sleep46-owner-v5.log`). It inspected the next deadline while a
+  worker attempt was in flight. The test now waits for that attempt to settle;
+  no production ownership or scheduling rule was weakened.
+- The next selection passed 229 cases. After adding real queued-run cancellation
+  and the index migration, all 230 owner/recovery-action/startup cases passed on
+  fresh databases (`/tmp/sleep46-owner-v7.log`). This includes physical ownership,
+  task cancellation during contention, admin and stale-lock release, shutdown/
+  restart, and 103 stale notices across discovery pages.
+- Ten affected consumer suites passed 374 cases and skipped 22 lifecycle database
+  cases because embedded PostgreSQL was unavailable. The lifecycle suite now
+  accepts the validated explicit external-database option. Its 31 cases then all
+  passed, including those 22. Combined with the owner selection, this establishes
+  626 distinct passing cases across 13 files. Logs: `/tmp/sleep46-consumers.log`
+  and `/tmp/sleep46-lifecycle.log`.
+- Query-plan fixture setup first violated the existing unique active-action rule;
+  the fixture now settles its old active action before inserting the owed notice.
+  All fixture data is rolled back. The capture script initially used a missing
+  root runner and then the wrong module format; using the database package runner
+  with an ES module captured the real SQL successfully.
+
+Workspace typecheck and build passed. Exact-head remote CI/review remain required
+before this slice is accepted. Other stack gates and migration reconciliation with
+master remain outstanding.

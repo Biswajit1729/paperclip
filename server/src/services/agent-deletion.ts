@@ -1,3 +1,4 @@
+import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
 import { notifyCancelledWorkspacePreservation } from "./cancelled-workspace-preservation-notifications.js";
 import { notifyInstructionCollection } from "./instruction-collection-notifications.js";
 import { notifyDirectoryCleanup } from "./directory-cleanup-notifications.js";
@@ -52,6 +53,7 @@ export async function deleteAgentDependencies(tx: Db, companyId: string, id: str
   await notifyDirectoryCleanup(tx, { companyId: companyId });
   await notifyInstructionCollection(tx, { companyId: companyId });
   await notifyCancelledWorkspacePreservation(tx, { companyId: companyId });
+  await notifyUnsafeWorkspaceExportRecovery(tx, { companyId });
   await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.agentId, id));
   await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, id));
   await tx.delete(agentApiKeys).where(eq(agentApiKeys.agentId, id));

@@ -1915,7 +1915,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
 
   let settledProcessesDiscovered = false;
 
-  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; skipScheduledRetryCancellation?: boolean; skipCapturedInstructionCommit?: boolean; skipInstructionDirectoryCleanup?: boolean; skipStoppedInstructionCollection?: boolean; skipCancelledWorkspacePreservation?: boolean; skipObsoletePolicyReviews?: boolean; skipAutomaticCompletionReviews?: boolean }) {
+  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; skipScheduledRetryCancellation?: boolean; skipCapturedInstructionCommit?: boolean; skipInstructionDirectoryCleanup?: boolean; skipStoppedInstructionCollection?: boolean; skipCancelledWorkspacePreservation?: boolean; skipObsoletePolicyReviews?: boolean; skipAutomaticCompletionReviews?: boolean; skipUnsafeWorkspaceExports?: boolean }) {
     if (!opts?.skipCancelledWorkspacePreservation) await preserveCancelledNativeWorkspaces(db);
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const now = new Date();
@@ -1935,6 +1935,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     await reconcileNativeFinalizations(db, undefined, {
       skipObsoletePolicyReviews: opts?.skipObsoletePolicyReviews,
       skipAutomaticCompletionReviews: opts?.skipAutomaticCompletionReviews,
+      skipUnsafeWorkspaceExports: opts?.skipUnsafeWorkspaceExports,
       environmentRuntime,
       pluginWorkerManager: dependencies.pluginWorkerManager,
       onWorkspaceSettled: settleRecoveredNativeWorkspace,

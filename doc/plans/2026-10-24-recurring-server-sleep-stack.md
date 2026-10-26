@@ -2178,3 +2178,36 @@ The native finalization audit found separate historical unsafe-export recovery, 
 Obsolete policy-review cleanup is draft [#17679](https://github.com/paperclipai/paperclip/pull/17679) at `e671c66bba6e9a42aa570826e6f3420dba199399`. All 53 checks pass, Greptile reviewed that head at 5/5, and no unresolved threads remain. It is mergeable and unmerged.
 
 Slice 45 owns automatic completion-review retirement only. It preserves direct finalizer ordering and the durable withdrawal trigger for reassessment. The worker's raw lookup propagates failures so failed discovery cannot look empty. See [the audit](2026-10-25-automatic-completion-review-sleep-audit.md). All 370 local owner/startup/consumer tests pass, as do workspace types/build. Exact-head remote gates remain required. Older stack CI/review gaps, master reconciliation and the remaining original duties are still outstanding.
+
+## Slice 45 accepted; slice 46 unsafe-export audit
+
+[#17680](https://github.com/paperclipai/paperclip/pull/17680) at
+`be668fb975f119efeb4830405d4bb1ab65791f87` has 53 successful remote gates,
+Greptile 5/5 at that head, and no unresolved review threads. It remains draft
+and unmerged. The unsafe-export baseline passed all 51 tests on a fresh external
+PostgreSQL database (`/tmp/sleep46-baseline.log`). Slice 46 must distinguish
+action retirement and eligible result recovery from dormant historical failure.
+The periodic backstop remains until all reactivation producers are covered.
+
+Slice 46 now has a scoped worker and initial producer coverage, with the periodic
+backstop deliberately retained until the direct-writer audit is complete. See
+[the unsafe-export audit](2026-10-25-unsafe-workspace-export-sleep-audit.md) for
+work predicates, remaining producers, test evidence, and preserved failures.
+
+
+## Slice 46 producer wiring and verification
+
+The unsafe-export worker now registers through heartbeat/startup and the periodic
+reaper skips its historical scan. Direct task/run/action producers signal their
+existing transaction boundaries. Physical-owner contention, real admin/stale-lock
+release, queued-run cancellation, cancellation during ownership contention,
+shutdown/restart, and multiple discovery pages are tested. The owner/startup and
+consumer selections establish 626 distinct passing cases across 13 files after
+running the initially skipped lifecycle cases against an explicit database.
+
+A measured retained-history scan justified partial index migration 0398; fresh
+application, replay, and validity checks passed. The owner audit records timings,
+producer coverage, fixture failures, and the supported writer boundary. Workspace
+typechecks and build passed; remote acceptance remains outstanding. Origin/master was fetched at
+`6336c34041`; the full stack still needs final reconciliation with master. No PR
+in this stack has been merged, and the original remaining scope is unchanged.

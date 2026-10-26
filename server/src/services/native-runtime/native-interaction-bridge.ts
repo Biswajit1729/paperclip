@@ -1,3 +1,4 @@
+import { notifyUnsafeWorkspaceExportRecovery } from "../unsafe-workspace-export-notifications.js";
 import type { Db } from "@paperclipai/db";
 import type { NativeInteractionResponseEnvelope } from "../../vendor/paperclip-runner/index.js";
 import { and, asc, eq, inArray } from "drizzle-orm";
@@ -120,6 +121,9 @@ export async function applyNativeAttentionStatusDecision(input: {
         continue;
       }
       if (effect.kind === "record_finalization_error") {
+        if (effect.cause === "native_workspace_sync_out_unsafe_archive") {
+          await notifyUnsafeWorkspaceExportRecovery(tx, input);
+        }
         const [coordinator] = await tx.update(nativeRunFinalizations).set({
           phase: "terminal_failure",
           failureCode: effect.cause,

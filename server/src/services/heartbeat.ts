@@ -1,3 +1,4 @@
+import { registerUnsafeWorkspaceExportWork } from "./native-runtime/native-workspace-export-recovery.js";
 import { registerAutomaticCompletionReviewWork } from "./native-runtime/automatic-completion-reviews.js";
 import { registerObsoletePolicyReviewWork } from "./native-runtime/obsolete-policy-reviews.js";
 import { registerCancelledWorkspacePreservationWork } from "./native-runtime/native-failed-workspace-recovery.js";
@@ -4065,6 +4066,8 @@ export function heartbeatService(
     triggerIssueMonitor,
 
     reportRunActivity: clearDetachedRunWarning,
+    registerUnsafeWorkspaceExportWork: (coordinator: Parameters<typeof registerUnsafeWorkspaceExportWork>[1], canRun: () => boolean) =>
+      registerUnsafeWorkspaceExportWork(db, coordinator, () => canRun() && readTaskDrain(new Date()) === null),
     registerAutomaticCompletionReviewWork: (coordinator: Parameters<typeof registerAutomaticCompletionReviewWork>[1], canRun: () => boolean) =>
       registerAutomaticCompletionReviewWork(db, coordinator, () => canRun() && readTaskDrain(new Date()) === null),
     registerObsoletePolicyReviewWork: (coordinator: Parameters<typeof registerObsoletePolicyReviewWork>[1], canRun: () => boolean) =>

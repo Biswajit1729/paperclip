@@ -1,3 +1,4 @@
+import { notifyUnsafeWorkspaceExportRecovery } from "../unsafe-workspace-export-notifications.js";
 import { notifyAutomaticCompletionReviews } from "../automatic-completion-review-notifications.js";
 import { notifyObsoletePolicyReviews } from "../obsolete-policy-review-notifications.js";
 import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-preservation-notifications.js";
@@ -1069,6 +1070,7 @@ async function materializeDecisionEffect(input: {
     }
     await notifyInstructionCollection(input.tx, { companyId: input.companyId, runId: input.runId });
     await notifyCancelledWorkspacePreservation(input.tx, { companyId: input.companyId, runId: input.runId });
+    await notifyUnsafeWorkspaceExportRecovery(input.tx, { companyId: input.companyId, issueId: input.issue.id });
     await notifyDeliveryWork(input.tx, DELIVERY_QUEUES.accounting, input.companyId);
     const [run] = await input.tx
       .update(heartbeatRuns)
@@ -1500,6 +1502,7 @@ async function materializeDecisionEffect(input: {
     };
   }
   if (effect.kind === "release_checkout") {
+    await notifyUnsafeWorkspaceExportRecovery(input.tx, { companyId: input.companyId, issueId: input.issue.id });
     const [released] = await input.tx
       .update(issues)
       .set({
