@@ -2410,3 +2410,18 @@ external pool-fixture and callback-narrowing failures and repairs are preserved
 in the owner audit. Execution-state-only restoration, real coordinator release,
 query cost, registration/periodic removal and final acceptance remain. No PR yet,
 no merge, and the full original stack scope remains open.
+
+
+## Slice 49 startup and cost checkpoint
+
+Governed-review response recovery now owns both periodic repair entrances and
+registers through heartbeat maintenance. All 255 owner/startup cases, workspace
+typecheck and build pass. Pending-policy release, real coordinator retry, SQL-quiet
+drain, contention/resume and shutdown/restart are covered. A run-first concurrent
+receipt index removes the measured quadratic history lookup (about 3,000 ms to
+45 ms on 10,000 selected historical responses). The 10,000 outstanding-item
+fixture remains proportional: 101 queries, 2.25 seconds, about 2.05 MB; it stops
+between pages on drain. Fresh migration and interrupted/concurrent replay pass.
+The audit preserves the initial query, migration and test-clock failures. Full
+local tests are running; remote acceptance, older stack findings, master
+reconciliation and every remaining original duty are still open. Nothing merged.

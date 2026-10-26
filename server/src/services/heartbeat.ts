@@ -1,3 +1,4 @@
+import { registerNativeReviewResponseWork } from "./native-runtime/native-review-response-work.js";
 import { registerNativeResponsePresentationWork } from "./native-runtime/native-response-presentation-work.js";
 import { registerNativePendingEffectWork } from "./native-runtime/native-pending-effect-work.js";
 import { registerUnsafeWorkspaceExportWork } from "./native-runtime/native-workspace-export-recovery.js";
@@ -4068,6 +4069,8 @@ export function heartbeatService(
     triggerIssueMonitor,
 
     reportRunActivity: clearDetachedRunWarning,
+    registerNativeReviewResponseWork: (coordinator: Parameters<typeof registerNativeReviewResponseWork>[1], canRun: () => boolean) =>
+      registerNativeReviewResponseWork(db, coordinator, () => canRun() && readTaskDrain(new Date()) === null),
     registerNativeResponsePresentationWork: (coordinator: Parameters<typeof registerNativeResponsePresentationWork>[1], canRun: () => boolean) =>
       registerNativeResponsePresentationWork(db, coordinator, () => canRun() && readTaskDrain(new Date()) === null),
     registerNativePendingEffectWork: (coordinator: Parameters<typeof registerNativePendingEffectWork>[1], canRun: () => boolean) =>

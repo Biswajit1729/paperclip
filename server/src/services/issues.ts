@@ -11312,7 +11312,9 @@ export function issueService(db: Db) {
           await notifyDecisionTargetWork(tx, `issue:${id}`);
         }
         if ((patch.status !== undefined && patch.status !== receiptExisting.status) ||
-            (patch.assigneeAgentId !== undefined && patch.assigneeAgentId !== receiptExisting.assigneeAgentId)) {
+            (patch.assigneeAgentId !== undefined && patch.assigneeAgentId !== receiptExisting.assigneeAgentId) ||
+            (patch.executionState !== undefined && parseObject(receiptExisting.executionState).status === "pending" &&
+              parseObject(patch.executionState).status !== "pending")) {
           await notifyChatResponseAvailability(tx, { companyId: receiptExisting.companyId, issueId: id });
         }
         if (patch.status !== undefined && patch.status !== receiptExisting.status) {

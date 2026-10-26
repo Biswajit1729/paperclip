@@ -53,6 +53,7 @@ import { configureAgentLifecycle, createAgentLifecycle, processAgentLifecycle } 
 import { createOAuthStateStore } from "../tool-access/oauth/state.js";
 import { approvalRecords } from "../approvals.js";
 import { issueApprovalService } from "../issue-approvals.js";
+import { NativeRunCoordinatorStore } from "./native-run-coordinator-store.js";
 import { nativeReviewResponseWork } from "./native-review-response-work.js";
 import { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { idleWorkSnapshot } from "../task-admission.js";
@@ -418,6 +419,10 @@ describe("native external-chat response wait", () => {
       userId,
       commentId,
       principalId,
+      storeBinding: { companyId, issueId, runId, agentId, normalizedSessionId: sessionId,
+        runnerSourceInstanceId: runnerInstanceId, completionContractId: contractId,
+        completionContractSha256: contractSha256, completionContractRevision: "external-chat-wait-v1",
+        completionContractCriterionIds: ["response"] },
     };
   }
 
@@ -2802,6 +2807,23 @@ describe("native external-chat response wait", () => {
     return { ...fixture, gate, input };
   }
 
+  it.each(["reconciler", "finalizer"] as const)("defers periodic governed-response %s repair to its registered worker", async path => {
+    const fixture = await seedRecoverableReviewResponse();
+    await db.update(heartbeatRuns).set({ resultJson: sql`${heartbeatRuns.resultJson} - 'externalChatReviewPresentation'` })
+      .where(eq(heartbeatRuns.id, fixture.runId));
+    if (path === "reconciler") await reconcileNativeFinalizations(db, [fixture.runId], { skipNativeReviewResponse: true });
+    else await finalizeNativeRun({ db, runId: fixture.runId, workspaceFinalizeStatus: "succeeded",
+      projectRunStatus: true, skipNativeReviewResponse: true });
+    expect(await db.select().from(issueComments).where(eq(issueComments.createdByRunId, fixture.runId))).toHaveLength(0);
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+    expect(run.resultJson?.externalChatReviewPresentation).toBeUndefined();
+    const work = nativeReviewResponseWork(db);
+    const [entry] = await work.load({ companyId: fixture.companyId, runId: fixture.runId });
+    expect(entry?.id).toBe(fixture.runId);
+    expect(await work.check(entry)).toBeNull();
+    expect(await db.select().from(issueComments).where(eq(issueComments.createdByRunId, fixture.runId))).toHaveLength(1);
+  });
+
   it("recovers scheduled governed responses once under concurrent callers and preserves deleted receipts", async () => {
     const fixture = await seedRecoverableReviewResponse();
     const work = nativeReviewResponseWork(db);
@@ -3062,6 +3084,169 @@ describe("native external-chat response wait", () => {
       await expect.poll(async () => (await comments()).length, { timeout: 5_000 }).toBe(1);
       expect(errors).toEqual([]);
     } finally { await coordinator.stop(); }
+  });
+
+  it("reactivates governed responses when pending execution policy is cleared without changing task status", async () => {
+    const fixture = await seedRecoverableReviewResponse();
+    await db.update(issues).set({ executionState: { status: "pending", currentStageId: randomUUID(),
+      currentStageIndex: 0, currentStageType: "review", currentParticipant: { type: "user", userId: fixture.userId, agentId: null },
+      returnAssignee: { type: "agent", agentId: fixture.agentId, userId: null }, reviewRequest: null,
+      completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null, monitor: null, changesRequestedCount: 0 } })
+      .where(eq(issues.id, fixture.issueId));
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    const worker = nativeReviewResponseWork(db).register(coordinator, () => true);
+    const comments = () => db.select().from(issueComments).where(eq(issueComments.createdByRunId, fixture.runId));
+    try {
+      await worker.ready;
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+        { timeout: 10_000 }).toEqual({ active: 0, next: null });
+      expect(await comments()).toHaveLength(0);
+      await issueService(db).updateForCompany(fixture.issueId, fixture.companyId, { executionState: null });
+      expect((await db.select().from(issues).where(eq(issues.id, fixture.issueId)))[0].status).toBe("in_review");
+      await expect.poll(async () => (await comments()).length, { timeout: 5_000 }).toBe(1);
+      expect(errors).toEqual([]);
+    } finally { await coordinator.stop(); }
+  });
+
+  it("wakes governed responses from the real coordinator retry release", async () => {
+    const fixture = await seedRecoverableReviewResponse();
+    const store = new NativeRunCoordinatorStore(db, fixture.storeBinding);
+    await store.claimFinalization({ leaseOwner: "review-response-fixture", leaseTtlMs: 30_000 });
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    const worker = nativeReviewResponseWork(db).register(coordinator, () => true);
+    const comments = () => db.select().from(issueComments).where(eq(issueComments.createdByRunId, fixture.runId));
+    try {
+      await worker.ready;
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+        { timeout: 10_000 }).toEqual({ active: 0, next: null });
+      expect(await comments()).toHaveLength(0);
+      await store.markFinalizationRetry({ leaseOwner: "review-response-fixture", failureCode: "review_response_retry", retryAfterMs: 1000 });
+      expect(await comments()).toHaveLength(0);
+      await expect.poll(async () => (await comments()).length, { timeout: 5_000 }).toBe(1);
+      expect(errors).toEqual([]);
+    } finally { await coordinator.stop(); }
+  });
+
+  it("retains the first governed-response wake through idle drain without passive SQL", async () => {
+    const fixture = await seedRecoverableReviewResponse();
+    const [approval] = await db.insert(approvals).values({ companyId: fixture.companyId,
+      type: "hire_agent", status: "pending", payload: {} }).returning();
+    await issueApprovalService(db).link(fixture.issueId, approval.id);
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    let canRun = true;
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => canRun,
+      canReconcile: () => true, onError: error => errors.push(error) });
+    const worker = nativeReviewResponseWork(db).register(coordinator, () => canRun);
+    const comments = () => db.select().from(issueComments).where(eq(issueComments.createdByRunId, fixture.runId));
+    try {
+      await worker.ready;
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+        { timeout: 10_000 }).toEqual({ active: 0, next: null });
+      canRun = false;
+      await approvalRecords(db).cancel(approval.id);
+      await expect.poll(() => idleWorkSnapshot().active).toBe(0);
+      expect(await comments()).toHaveLength(0);
+      expect(coordinator.nextWakeAt()).not.toBeNull();
+      const previousDebug = db.$client.options.debug;
+      const queries: string[] = [];
+      db.$client.options.debug = (_connection, query) => { queries.push(query); };
+      try { await vi.advanceTimersByTimeAsync(120_000); expect(queries).toEqual([]); }
+      finally { db.$client.options.debug = previousDebug; }
+      canRun = true; worker.wake();
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(await comments()).toHaveLength(1);
+        expect(idleWorkSnapshot().active).toBe(0);
+        expect(coordinator.nextWakeAt()).toBeNull();
+      }, { timeout: 10_000 });
+      expect(errors).toEqual([]);
+    } finally { await coordinator.stop(); vi.useRealTimers(); }
+  });
+
+  it("retains failed governed-response recovery across drain and retries after resume", async () => {
+    const fixture = await seedRecoverableReviewResponse();
+    let release!: () => void, observed!: () => void;
+    const hold = new Promise<void>(resolve => { release = resolve; });
+    const locked = new Promise<void>(resolve => { observed = resolve; });
+    const holder = db.transaction(async tx => {
+      await tx.select().from(chatEndpoints).where(eq(chatEndpoints.id, fixture.endpointId)).for("update");
+      observed(); await hold;
+    });
+    await locked;
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    let canRun = true;
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => canRun,
+      canReconcile: () => true, onError: error => errors.push(error) });
+    const worker = nativeReviewResponseWork(db).register(coordinator, () => canRun);
+    const comments = () => db.select().from(issueComments).where(eq(issueComments.createdByRunId, fixture.runId));
+    try {
+      await worker.ready;
+      await expect.poll(() => ({ errors: errors.length, active: idleWorkSnapshot().active }),
+        { timeout: 10_000 }).toEqual({ errors: 1, active: 0 });
+      expect(await comments()).toHaveLength(0);
+      expect(coordinator.nextWakeAt()).toBeGreaterThan(Date.now());
+      canRun = false;
+      worker.wake();
+      await vi.waitFor(() => expect(idleWorkSnapshot().active).toBe(0));
+      const previousDebug = db.$client.options.debug;
+      const queries: string[] = [];
+      db.$client.options.debug = (_connection, query) => { queries.push(query); };
+      try { await vi.advanceTimersByTimeAsync(120_000); expect(queries).toEqual([]); }
+      finally { db.$client.options.debug = previousDebug; }
+      release(); await holder;
+      canRun = true; worker.wake();
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(await comments()).toHaveLength(1);
+        expect(idleWorkSnapshot().active).toBe(0);
+        expect(coordinator.nextWakeAt()).toBeNull();
+      }, { timeout: 10_000 });
+      expect(errors).toHaveLength(1);
+    } finally { release(); await holder; await coordinator.stop(); vi.useRealTimers(); }
+  });
+
+  it("reconstructs the governed-response deadline after shutdown without early presentation", async () => {
+    const fixture = await seedRecoverableReviewResponse();
+    const store = new NativeRunCoordinatorStore(db, fixture.storeBinding);
+    await store.claimFinalization({ leaseOwner: "review-future", leaseTtlMs: 30_000 });
+    await store.markFinalizationRetry({ leaseOwner: "review-future", failureCode: "review_fixture", retryAfterMs: 60_000 });
+    const [state] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fixture.runId));
+    const at = state.nextAttemptAt!.getTime();
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    const worker = nativeReviewResponseWork(db).register(coordinator, () => true);
+    const comments = () => db.select().from(issueComments).where(eq(issueComments.createdByRunId, fixture.runId));
+    await worker.ready;
+    await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+      { timeout: 10_000 }).toEqual({ active: 0, next: at });
+    await coordinator.stop();
+    expect(coordinator.nextWakeAt()).toBeNull();
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const previousDebug = db.$client.options.debug;
+    const queries: string[] = [];
+    db.$client.options.debug = (_connection, query) => { queries.push(query); };
+    try { await vi.advanceTimersByTimeAsync(30_000); expect(queries).toEqual([]); }
+    finally { db.$client.options.debug = previousDebug; }
+    const resumed = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    try {
+      const restarted = nativeReviewResponseWork(db).register(resumed, () => true);
+      await restarted.ready;
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, next: resumed.nextWakeAt() }),
+        { timeout: 10_000 }).toEqual({ active: 0, next: at });
+      expect(await comments()).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(Math.max(0, at - Date.now()));
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(await comments()).toHaveLength(1);
+        expect(idleWorkSnapshot().active).toBe(0);
+        expect(resumed.nextWakeAt()).toBeNull();
+      }, { timeout: 10_000 });
+      expect(errors).toEqual([]);
+    } finally { await resumed.stop(); vi.useRealTimers(); }
   });
 
   it("reconstructs scheduled governed responses at startup and leaves their history quiet", async () => {

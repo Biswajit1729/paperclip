@@ -294,3 +294,70 @@ Still inspect execution-state-only transitions (pending policy state can block a
 response without changing task status), prove real coordinator lease/retry release,
 and finish candidate query-cost/lifecycle/wiring acceptance. The worker remains
 unregistered and both periodic entrances remain intact.
+
+
+## Policy release and discovery-cost checkpoint
+
+A pending execution policy can block presentation without changing task status.
+The regression failed before the issue mutation boundary signaled pending-to-clear
+transitions. All 182 owner cases now pass, including a real coordinator claim and
+retry release; server types pass. Evidence: /tmp/sleep49-policy-before.log,
+/tmp/sleep49-policy-after.log and /tmp/sleep49-policy-types.log.
+
+Discovery was measured against 10,000 cloned, already-presented governed response
+rows plus retained test history. The clones preserve relational selection shape;
+they are not valid authorization proofs and are never used to test publication.
+Initial startup/company reconstruction took about 3,000 ms: receipt lookup scanned
+roughly 4,795 unrelated comments per candidate. A company-first receipt index and
+expression statistics did not reliably fix startup's plan. A run-first partial
+receipt index alone reduced measured startup to 45 ms, company/task discovery to
+33–35 ms and exact-run discovery to 1.5 ms. No expression statistics are retained.
+The generated migration builds that index concurrently and preserves deleted
+comments as receipts. These are local query measurements, not host sleep evidence.
+Logs: /tmp/sleep49-query-plan.log, /tmp/sleep49-query-index-plan.log,
+/tmp/sleep49-query-stats-plan.log, /tmp/sleep49-query-run-index-plan.log,
+/tmp/sleep49-query-run-only-plan.log. The first root-level tsx invocation failed
+because tsx is a server-package dependency; the corrected command uses its owner.
+
+Full outstanding-backlog cost, lifecycle coverage, startup registration and both
+periodic entrance removals remain required before PR acceptance.
+
+
+## Startup integration and lifecycle acceptance
+
+The worker now registers with enabled heartbeat maintenance and uses its existing
+instance/task-drain gates. The shared coordinator owns notification teardown and
+shutdown. Both periodic repair entrances defer to this worker: direct reconciler
+repair and already-committed finalizer replay. Fresh finalization and explicit
+recovery keep their behavior. Three regression cases failed before this wiring
+(two periodic entrances and enabled startup registration); all now pass.
+
+The combined owner/startup selection passes all 255 cases. Actual SQL capture
+shows no passive SQL during idle drain or after shutdown. Real approval cancellation
+reactivates dormant work through drain; endpoint-lock contention retains a retry
+that succeeds after resume; a real coordinator retry survives shutdown and is
+reconstructed without early publication. One initial drain test mixed a real timer
+with a subsequently installed fake clock. Installing the clock before coordinator
+creation repaired the fixture; all three new lifecycle cases then passed.
+Evidence: /tmp/sleep49-drain.log, /tmp/sleep49-drain-v2.log,
+/tmp/sleep49-wiring-before.log, /tmp/sleep49-wiring-after.log.
+
+Workspace typecheck and build pass. Migration generation and safety checks pass.
+The first migration application exposed the missing top-level migration allowlist
+entry; after registration, fresh application, invalid concurrent-index repair,
+concurrent migrator replay and no-op replay all pass. Evidence: 
+/tmp/sleep49-migration-apply.log, /tmp/sleep49-migration-apply-v2.log,
+/tmp/sleep49-migration-replay.log, /tmp/sleep49-workspace-types.log,
+/tmp/sleep49-build.log. The five newest schema snapshots are retained.
+
+The synthetic 10,000-item unpresented cohort requires 101 candidate queries,
+about 2.25 seconds and 2.05 MB of serialized entries. Discovery checks admission
+and cancellation between pages: the drain experiment stops after two queries;
+an already aborted signal executes none. This remains proportional startup or
+legitimate broad-authority reconstruction, not a bounded total-memory claim.
+Normal writes retain task/run/agent scope. Synthetic proof copies establish
+selection cost only; genuine owner fixtures establish publication authority.
+Evidence: /tmp/sleep49-backlog.log.
+
+Full local tests are running. Remote CI/review, earlier stack findings and master
+reconciliation remain open. No merge or whole-instance sleep is claimed.

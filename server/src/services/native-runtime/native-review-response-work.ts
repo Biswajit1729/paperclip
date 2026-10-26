@@ -6,6 +6,11 @@ import type { NativeReviewResponseScope } from "../native-review-response-notifi
 import { registerScopedDeadlineWork } from "../scoped-deadline-work.js";
 import { recoverCommittedNativeReviewResponse } from "./native-run-finalizer.js";
 
+export function registerNativeReviewResponseWork(db: Db,
+  coordinator: ReturnType<typeof createDeliveryWorkCoordinator>, canRun: () => boolean) {
+  return nativeReviewResponseWork(db).register(coordinator, canRun);
+}
+
 type Entry = { id: string; companyId: string; issueId: string; agentId: string; dueAt: number };
 
 export function nativeReviewResponseWork(db: Db) {
