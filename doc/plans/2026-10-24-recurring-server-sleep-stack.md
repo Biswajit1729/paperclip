@@ -2425,3 +2425,21 @@ between pages on drain. Fresh migration and interrupted/concurrent replay pass.
 The audit preserves the initial query, migration and test-clock failures. Full
 local tests are running; remote acceptance, older stack findings, master
 reconciliation and every remaining original duty are still open. Nothing merged.
+
+
+## Slice 49 publication; slice 50 owner audit
+
+Draft #17702 at `be6ca6151b` is open on #17696. Greptile reviewed that head
+at 5/5 with zero unresolved threads. CI remains in progress. The full local
+suite was stopped after repeated embedded PostgreSQL bootstrap failures and
+many skipped DB suites. One isolated native-session-executor failure reproduces
+in startEmbeddedPostgresTestDatabase before recovery behavior runs; logs are
+/tmp/sleep49-full-tests.log and /tmp/sleep49-full-failure-isolated.log. The
+255-case real-PostgreSQL owner/startup selection, workspace types/build and
+migration replay remain passing. This does not make full local acceptance green.
+
+Slice 50 audits native status reassessment: changed evidence, authoritative task
+state and retired automatic reviews all feed the existing append-only assessment
+and decision owner. Its producer/guard inventory is in the dated reassessment
+audit. No implementation or periodic removal is claimed for slice 50 yet. Earlier
+stack gates, master reconciliation and the full remaining scope remain open.
