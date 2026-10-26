@@ -160,3 +160,37 @@ startup reconstruction, deleted receipts, and actual quiet SQL after settlement.
 
 The producer audit, query-cost measurements, startup/periodic wiring, remaining
 lifecycle acceptance, full verification and remote gates are still outstanding.
+
+## Approval producer checkpoint
+
+Approval resolution, cancellation, revision/resubmission, link/unlink and bulk
+link now pass their existing approval/task identity through writeApprovalChange.
+The notification owner finds linked tasks before the mutation and registers only
+those task scopes. Budget resolution supplies its approval identity inside the
+existing accounting transaction. Creation without a task link and company-wide
+retention notifications retain their previous behavior and do not reload response
+history. No additional transaction wrapper or approval execution policy was added.
+All production approval updates/deletes were inventoried; company deletion leaves
+no surviving response obligation. Tool-gateway's separate link insertion still
+needs its explicit task scope during the remaining producer pass.
+
+Four real-producer regressions (approve, reject, cancel, unlink) failed before
+wiring and passed afterward. Two further cases exercise nested cancel/unlink
+with outer rollback/commit and measure no governed-response candidate SQL for an
+unrelated approval. All 171 owner cases pass. In the combined run two older
+approval unit cases failed because their ordered stub consumed an approval row
+for the new issue_approvals read. The stub now distinguishes that table and returns
+no links. Existing consumers pass 19 approval service/route cases, five budget
+cases, 25 queue-seeding cases, and 21 retention cases. Server typecheck passes.
+Logs: /tmp/sleep49-approval-before.log, /tmp/sleep49-approval-after.log,
+/tmp/sleep49-approval-full.log, /tmp/sleep49-approval-unit.log,
+/tmp/sleep49-budgets.log, /tmp/sleep49-approval-queue.log,
+/tmp/sleep49-approval-retention.log, /tmp/sleep49-approval-final-types.log.
+
+Remaining interaction gaps include connection-intent resolution/expiry, generic
+interaction administrative settlement, satisfied-connection cleanup, and OAuth
+confirmation callbacks/denials. Some existing milestone hooks cover only question
+and confirmation kinds. Payload-only updates that leave a competing card pending
+do not reactivate a response. Task ownership changes already carry task invalidation,
+but direct cleanup writers must be individually accounted for. The polling backstop
+is retained until this audit and the remaining acceptance requirements are complete.

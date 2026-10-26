@@ -48,6 +48,8 @@ import type {
 
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { finalizeNativeRun, recoverCommittedNativeReviewResponse } from "./native-run-finalizer.js";
+import { approvalRecords } from "../approvals.js";
+import { issueApprovalService } from "../issue-approvals.js";
 import { nativeReviewResponseWork } from "./native-review-response-work.js";
 import { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { idleWorkSnapshot } from "../task-admission.js";
@@ -2866,6 +2868,73 @@ describe("native external-chat response wait", () => {
     expect(await recoverCommittedNativeReviewResponse(db, { ...fixture.input,
       ...(kind === "company" ? { companyId: randomUUID() } : {}) })).toBe(false);
     expect(await db.select().from(issueComments).where(eq(issueComments.createdByRunId, fixture.runId))).toHaveLength(0);
+  });
+
+  it.each(["approve", "reject", "cancel", "unlink"] as const)("reactivates dormant governed responses after approval %s", async action => {
+    const fixture = await seedRecoverableReviewResponse();
+    const [approval] = await db.insert(approvals).values({ companyId: fixture.companyId,
+      type: "hire_agent", status: "pending", payload: {} }).returning();
+    await issueApprovalService(db).link(fixture.issueId, approval.id);
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    const worker = nativeReviewResponseWork(db).register(coordinator, () => true);
+    const comments = () => db.select().from(issueComments).where(eq(issueComments.createdByRunId, fixture.runId));
+    try {
+      await worker.ready;
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+        { timeout: 10_000 }).toEqual({ active: 0, next: null });
+      expect(await comments()).toHaveLength(0);
+      if (action === "unlink") await issueApprovalService(db).unlink(fixture.issueId, approval.id);
+      else if (action === "cancel") await approvalRecords(db).cancel(approval.id);
+      else await approvalRecords(db).resolveApproval(approval.id, action === "approve" ? "approved" : "rejected", fixture.userId, null);
+      await expect.poll(async () => (await comments()).length, { timeout: 5_000 }).toBe(1);
+      expect(errors).toEqual([]);
+    } finally { await coordinator.stop(); }
+  });
+
+  it.each(["cancel", "unlink"] as const)("keeps governed response approval %s behind outer commit and scoped to linked tasks", async action => {
+    const fixture = await seedRecoverableReviewResponse();
+    const [approval, unrelated] = await db.insert(approvals).values([
+      { companyId: fixture.companyId, type: "hire_agent", status: "pending", payload: {} },
+      { companyId: fixture.companyId, type: "hire_agent", status: "pending", payload: {} },
+    ]).returning();
+    await issueApprovalService(db).link(fixture.issueId, approval.id);
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    const worker = nativeReviewResponseWork(db).register(coordinator, () => true);
+    const comments = () => db.select().from(issueComments).where(eq(issueComments.createdByRunId, fixture.runId));
+    const mutate = async (tx: typeof db) => {
+      if (action === "cancel") await approvalRecords(tx).cancel(approval.id);
+      else await issueApprovalService(tx).unlink(fixture.issueId, approval.id);
+    };
+    try {
+      await worker.ready;
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+        { timeout: 10_000 }).toEqual({ active: 0, next: null });
+      const previousDebug = db.$client.options.debug;
+      const queries: string[] = [];
+      db.$client.options.debug = (_connection, query) => { if (query.includes('"native_run_finalizations"')) queries.push(query); };
+      try {
+        await approvalRecords(db).cancel(unrelated.id);
+        await expect.poll(() => idleWorkSnapshot().active).toBe(0);
+        expect(queries).toEqual([]);
+      } finally { db.$client.options.debug = previousDebug; }
+      const rollback = new Error("rollback governed approval change");
+      await expect(db.transaction(async tx => {
+        await mutate(tx as unknown as typeof db);
+        expect(await comments()).toHaveLength(0);
+        throw rollback;
+      })).rejects.toBe(rollback);
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+        { timeout: 10_000 }).toEqual({ active: 0, next: null });
+      expect(await comments()).toHaveLength(0);
+      await db.transaction(async tx => {
+        await mutate(tx as unknown as typeof db);
+        expect(await comments()).toHaveLength(0);
+      });
+      await expect.poll(async () => (await comments()).length, { timeout: 5_000 }).toBe(1);
+      expect(errors).toEqual([]);
+    } finally { await coordinator.stop(); }
   });
 
   it("reconstructs scheduled governed responses at startup and leaves their history quiet", async () => {

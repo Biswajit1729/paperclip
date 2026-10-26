@@ -2375,3 +2375,19 @@ null deadline or unfinished startup batch. Their settlement predicate now includ
 zero active work. All 18 affected cases pass against the full suite's retained
 history. Fresh remote acceptance remains pending; these are recorded test repairs,
 not a waiver of failed gates or a change to production batch behavior.
+
+## Slice 48 accepted; slice 49 approval producer checkpoint
+
+#17696 at `fad35f2d7ae6bdbb85e709f1bab4633d197fd108` has all 53 checks
+passing, Greptile 5/5 at that commit, and zero unresolved review threads. Its PR
+body now records those results and preserves the earlier local/remote failures.
+It remains draft and unmerged. Evidence is in /tmp/sleep48-final-gates.json,
+/tmp/sleep48-final-comments.json and /tmp/sleep48-final-review-threads.json.
+
+Slice 49 has a guarded recovery owner and scoped worker, plus verified approval
+producer wakes. The 171-case owner suite and 70 existing approval/budget/queue/
+retention consumer cases pass, as does server typecheck. See its audit for the
+reproduced missed-wake failures and repaired test stub. Interaction producer
+coverage, discovery cost, startup wiring, periodic removal and full acceptance
+remain outstanding. No slice 49 PR or whole-instance sleep is claimed. Earlier
+stack gates, master reconciliation and every remaining original duty stay in scope.

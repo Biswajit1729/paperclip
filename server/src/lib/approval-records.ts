@@ -49,7 +49,7 @@ export function approvalResolutionRecords(db: Db) {
       })
       .where(and(eq(approvals.id, id), inArray(approvals.status, resolvableStatuses)))
       .returning()
-      .then((rows) => rows[0] ?? null));
+      .then((rows) => rows[0] ?? null), { approvalId: id });
 
     if (updated) {
       return { approval: updated, applied: true };
