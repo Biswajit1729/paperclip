@@ -1,6 +1,6 @@
 # Native accepted-response presentation recovery
 
-Status: source and baseline audit; no worker migration yet.
+Status: worker and owner guards implemented locally; producer audit and startup/periodic integration incomplete.
 Branch: `codex/sleep-48-native-response-presentation`.
 Parent: [#17690](https://github.com/paperclipai/paperclip/pull/17690),
 `56c3601ea605b333141e86e0a810ed790fb6ce48`.
@@ -133,3 +133,100 @@ source changes can authorize descendants. Audit its coverage for this duty befor
 adding caller wrappers. It already reaches status-decision settlement and run
 projection, but raw coordinator-store/session release and accepted-turn journal
 writers need individual inspection. Reuse is not proof that all producers exist.
+
+
+## Local worker and locked scheduling fences
+
+The local worker now discovers exact run/coordinator/result/decision bindings,
+filters selected answers and structurally irrelevant results, and dispatches
+through `recoverCommittedNativeChatResponse`. It does not own publication policy.
+`onlyWhenDue` rechecks the saved retry and outstanding status effects while the
+existing coordinator lock is held. Existing explicit callers retain their old
+behavior. A future retry is retained even if it becomes due between the locked
+check and the follow-up read; its next attempt is immediate rather than discarded.
+
+Operational errors remain retryable through the shared coordinator. A structurally
+eligible but unauthorized row becomes dormant until an eligibility mutation or
+live authority registration invalidates its scope. Selected comments, including
+deleted selections, remain excluded. No provider rerun or new work table is added.
+
+The existing milestone notification boundary now includes the response topic.
+Hints explicitly select company and issue IDs: structural TypeScript callers may
+pass larger objects, so serializing the whole argument is not safe. The first
+integration run exposed that mistake as circular-object serialization during
+status materialization; it was corrected before the passing runs below.
+
+Two narrow lifecycle capabilities support the new consumer:
+
+- `registerScopedDeadlineWork.invalidate` marks reconstruction dirty before waking.
+  A plain wake is insufficient after a prior dormant result removed its entry.
+  Existing consumers keep the same registration and scheduling behavior.
+- The committed-response authority owner exposes registration notifications.
+  Registering/replacing the actual chat service reactivates dormant responses.
+  The worker's `stop` removes this subscription; the delivery coordinator still
+  owns worker cancellation and awaiting in-flight work. Repeated unsubscription
+  cannot delete a later listener set. The authority remains scoped to the exact Db.
+
+No startup registration or periodic skip is wired yet. The old recovery path is
+still present. Full producer coverage, internal/continuation variants, recovery
+failure/drain tests, and repeated large-scope mutation cost remain acceptance work.
+Current discovery pages by run ID but reconstructs all matching pages in one
+load; its resource bound under a large unresolved/dormant backlog needs proof
+before activation. Do not describe the worker as a completed migration yet.
+
+## Query-plan and migration evidence
+
+The actual discovery query was captured from the driver. On a disposable database
+with 10,000 additional selected runs, results, assessments, decisions, and
+coordinators, it initially scanned completed history (22.656 ms). A partial
+unpresented-run index alone still chose the wrong join order (16.532 ms).
+Expression statistics for the selected-comment predicate allowed PostgreSQL to
+start from the one unpresented run (0.091 ms).
+
+Generated migration `0400_futuristic_earthquake.sql` creates the partial index
+concurrently, adds idempotent expression statistics, and analyzes the table.
+The existing top-level migration runner owns concurrent-index replay/repair.
+Snapshot retention contains exactly 0396–0400. Fresh migration, journal replay,
+direct SQL replay, ready/valid index flags, and statistics presence passed.
+
+Rechecking the actual migration's objects (after removing experimental objects)
+used the driver's real global, company, and issue-scoped queries. Global discovery
+found one candidate in 0.078 ms; history-only company/issue scopes returned none
+in 0.024/0.019 ms without sequential scans. These are query-plan fixtures, not
+latency or fleet-sleep claims. Large unselected ineligible histories and repeated
+configuration signals still need separate qualification.
+
+Evidence: `/tmp/sleep48-query.json`, `/tmp/sleep48-query-plan.sql`,
+`/tmp/sleep48-query-plan.log`, `/tmp/sleep48-query-statistics.log`,
+`/tmp/sleep48-production-plan.log`, `/tmp/sleep48-migration-verify.log`.
+
+## Current verification and preserved failures
+
+The expanded final selection passed 45 cases in two files: 33 existing accepted-
+response cases, ten new worker/owner cases, and two authority lifecycle cases.
+The 1,551 unselected chat cases are not claimed passed. Server typecheck passed.
+The worker cases establish startup recovery, selected-history quiet over former
+poll periods, real chat-service authority restoration, outer commit/rollback,
+first notification during drain, SQL-free drain waiting, resume, saved future
+retry, pending/failed status-effect ordering, and an elapsed-deadline race.
+
+The elapsed-deadline test failed before its fix: the worker returned null even
+though the locked owner had deferred the response. It now retains the due entry
+and the next attempt publishes exactly once. Log:
+`/tmp/sleep48-elapsed-deadline-before.log`.
+
+Earlier worker runs exposed the hint serialization defect (nine fixture failures),
+then two test-observation mistakes. A timer created before fake-time installation
+was not advanced by the fake clock; the test now installs time before registration.
+A null next deadline can occur while a sweep is in flight; commit assertions now
+wait for the persisted publication, zero tracked activity, and no next deadline
+jointly. The original logs remain `/tmp/sleep48-worker-tests.log`,
+`/tmp/sleep48-worker-tests-v2.log`, `/tmp/sleep48-drain-isolated.log`, and
+`/tmp/sleep48-worker-tests-v3.log`. The corrected initial selection passed eleven
+cases in `/tmp/sleep48-worker-tests-v4.log`; the final expanded result is
+`/tmp/sleep48-acceptance-v2.log` with server types in
+`/tmp/sleep48-acceptance-typecheck-v2.log`.
+
+No slice 48 PR, full workspace acceptance, remote CI/review, or provider sleep
+qualification is claimed by these local results. The earlier stack gates and
+remaining recurring-server duties are unchanged.

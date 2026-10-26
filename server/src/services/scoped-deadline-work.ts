@@ -90,5 +90,8 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
     hasPending: async () => canRun() && dirty.size > 0,
     nextRunAt: next,
   });
-  return worker;
+  return { ...worker, invalidate(hint = "*") {
+    dirty.add(hint);
+    worker.wake();
+  } };
 }

@@ -2308,3 +2308,22 @@ Slice 48 remains local and incomplete: owner error separation and the 33-case
 baseline pass; candidate discovery, producer coverage, lifecycle wiring, and
 periodic removal remain. Older unresolved stack gates and every other original
 recurring-server duty still require completion. The active goal is not complete.
+
+
+## Slice 48 local worker progress
+
+Accepted-response recovery now has a local scoped worker, locked retry/effect
+fences, milestone-topic notifications, and live authority registration invalidation.
+The final selected real-PostgreSQL/lifecycle run passes 45 cases, and server types
+pass. An elapsed-deadline race was reproduced before repair. A generated concurrent
+partial index plus expression statistics avoids selected-history scans in the
+10,000-row fixture; fresh migration and replay pass. See the
+[response audit](2026-10-25-native-response-presentation-sleep-audit.md) for exact
+scope and preserved failures.
+
+The worker is not wired into startup and periodic response recovery remains.
+Producer coverage, remaining variants/failure tests, large dormant-backlog cost,
+full local/remote acceptance, and PR publication are still required. Master was
+refreshed to `7703220d38`; the complete stack has not yet been reconciled with it.
+No merge, complete migration, whole-instance sleep, or full-goal completion is
+claimed.

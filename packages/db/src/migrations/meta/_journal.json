@@ -2787,6 +2787,13 @@
       "when": 1792986633369,
       "tag": "0399_jazzy_ben_grimm",
       "breakpoints": true
+    },
+    {
+      "idx": 400,
+      "version": "7",
+      "when": 1792989084087,
+      "tag": "0400_futuristic_earthquake",
+      "breakpoints": true
     }
   ]
 }

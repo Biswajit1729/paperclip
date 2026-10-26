@@ -111,6 +111,9 @@ export const heartbeatRuns = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    nativeUnpresentedResponseIdx: index("heartbeat_runs_native_unpresented_response_idx")
+      .on(table.companyId, table.nativeIssueId, table.id)
+      .where(sql`${table.runtimeMode} = 'native' AND ${table.status} in ('succeeded', 'failed', 'timed_out') AND ${table.finishedAt} is not null AND jsonb_typeof(${table.resultJson} #> '{presentationDecision,commentId}') is distinct from 'string'`),
     cancelledWorkspacePreservationIdx: index("heartbeat_runs_cancelled_workspace_preservation_idx").on(table.id, table.companyId)
       .where(sql`${table.runtimeMode} = 'native' AND ${table.status} = 'cancelled'
         AND ${table.runnerProfileJson}->'nativeWorkspaceSync'->>'state' = 'prepared'

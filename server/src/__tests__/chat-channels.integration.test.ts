@@ -1,3 +1,5 @@
+import { nativeResponsePresentationWork } from "../services/native-runtime/native-response-presentation-work.js";
+import { notifyChatRunMilestones } from "../services/chat-run-milestone-notifications.js";
 import { registerGitHubReviewProjectionWork } from "../services/chat-channels/github/review-projection-work.js";
 import { retainGitHubReviewReceipt } from "../services/chat-channels/github/task-preparation.js";
 import { settleUnrecoverableExecutions } from "../services/execution-recovery-resolution.js";
@@ -132,6 +134,7 @@ import {
   issues,
   nativeRunResults,
   nativeRunFinalizations,
+  statusDecisionEffects,
   environmentLeases,
   environments,
   principalPermissionGrants,
@@ -72594,6 +72597,191 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       }
     },
   );
+
+  it("recovers accepted-response work on startup and leaves selected history quiet", async () => {
+    const context = await committedChatResponseRecoveryFixture("telegram");
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    const work = nativeResponsePresentationWork(db);
+    const worker = work.register(coordinator, () => true);
+    try {
+      await worker.ready;
+      await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).toBeNull();
+      const comments = await db.select().from(issueComments).where(eq(issueComments.createdByRunId, context.runId));
+      expect(comments).toHaveLength(1);
+      expect(comments[0].body).toBe(context.result.summary);
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(1);
+      expect(await work.load({ companyId: context.fixture.companyId })).toEqual([]);
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction");
+      try {
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
+      } finally { reads.mockRestore(); writes.mockRestore(); }
+      expect(errors).toEqual([]);
+    } finally { worker.stop(); await coordinator.stop(); vi.useRealTimers(); await context.service.shutdown(); }
+  });
+
+  it("reactivates dormant accepted-response work when the live chat authority registers", async () => {
+    const context = await committedChatResponseRecoveryFixture("telegram");
+    await context.service.shutdown();
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    const worker = nativeResponsePresentationWork(db).register(coordinator, () => true);
+    let replacement: ReturnType<typeof createService> | undefined;
+    try {
+      await worker.ready;
+      await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).toBeNull();
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+      replacement = createService(new FakeChatSdkRuntime(), fakeTelegramFetch() as typeof fetch);
+      await expect.poll(async () => (await readChatPublicationsByEndpointId(context.endpoint.id)).length, { timeout: 5000 }).toBe(1);
+      await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).toBeNull();
+      expect(errors).toEqual([]);
+    } finally { worker.stop(); await coordinator.stop(); await replacement?.service.shutdown(); }
+  });
+
+  it.each(["commit", "rollback"])("keeps accepted-response work behind the outer %s boundary", async outcome => {
+    const context = await committedChatResponseRecoveryFixture("telegram");
+    await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, context.runId));
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    const worker = nativeResponsePresentationWork(db).register(coordinator, () => true);
+    try {
+      await worker.ready;
+      await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).toBeNull();
+      const transaction = db.transaction(async tx => {
+        await tx.transaction(async nested => {
+          await notifyChatRunMilestones(nested, { companyId: context.fixture.companyId, issueId: context.issue.id });
+          await nested.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, context.runId));
+        });
+        expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+        expect(idleWorkSnapshot().active).toBeGreaterThan(0);
+        if (outcome === "rollback") throw new Error("response fixture rollback");
+      });
+      if (outcome === "rollback") await expect(transaction).rejects.toThrow("response fixture rollback");
+      else await transaction;
+      await expect.poll(async () => ({
+        publications: (await readChatPublicationsByEndpointId(context.endpoint.id)).length,
+        active: idleWorkSnapshot().active,
+        next: coordinator.nextWakeAt(),
+      }), { timeout: 5000 }).toEqual({ publications: outcome === "commit" ? 1 : 0, active: 0, next: null });
+      expect(errors).toEqual([]);
+    } finally { worker.stop(); await coordinator.stop(); await context.service.shutdown(); }
+  });
+
+  it("retains the first accepted-response wake through idle drain without passive SQL", async () => {
+    const context = await committedChatResponseRecoveryFixture("telegram");
+    await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, context.runId));
+    let canRun = true;
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => canRun, canReconcile: () => true, onError: error => errors.push(error) });
+    const worker = nativeResponsePresentationWork(db).register(coordinator, () => canRun);
+    try {
+      await worker.ready;
+      await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).toBeNull();
+      canRun = false;
+      await db.transaction(async tx => {
+        await notifyChatRunMilestones(tx, { companyId: context.fixture.companyId, issueId: context.issue.id });
+        await tx.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, context.runId));
+      });
+      await expect.poll(() => idleWorkSnapshot().active, { timeout: 5000 }).toBe(0);
+      expect(coordinator.nextWakeAt()).not.toBeNull();
+      const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction");
+      try {
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
+      } finally { reads.mockRestore(); writes.mockRestore(); }
+      canRun = true; worker.wake();
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(1);
+        expect(coordinator.nextWakeAt()).toBeNull();
+      }, { timeout: 5000 });
+      expect(errors).toEqual([]);
+    } finally { worker.stop(); await coordinator.stop(); vi.useRealTimers(); await context.service.shutdown(); }
+  });
+
+  it("reconstructs a future accepted-response deadline without early publication", async () => {
+    const context = await committedChatResponseRecoveryFixture("telegram");
+    const at = new Date(Date.now() + 60_000);
+    await db.update(nativeRunFinalizations).set({ nextAttemptAt: at }).where(eq(nativeRunFinalizations.runId, context.runId));
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    const worker = nativeResponsePresentationWork(db).register(coordinator, () => true);
+    try {
+      await worker.ready;
+      expect(coordinator.nextWakeAt()).toBe(at.getTime());
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(Math.max(0, at.getTime() - Date.now()));
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(1);
+        expect(coordinator.nextWakeAt()).toBeNull();
+      }, { timeout: 5000 });
+      expect(errors).toEqual([]);
+    } finally { worker.stop(); await coordinator.stop(); vi.useRealTimers(); await context.service.shutdown(); }
+  });
+
+  it("retains an accepted-response deadline that elapses during the locked recovery check", async () => {
+    const context = await committedChatResponseRecoveryFixture("telegram");
+    const work = nativeResponsePresentationWork(db);
+    const [entry] = await work.load({ companyId: context.fixture.companyId });
+    expect(entry?.id).toBe(context.runId);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const due = new Date(Date.now() + 1000);
+    const transaction = db.transaction.bind(db);
+    const intercept = vi.spyOn(db, "transaction").mockImplementationOnce((async (callback, options) => {
+      await transaction(async tx => {
+        await tx.update(nativeRunFinalizations).set({ nextAttemptAt: due }).where(eq(nativeRunFinalizations.runId, context.runId));
+      });
+      const result = await transaction(callback, options);
+      vi.setSystemTime(due.getTime() + 1);
+      return result;
+    }) as Db["transaction"]);
+    try {
+      const deferred = await work.check(entry);
+      intercept.mockRestore();
+      expect(deferred).toEqual({ ...entry, dueAt: due.getTime() });
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+      await expect(work.check(deferred!)).resolves.toBeNull();
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(1);
+    } finally { intercept.mockRestore(); vi.useRealTimers(); await context.service.shutdown(); }
+  });
+
+  it("defers scheduled accepted-response recovery until the persisted retry is due", async () => {
+    const context = await committedChatResponseRecoveryFixture("telegram");
+    const input = { companyId: context.fixture.companyId, issueId: context.issue.id, runId: context.runId, onlyWhenDue: true };
+    try {
+      await db.update(nativeRunFinalizations).set({ nextAttemptAt: new Date(Date.now() + 60_000) })
+        .where(eq(nativeRunFinalizations.runId, context.runId));
+      await expect(recoverCommittedNativeChatResponse(db, input)).resolves.toBe(false);
+      expect(await db.select().from(issueComments).where(eq(issueComments.createdByRunId, context.runId))).toHaveLength(0);
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+      await db.update(nativeRunFinalizations).set({ nextAttemptAt: new Date(0) })
+        .where(eq(nativeRunFinalizations.runId, context.runId));
+      await expect(recoverCommittedNativeChatResponse(db, input)).resolves.toBe(true);
+      expect(await db.select().from(issueComments).where(eq(issueComments.createdByRunId, context.runId))).toHaveLength(1);
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(1);
+    } finally { await context.service.shutdown(); }
+  });
+
+  it.each(["pending", "failed"])("defers scheduled accepted-response recovery behind %s status effects", async deliveryState => {
+    const context = await committedChatResponseRecoveryFixture("telegram");
+    const input = { companyId: context.fixture.companyId, issueId: context.issue.id, runId: context.runId, onlyWhenDue: true };
+    try {
+      const [effect] = await db.select().from(statusDecisionEffects).where(eq(statusDecisionEffects.decisionId, context.coordinator.decisionId!));
+      expect(effect).toBeDefined();
+      await db.update(statusDecisionEffects).set({ deliveryState }).where(eq(statusDecisionEffects.id, effect.id));
+      await expect(recoverCommittedNativeChatResponse(db, input)).resolves.toBe(false);
+      expect(await db.select().from(issueComments).where(eq(issueComments.createdByRunId, context.runId))).toHaveLength(0);
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+      await db.update(statusDecisionEffects).set({ deliveryState: "delivered" }).where(eq(statusDecisionEffects.id, effect.id));
+      await expect(recoverCommittedNativeChatResponse(db, input)).resolves.toBe(true);
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(1);
+    } finally { await context.service.shutdown(); }
+  });
 
   it("leaves a contended accepted response retryable without reclassifying or partially publishing it", async () => {
     const context = await committedChatResponseRecoveryFixture("telegram");

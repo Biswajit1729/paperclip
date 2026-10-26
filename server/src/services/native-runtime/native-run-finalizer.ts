@@ -37,6 +37,7 @@ import {
   nativeRunFinalizations,
   nativeRunResults,
   statusDecisions,
+  statusDecisionEffects,
   workAssessments,
   workspaceOperations,
 } from "@paperclipai/db";
@@ -857,7 +858,7 @@ export async function repairCommittedNativeChatResponse(
 
 export async function recoverCommittedNativeChatResponse(
   db: Db,
-  input: { companyId: string; issueId: string; runId: string },
+  input: { companyId: string; issueId: string; runId: string; onlyWhenDue?: boolean },
 ): Promise<boolean> {
   let agentId: string | null = null;
   let materialized = false;
@@ -920,6 +921,16 @@ export async function recoverCommittedNativeChatResponse(
         !coordinator.assessmentId
       )
         return false;
+      if (input.onlyWhenDue) {
+        if (coordinator.nextAttemptAt && coordinator.nextAttemptAt.getTime() > Date.now()) return false;
+        const [pendingEffect] = await tx.select({ id: statusDecisionEffects.id }).from(statusDecisionEffects).where(and(
+          eq(statusDecisionEffects.companyId, input.companyId),
+          eq(statusDecisionEffects.issueId, input.issueId),
+          eq(statusDecisionEffects.decisionId, coordinator.decisionId),
+          inArray(statusDecisionEffects.deliveryState, ["pending", "failed"]),
+        )).limit(1);
+        if (pendingEffect) return false;
+      }
       const [accepted] = await tx
         .select()
         .from(nativeRunResults)
