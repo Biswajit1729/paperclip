@@ -760,8 +760,8 @@ async function reconcileNativeFinalizationsPass(
       resultId: nativeRunFinalizations.resultId,
       assessmentId: nativeRunFinalizations.assessmentId,
       decisionId: nativeRunFinalizations.decisionId,
-      runnerProfileJson: heartbeatRuns.runnerProfileJson,
-      contextSnapshot: heartbeatRuns.contextSnapshot,
+      nativeWorkspaceSync: sql<unknown>`${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync'`,
+      nativeStatusWakeIntentId: sql<unknown>`${heartbeatRuns.contextSnapshot}->'nativeStatusWakeIntentId'`,
     })
     .from(heartbeatRuns)
     .innerJoin(nativeRunFinalizations, eq(nativeRunFinalizations.runId, heartbeatRuns.id))
@@ -975,8 +975,7 @@ async function reconcileNativeFinalizationsPass(
         if (reviewBarrier && reviewBarrier.status !== "succeeded") continue;
         const childCompletionRecipient = {
           companyId: row.companyId, issueId: row.issueId, agentId: row.agentId, runId: row.runId,
-          sourceIntentId: typeof record(row.contextSnapshot).nativeStatusWakeIntentId === "string"
-            ? record(row.contextSnapshot).nativeStatusWakeIntentId as string : null,
+          sourceIntentId: typeof row.nativeStatusWakeIntentId === "string" ? row.nativeStatusWakeIntentId : null,
         };
         const hasPendingChildCompletion = await hasPendingNativeChildCompletion(db, childCompletionRecipient);
         const reassessmentRow = await recordNativeWorkAssessment({
@@ -1116,7 +1115,7 @@ async function reconcileNativeFinalizationsPass(
           skipNativeResponsePresentation: options.skipNativeResponsePresentation,
           preserveProviderAttempt: Boolean(
             readNativeWorkspaceSyncReference(
-              record(row.runnerProfileJson).nativeWorkspaceSync,
+              row.nativeWorkspaceSync,
             ),
           ),
         });
@@ -1175,7 +1174,7 @@ async function reconcileNativeFinalizationsPass(
         skipNativeResponsePresentation: options.skipNativeResponsePresentation,
         preserveProviderAttempt: Boolean(
           readNativeWorkspaceSyncReference(
-            record(row.runnerProfileJson).nativeWorkspaceSync,
+            row.nativeWorkspaceSync,
           ),
         ),
       });
