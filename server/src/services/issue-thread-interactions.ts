@@ -1085,7 +1085,7 @@ async function resolveLinkedToolActionRequests(
   },
 ) {
   if (interaction.kind !== "request_confirmation") return;
-  await notifyToolReviewChange(db);
+  await notifyToolReviewChange(db, interaction.companyId);
   await db
     .update(toolActionRequests)
     .set({
