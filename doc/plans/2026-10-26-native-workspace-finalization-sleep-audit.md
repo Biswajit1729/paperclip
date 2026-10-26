@@ -134,3 +134,21 @@ repeated physical copy-back.
 
 Repaired-head workspace validation, the default full test command, current-head
 CI, and Greptile acceptance remain to be recorded. The PR is not accepted or merged.
+
+## Execution-suppression review repair
+
+Greptile's first review found the stale-barrier defect above and a second valid
+boundary omission: registration checked idle drain but did not check the existing
+heartbeat suppression policy for restore and disabled worktree instances. Both
+public-heartbeat regression cases failed by creating a successful workspace receipt
+while recovery was suppressed. Registration now asks the existing fresh suppression
+policy before discovery and before each operation. Suppressed work creates no
+recurring deadline. The existing worktree-activation settings transaction publishes
+a workspace notification so later activation reconstructs the saved obligation.
+The full lifecycle suite now passes all 15 cases, including disabled startup,
+quiet waiting, and activation through the real settings service. The source of
+suppression policy remains heartbeat; neither the worker nor index interprets flags.
+
+Workspace types and build passed again at `b11b1229084d9f2f5cb332b6b11beca40ece5552`
+before this suppression repair. Validation for the new repair and fresh review
+remain required; the initial 3/5 review is not acceptance.

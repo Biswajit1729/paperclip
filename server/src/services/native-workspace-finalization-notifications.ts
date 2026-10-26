@@ -2,9 +2,9 @@ import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notificatio
 
 export type NativeWorkspaceFinalizationScope = { companyId: string; runId?: string; issueId?: string };
 
-export function notifyNativeWorkspaceFinalization(tx: object, scope: NativeWorkspaceFinalizationScope) {
+export function notifyNativeWorkspaceFinalization(tx: object, scope?: NativeWorkspaceFinalizationScope) {
   return notifyDeliveryWork(tx, DELIVERY_QUEUES.nativeWorkspaceFinalization,
-    JSON.stringify({ companyId: scope.companyId, runId: scope.runId, issueId: scope.issueId }));
+    scope ? JSON.stringify({ companyId: scope.companyId, runId: scope.runId, issueId: scope.issueId }) : "*");
 }
 
 // Joining a local physical writer remains evidence even if clearing its durable

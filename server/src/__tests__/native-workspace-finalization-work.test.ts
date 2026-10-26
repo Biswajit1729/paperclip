@@ -1,3 +1,5 @@
+import { heartbeatService } from "../services/heartbeat.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -104,6 +106,25 @@ describe("workspace finalization scheduled lifecycle", () => {
     return db.select().from(workspaceOperations).where(and(eq(workspaceOperations.heartbeatRunId, runId),
       eq(workspaceOperations.phase, "workspace_finalize"), eq(workspaceOperations.status, "succeeded")));
   }
+  it.each(["restore", "worktree"])("honors %s suppression through the public heartbeat registration", async mode => {
+    const binding = await seed(); await complete(binding);
+    const runtimeEnv = mode === "restore" ? { PAPERCLIP_DATABASE_RESTORE_IN_PROGRESS: "true" }
+      : { PAPERCLIP_IN_WORKTREE: "true", PAPERCLIP_INSTANCE_ID: "workspace-suppression-test" };
+    const settings = instanceSettingsService(db, { runtimeEnv });
+    if (mode === "worktree") await settings.updateExperimental({ enableWorktreeRunExecution: false });
+    const heartbeat = heartbeatService(db, { runtimeEnv });
+    coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => admitted, canReconcile: () => admitted,
+      onError: error => errors.push(error) });
+    worker = heartbeat.registerNativeWorkspaceFinalizationWork(coordinator, () => admitted);
+    await worker.ready; await flush(); await quiet();
+    expect(await successful(binding.runId)).toHaveLength(0);
+    if (mode === "worktree") {
+      try {
+        await settings.updateExperimental({ enableWorktreeRunExecution: true });
+        await flush(); expect(await successful(binding.runId)).toHaveLength(1); await quiet();
+      } finally { await settings.updateExperimental({ enableWorktreeRunExecution: false }); }
+    }
+  });
   it("is quiet with no work and retained history, then wakes on the first accepted result", async () => {
     await start(); await flush(); await quiet();
     const binding = await seed();

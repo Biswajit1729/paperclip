@@ -2745,3 +2745,11 @@ when a stale controller later writes failure, without repeating copy-back.
 The worker lifecycle now passes all 13 cases. Full-command disposition and
 repaired-head remote gates remain pending. No merge; all older gates and later
 recurring duties remain in scope.
+
+Slice 52 review repair: initial Greptile 3/5 identified the already-reproduced
+stale barrier and missing heartbeat execution-suppression checks. Restore/worktree
+regressions both failed red through public heartbeat registration. The worker now
+consults the owning suppression policy before discovery/execution, and worktree
+activation publishes a reconstruction signal. All 15 lifecycle cases pass,
+including real settings activation after quiet. Latest validation/review are still
+pending; the scope remains active with no merge.

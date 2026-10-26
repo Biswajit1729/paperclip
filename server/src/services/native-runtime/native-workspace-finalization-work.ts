@@ -83,15 +83,17 @@ export function nativeWorkspaceFinalizationWork(db: Db, options: {
     const [remaining] = await candidates(scope);
     return remaining ? entry(remaining) : null;
   }
-  function register(coordinator: ReturnType<typeof createDeliveryWorkCoordinator>, canRun: () => boolean) {
+  function register(coordinator: ReturnType<typeof createDeliveryWorkCoordinator>, canRun: () => boolean,
+    canRecover: () => Promise<boolean> = async () => true) {
     const worker = registerScopedDeadlineWork(coordinator, {
       queue: DELIVERY_QUEUES.nativeWorkspaceFinalization, batchSize: 1,
       decodeScope: (hint: string): NativeWorkspaceFinalizationScope | undefined => hint === "*" ? undefined : JSON.parse(hint),
       matches: (item: Entry, scope?: NativeWorkspaceFinalizationScope) => !scope || item.companyId === scope.companyId
         && (!scope.issueId || item.issueId === scope.issueId) && (!scope.runId || item.id === scope.runId),
-      load: (scope, signal) => load(scope, signal, canRun),
-      check: (item, signal) => {
+      load: async (scope, signal) => await canRecover() ? load(scope, signal, canRun) : [],
+      check: async (item, signal) => {
         if (!canRun()) throw new Error("Native workspace finalization paused");
+        if (!await canRecover()) return null;
         return check(item, signal);
       },
     }, canRun);
