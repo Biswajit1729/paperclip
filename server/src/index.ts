@@ -1821,7 +1821,9 @@ async function startServerWithDatabaseTeardown(
         () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby());
       unsubscribeRetainedNativeSessionCleanup = worker.stop;
       server.on("close", worker.stop);
-      await worker.ready;
+      // Physical cleanup can outlive a provider timeout. Keep owning it through
+      // drain/shutdown without making HTTP readiness wait for that callback.
+      trackHeartbeatSchedulerWork(worker.ready);
     }
     if (config.heartbeatSchedulerEnabled) await heartbeat.registerNativeResultCommitWork(deliveryWork,
       () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready;

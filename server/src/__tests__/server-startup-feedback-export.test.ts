@@ -95,6 +95,7 @@ const {
     reason: null,
   }));
   const heartbeatServiceMock = {
+    drainActiveRunExecutions: vi.fn(async () => undefined),
     reconcileCostAccounting: vi.fn(async () => ({ scanned: 0, accounted: 0 })),
     resolveSchedulingSuppression: resolveHeartbeatSchedulingSuppressionMock,
     recoverNativeRunsAfterRestart: vi.fn(async () => ({
@@ -1162,6 +1163,37 @@ describe("startServer feedback export wiring", () => {
     } finally {
       timer.mockRestore();
     }
+  });
+
+  it("becomes ready while retained cleanup is held but joins it at shutdown", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: true }));
+    let releaseCleanup!: () => void;
+    const ready = new Promise<void>(resolve => { releaseCleanup = resolve; });
+    const stop = vi.fn();
+    heartbeatServiceMock.registerRetainedNativeSessionCleanupWork.mockReturnValueOnce({ ready, stop });
+    const timer = vi.spyOn(globalThis, "setInterval").mockImplementation(() => 1 as unknown as ReturnType<typeof setInterval>);
+    let started = false;
+    const starting = startServer().then(server => { started = true; return server; });
+    let stopping: Promise<void> | undefined;
+    let stopped = false;
+    try {
+      await vi.waitFor(() => expect(heartbeatServiceMock.registerRetainedNativeSessionCleanupWork).toHaveBeenCalledOnce());
+      await settleStartupHousekeeping();
+      expect(started).toBe(true);
+      expect(getStartupRecoveryState().phase).toBe("ready");
+      expect(heartbeatServiceMock.registerNativeStatusReassessmentWork).toHaveBeenCalledOnce();
+      const server = await starting;
+      stopping = server.shutdown().then(() => { stopped = true; });
+      await settleStartupHousekeeping();
+      expect(stop).toHaveBeenCalledOnce();
+      expect(stopped).toBe(false);
+    } finally {
+      releaseCleanup();
+      await starting;
+      await stopping;
+      timer.mockRestore();
+    }
+    expect(stopped).toBe(true);
   });
 
   it("reports ready before startup housekeeping finishes and starts the scheduler after it", async () => {
