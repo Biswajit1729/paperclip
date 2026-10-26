@@ -186,6 +186,7 @@ export function createPluginJobScheduler(options: PluginJobSchedulerOptions): Pl
       running = true;
       worker = registerDeadlineWork(coordinator, DELIVERY_QUEUES.pluginSchedules, {
         run: tick, next: async () => next, canRun, retryMs: tickIntervalMs,
+        notificationCoalesceMs: tickIntervalMs,
       });
       await worker.ready;
     },
