@@ -1,5 +1,5 @@
 import { alias } from "drizzle-orm/pg-core";
-import type { UnsafeWorkspaceExportScope } from "../unsafe-workspace-export-notifications.js";
+import { notifyUnsafeWorkspaceExportRecovery, type UnsafeWorkspaceExportScope } from "../unsafe-workspace-export-notifications.js";
 import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 import { registerScopedDeadlineWork } from "../scoped-deadline-work.js";
@@ -62,6 +62,11 @@ async function recoverCandidate(db: Db, candidate: { runId: string; companyId: s
       const now = new Date();
       // A stale unsafe notice is never an instruction to repair or start a
       // provider turn, including when newer work prevents replay of this run.
+      if (priorActions.some(action => ["active", "escalated"].includes(action.status)
+        || (action.status === "resolved" && action.resolutionNote === "new_source_execution_path"))) {
+        // Retiring this notice can unblock another saved run on the same issue.
+        await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: run.companyId, issueId: issue.id });
+      }
       await tx.update(issueRecoveryActions).set({ status: "resolved", outcome: "restored", resolvedAt: now,
         resolutionNote: "unsafe_export_automatic_recovery", nextAction: "", wakePolicy: null, updatedAt: now,
       }).where(and(eq(issueRecoveryActions.companyId, run.companyId), eq(issueRecoveryActions.sourceIssueId, issue.id),
