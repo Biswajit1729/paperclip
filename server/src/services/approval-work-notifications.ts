@@ -12,7 +12,7 @@ export async function notifyApprovalWork(transaction: object, companyId: string,
   await notifyDeliveryWork(transaction, DELIVERY_QUEUES.approvalRetention);
   await notifyApprovalQueueWork(transaction, companyId);
   // Formal decisions release parked tool reviews on the same outer commit.
-  await notifyToolReviewChange(transaction);
+  await notifyToolReviewChange(transaction, companyId);
   const issueIds = new Set(scope?.issueIds);
   if (scope?.approvalId) {
     const links = await (transaction as Db).select({ issueId: issueApprovals.issueId }).from(issueApprovals)

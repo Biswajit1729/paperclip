@@ -12,6 +12,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { eq, inArray, sql } from "drizzle-orm";
 import {
   activityLog,
+  applyPendingMigrations,
   agents,
   companies,
   createDb,
@@ -260,8 +261,10 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
   }>();
 
   beforeAll(async () => {
-    if (!externalUrl) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-execution-workspaces-service-");
+    if (externalUrl) await applyPendingMigrations(externalUrl);
+    else tempDb = await startEmbeddedPostgresTestDatabase("paperclip-execution-workspaces-service-");
     db = createDb(externalUrl ?? tempDb!.connectionString);
+    await resetDatabase();
     svc = executionWorkspaceService(db, {
       resolvePullRequestDetails: vi.fn(async (companyId, reference) =>
         pullRequestDetailsByKey.get(`${companyId}:${reference.number}`)
@@ -274,7 +277,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     });
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
-  afterEach(async () => {
+  async function resetDatabase() {
     await db.delete(workspaceRuntimeServices);
     await db.delete(activityLog);
     await db.delete(issueRecoveryActions);
@@ -288,6 +291,10 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(companies);
+  }
+
+  afterEach(async () => {
+    await resetDatabase();
     pullRequestDetailsByKey.clear();
 
     for (const dir of tempDirs) {
