@@ -36,7 +36,7 @@ export function nativeStatusReassessmentWork(db: Db) {
     return db.select({ runId: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
       issueId: issues.id, issueStatus: issues.status, issueStatusVersion: issues.statusVersion,
       issueDecisionId: issues.lastStatusDecisionId, coordinatorPhase: nativeRunFinalizations.phase,
-      assessmentId: workAssessments.id, decisionId: nativeRunFinalizations.decisionId, contextSnapshot: heartbeatRuns.contextSnapshot,
+      assessmentId: workAssessments.id, decisionId: nativeRunFinalizations.decisionId, nativeStatusWakeIntentId: sql<unknown>`${heartbeatRuns.contextSnapshot}->'nativeStatusWakeIntentId'`,
       nextAttemptAt: nativeRunFinalizations.nextAttemptAt, leaseOwner: nativeRunFinalizations.leaseOwner,
       leaseExpiresAt: nativeRunFinalizations.leaseExpiresAt,
     }).from(nativeRunFinalizations)
