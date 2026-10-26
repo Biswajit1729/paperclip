@@ -1,0 +1,113 @@
+# Obsolete native policy-review cleanup
+
+Date: 2026-10-25. Parent: cancelled workspace preservation #17677 at
+`33567f91551d60053722c013f0d9b402c1db29e6`.
+
+## Owner and scope
+
+The native finalization reconciler combines independent duties. Its initial
+calls recover historical unsafe exports, dismiss obsolete policy reviews, and
+retire automatic completion reviews. Its main loop also dispatches status
+effects, repairs committed response presentation, reassesses changed evidence,
+and resumes workspace/result finalization. Each duty needs its own migration;
+removing the combined scan would lose work.
+
+This slice owns obsolete version-change policy reviews only. The existing
+`obsolete-policy-reviews.ts` service identifies their full historical signature:
+pending system confirmation, exact prompt, applied native review decision,
+exact two-effect payload, and matching company/issue/run/effect/assessment.
+Real completion reviews, authored requests and answered cards are excluded.
+The current status arbiter does not generate this old prompt. The typed decision
+committer still supports the old effect shape, so a startup-only scan is not
+used as the complete writer contract.
+
+## Producers and durable truth
+
+The existing interaction, status decision, effect, and assessment rows are truth.
+The only production inserter of status decisions and decision effects is
+`commitNativeStatusDecision`. Its existing transaction registers an issue-scoped
+notification before creating the decision/effects. The signal settles at outer
+commit, including a caller-owned transaction. It adds no new transaction around
+provider work and no table. A normal current decision can cause one scoped
+lookup without leaving a recurring deadline.
+
+Other interaction writers cannot independently create the matching applied
+native decision/effect lineage. Existing decision mutation paths update lineage
+or delivery state, not the historical signature. Current-policy producers do
+not create new obsolete reviews, but their common commit boundary remains covered.
+Startup reconstructs old records. Independent SQL writers and concurrent older
+controllers are not covered by process-local signals; they require an explicit
+integration or restart reconstruction.
+
+## Scheduling and recovery
+
+The service registers with the existing scoped deadline helper. Startup and
+committed issue hints reconstruct exact candidates in 100-row keyset pages.
+The worker stores interaction/company/issue IDs and due times, not the decision
+payload. Batches of twenty use the shared fairness mechanism. Each check rereads
+the exact candidate and delegates to the existing transaction owner.
+
+The owner retains coordinator/issue/interaction locking, current status-version
+and decision-pointer guards, other-review checks, chat terminal publication,
+and activity persistence. The conditional withdrawal additionally matches the
+selected payload, kind, source run, idempotency key, and system author fields.
+A card changed after discovery is not withdrawn from a stale snapshot.
+
+After an attempt the worker rereads the exact pending predicate. Pending cards
+retain a 30-second retry; successful, answered, changed, or deleted cards disarm.
+An owner failure must not starve another candidate. Discovery failures use the
+shared backoff and retain the dirty scope. No expiry or retry budget is invented
+for historical records. No unresolved card is silently discarded for quiet.
+
+This preserves manual/scoped reconciliation and startup repair. Only periodic
+orphan reaping passes the new skip flag, so that path stops repeating this
+cleanup. The worker is registered when heartbeat maintenance is enabled and
+shares the existing admission/drain/standby gates. Shutdown joins admitted
+cleanup and removes the registration. Paused dispatch retains dirty requests.
+
+## Cost and boundaries
+
+The change is a worker migration, not proof of provider suspension. The combined
+reaper and unrelated finalization duties still run until migrated separately.
+Cloud alarms and sleep eligibility remain unchanged.
+
+Startup cost scales with historical pending candidates and their joins. Scoping
+ordinary commit hints to company/issue uses the existing interaction indexes.
+There is no new schema or unconditional hasPending query. Query-plan evidence
+and final test results are recorded below when available.
+
+## Verification record
+
+Before production changes, all 44 existing status-authority corpus tests passed
+on a fresh disposable PostgreSQL database. The host's embedded harness remains
+unavailable; the corpus now accepts the repository's validated external-test DB
+URL convention and closes its pool. No production connection behavior changed.
+
+The initial server typecheck and the typecheck including new worker tests both
+passed. Full owner/startup, affected consumers, final workspace checks and exact
+PR head CI/review remain required. No local or remote completion is claimed here.
+
+The first combined run had 67 passing tests and 49 failures. The producer helper
+serialized the structurally assignable commit input rather than projecting its
+company/issue fields. That included the database object and threw a circular
+JSON error on real commits. The helper now serializes only its two domain IDs.
+The failed run is retained at `/tmp/sleep44-owners-v1.log`. A fresh full selection
+is required after this production repair.
+
+After the payload repair, all 116 tests in the owner/startup/timing selection pass
+without skips (56 corpus tests, 58 startup tests and two timing tests). The corpus
+includes the existing 53 native/legacy fixtures inside its matrix test.
+
+A rolled-back query fixture added 10,000 completed interaction rows on the same
+issue and restored one matching pending historical review. The company/issue
+lookup used existing decision, interaction-idempotency, effect-ordinal and
+assessment indexes. It returned one candidate in 0.058 ms locally. This supports
+the scoped-query access path, not a production latency claim. Startup remains
+a global reconstruction whose cost scales with history; it does not recur when
+settled. SQL and plan are in `/tmp/sleep44-query-plan.sql` and `.log`.
+
+Final affected consumer acceptance passed all 235 cases across heartbeat recovery,
+native finalizer telemetry, external-chat response waits and governed chat
+milestones. Combined with the 116 owner/startup cases, 351 tests passed without
+skips. Workspace typecheck and build also passed. Remote CI and review remain
+required for the published head. No workflow, lockfile or schema change is made.

@@ -631,6 +631,7 @@ export async function claimNativeSessionResumptions(input: {
 }
 
 type NativeReconciliationOptions = {
+  skipObsoletePolicyReviews?: boolean;
   pluginWorkerManager?: WorkspaceWorkers;
   environmentRuntime?: EnvironmentRuntimeService;
   onWorkspaceSettled?: (input: {
@@ -717,10 +718,12 @@ async function reconcileNativeFinalizationsPass(
   await recoverLegacyUnsafeWorkspaceExports(db, runIds).catch((err) => {
     logger.warn({ err }, "Historical unsafe export recovery remains pending");
   });
-  timing.phase("obsolete_policy_reviews");
-  await dismissObsoleteNativePolicyReviews(db, runIds).catch((err) => {
-    logger.warn({ err }, "Obsolete native policy review lookup failed; continuing native reconciliation");
-  });
+  if (!options.skipObsoletePolicyReviews) {
+    timing.phase("obsolete_policy_reviews");
+    await dismissObsoleteNativePolicyReviews(db, runIds).catch((err) => {
+      logger.warn({ err }, "Obsolete native policy review lookup failed; continuing native reconciliation");
+    });
+  }
   timing.phase("automatic_completion_reviews");
   if (runIds?.length) {
     const scopes = await db.select({ issueId: nativeRunFinalizations.issueId }).from(nativeRunFinalizations)

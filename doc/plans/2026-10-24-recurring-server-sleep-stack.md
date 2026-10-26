@@ -2166,3 +2166,9 @@ is still required. The full remaining stack and older unresolved gates remain
 in scope.
 
 Slice 43 final local acceptance: 120 owner/startup cases plus 209 affected consumer cases pass, without skips. Workspace typecheck/build, final server types, migration application/replay and index-plan checks passed. The negative fixture FK rejection and its correction remain in the owner audit. Remote CI and review are still required.
+
+## Slice 43 accepted; slice 44 obsolete policy reviews
+
+Cancelled workspace preservation is draft [#17677](https://github.com/paperclipai/paperclip/pull/17677) at `33567f91551d60053722c013f0d9b402c1db29e6`. All 53 checks passed, Greptile reviewed that head at 5/5, and there are no unresolved review threads. It remains unmerged.
+
+The native finalization audit found separate historical unsafe-export recovery, obsolete policy-review cleanup, automatic completion-review cleanup, effect delivery, committed response repair, evidence reassessment and workspace/result finalization. Slice 44 owns obsolete policy-review cleanup only. See [its audit](2026-10-25-obsolete-policy-review-sleep-audit.md). The owner/startup selection passes 116 tests after repairing a reproduced notification serialization bug. Consumer and final workspace verification remain pending. Older stack gates and final master reconciliation remain outstanding.
