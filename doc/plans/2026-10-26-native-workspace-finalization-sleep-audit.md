@@ -195,3 +195,15 @@ all 118 tests in 18.66 seconds. One justified CI retry was requested. The first
 request returned HTTP 500 without starting an attempt; resubmission after verifying
 attempt 1 was complete started attempt 2. This is not acceptance of the new
 producer fix, whose current-head checks and review still need verification.
+
+## Readiness follow-up
+
+Startup now tracks the workspace-finalization registration's `ready` promise
+through the existing idle/shutdown work tracker instead of awaiting its first
+physical copy-back before declaring HTTP readiness. The subscription remains
+registered for shutdown and the active work remains joined; no physical ownership
+or finalization policy changes. A held-callback regression failed before the
+change and now proves readiness, registration of later recovery workers, and
+shutdown waiting for the callback. All 77 startup cases and all 18 real-database
+workspace-finalization lifecycle cases passed. Integrated typecheck, build, and
+remote checks remain required.
