@@ -38,6 +38,7 @@ import {
   statusDecisions,
   toolApplications,
   toolConnections,
+  toolOauthStates,
   chatVoiceSessions, chatVoiceReplies, chatVoiceToolCalls,
   workspaceOperations,
 } from "@paperclipai/db";
@@ -49,6 +50,7 @@ import type {
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { finalizeNativeRun, recoverCommittedNativeReviewResponse } from "./native-run-finalizer.js";
 import { configureAgentLifecycle, createAgentLifecycle, processAgentLifecycle } from "../agent-lifecycle.js";
+import { createOAuthStateStore } from "../tool-access/oauth/state.js";
 import { approvalRecords } from "../approvals.js";
 import { issueApprovalService } from "../issue-approvals.js";
 import { nativeReviewResponseWork } from "./native-review-response-work.js";
@@ -2960,6 +2962,106 @@ describe("native external-chat response wait", () => {
         { timeout: 5_000 }).toBe(1);
       expect(errors).toEqual([]);
     } finally { await lifecycle.stop(); await coordinator.stop(); }
+  });
+
+  it.each(["skip", "withdraw", "reject_suggestions", "complete_verdicts", "decline_connection"] as const)(
+    "reactivates governed responses after competing interaction %s", async action => {
+      const fixture = await seedRecoverableReviewResponse();
+      const service = issueThreadInteractionService(db);
+      const issue = { id: fixture.issueId, companyId: fixture.companyId };
+      const actor = { userId: fixture.userId };
+      const competing = action === "decline_connection"
+        ? await service.createConnectionIntent(issue, { sourceRunId: fixture.runId,
+            addresseeUserId: fixture.userId, idempotencyKey: `review-competing:${randomUUID()}`,
+            payload: { version: 1, serviceSlug: "notion", serviceName: "Notion", serviceLogoUrl: null,
+              requestingAgentId: fixture.agentId, requestingAgentName: "Agent", phase: "requested" } })
+        : action === "complete_verdicts"
+          ? await service.create(issue, { kind: "request_item_verdicts", payload: { version: 1,
+              prompt: "Review this item", items: [{ id: "one", label: "One" }] } }, actor)
+          : await service.create(issue, { kind: "suggest_tasks", payload: { version: 1,
+              tasks: [{ clientKey: "child", title: "A suggested task" }] } }, actor);
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      const worker = nativeReviewResponseWork(db).register(coordinator, () => true);
+      const comments = () => db.select().from(issueComments).where(eq(issueComments.createdByRunId, fixture.runId));
+      try {
+        await worker.ready;
+        await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+          { timeout: 10_000 }).toEqual({ active: 0, next: null });
+        expect(await comments()).toHaveLength(0);
+        if (action === "skip") await service.skipInteraction(issue, competing.id, {}, actor);
+        else if (action === "withdraw") await service.withdrawInteraction(issue, competing.id, {}, actor);
+        else if (action === "reject_suggestions") await service.rejectInteraction(issue, competing.id, {}, actor);
+        else if (action === "complete_verdicts") await service.submitItemVerdicts(issue, competing.id,
+          { verdicts: [{ id: "one", verdict: "approve" }] }, actor);
+        else await service.resolveConnectionIntent(issue, competing.id, { version: 1, outcome: "declined" }, actor);
+        await expect.poll(async () => (await comments()).length, { timeout: 5_000 }).toBe(1);
+        expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); }
+    });
+
+  it.each(["status", "assignment"] as const)("preserves governed response policy through task %s changes", async change => {
+    const fixture = await seedRecoverableReviewResponse();
+    await db.update(issues).set(change === "status" ? { status: "blocked" } : { assigneeAgentId: null })
+      .where(eq(issues.id, fixture.issueId));
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    const worker = nativeReviewResponseWork(db).register(coordinator, () => true);
+    const comments = () => db.select().from(issueComments).where(eq(issueComments.createdByRunId, fixture.runId));
+    try {
+      await worker.ready;
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+        { timeout: 10_000 }).toEqual({ active: 0, next: null });
+      expect(await comments()).toHaveLength(0);
+      if (change === "assignment") {
+        await expect(issueService(db).update(fixture.issueId, { assigneeAgentId: fixture.agentId }))
+          .rejects.toThrow("Agent assignment cannot change while this task is bound to an external channel");
+        expect(await comments()).toHaveLength(0);
+      } else {
+        await issueService(db).update(fixture.issueId, { status: "in_review" });
+        await expect.poll(async () => (await comments()).length, { timeout: 5_000 }).toBe(1);
+      }
+      expect(errors).toEqual([]);
+    } finally { await coordinator.stop(); }
+  });
+
+  it("reactivates governed responses after OAuth confirmation denial", async () => {
+    const fixture = await seedRecoverableReviewResponse();
+    const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.companyId, fixture.companyId));
+    const competing = await issueThreadInteractionService(db).create({ id: fixture.issueId, companyId: fixture.companyId },
+      { kind: "request_confirmation", payload: { version: 1, prompt: "Connect your account", target: {
+        type: "custom", key: `connection:${connection.id}`, revisionId: randomUUID(), label: "Connect account" } } },
+      { userId: fixture.userId });
+    const [state] = await db.insert(toolOauthStates).values({ state: randomUUID(), companyId: fixture.companyId,
+      connectionId: connection.id, codeVerifier: "test-verifier", issueId: fixture.issueId, interactionId: competing.id,
+      subjectUserId: fixture.userId, expiresAt: new Date(Date.now() + 60_000) }).returning();
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    const worker = nativeReviewResponseWork(db).register(coordinator, () => true);
+    const comments = () => db.select().from(issueComments).where(eq(issueComments.createdByRunId, fixture.runId));
+    try {
+      await worker.ready;
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+        { timeout: 10_000 }).toEqual({ active: 0, next: null });
+      expect(await comments()).toHaveLength(0);
+      const rollback = new Error("rollback OAuth denial");
+      await expect(db.transaction(async tx => {
+        await createOAuthStateStore(tx as unknown as typeof db).rejectPendingOAuthInteraction(state,
+          { actorType: "user", actorId: fixture.userId });
+        expect(await comments()).toHaveLength(0);
+        throw rollback;
+      })).rejects.toBe(rollback);
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+        { timeout: 10_000 }).toEqual({ active: 0, next: null });
+      expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, competing.id)))[0].status).toBe("pending");
+      await db.transaction(async tx => {
+        await createOAuthStateStore(tx as unknown as typeof db).rejectPendingOAuthInteraction(state,
+          { actorType: "user", actorId: fixture.userId });
+        expect(await comments()).toHaveLength(0);
+      });
+      await expect.poll(async () => (await comments()).length, { timeout: 5_000 }).toBe(1);
+      expect(errors).toEqual([]);
+    } finally { await coordinator.stop(); }
   });
 
   it("reconstructs scheduled governed responses at startup and leaves their history quiet", async () => {

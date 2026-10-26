@@ -2400,3 +2400,13 @@ pass, with server types passing. The owner audit lists remaining interaction, ta
 authority and coordinator producer evidence. Registration, periodic removal, query
 cost, full verification and publication remain outstanding; the full stack scope
 and older unresolved gates remain unchanged.
+
+Slice 49 interaction checkpoint: five interaction misses plus task-status and
+OAuth-denial misses are reproduced and fixed. Task-scoped notifications cover
+existing resolution transactions and direct OAuth/connection cleanup writers.
+The complete owner suite passes 180 cases; interaction/telemetry/satisfied-connection/
+generic-OAuth consumers pass 249 cases, and server types pass. Skipped telemetry,
+external pool-fixture and callback-narrowing failures and repairs are preserved
+in the owner audit. Execution-state-only restoration, real coordinator release,
+query cost, registration/periodic removal and final acceptance remain. No PR yet,
+no merge, and the full original stack scope remains open.

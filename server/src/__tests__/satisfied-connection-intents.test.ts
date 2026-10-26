@@ -1,3 +1,4 @@
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -19,16 +20,17 @@ import { idleWorkSnapshot } from "../services/task-admission.js";
 import { readIdleSleepSafety, type IdleSleepDrainStatus } from "../services/idle-sleep-safety.js";
 import { reserveRunBudget } from "../services/budget-reservations.js";
 
-const support = await getEmbeddedPostgresTestSupport();
+const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_SATISFIED_CONNECTION_TEST_DATABASE_URL");
+const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describePostgres = support.supported ? describe : describe.skip;
 
 describePostgres("already available connection requests", () => {
   let db!: ReturnType<typeof createDb>;
   let temp!: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   beforeAll(async () => {
-    temp = await startEmbeddedPostgresTestDatabase("paperclip-satisfied-connections-");
-    db = createDb(temp.connectionString);
-    await db.insert(authUsers).values({ id: "connection-owner", name: "Owner", email: "owner@example.test", createdAt: new Date(), updatedAt: new Date() });
+    if (!externalUrl) temp = await startEmbeddedPostgresTestDatabase("paperclip-satisfied-connections-");
+    db = createDb(externalUrl ?? temp.connectionString);
+    await db.insert(authUsers).values({ id: "connection-owner", name: "Owner", email: "owner@example.test", createdAt: new Date(), updatedAt: new Date() }).onConflictDoNothing();
   }, 20_000);
   beforeEach(async () => { await db.execute(sql`truncate table companies cascade`); });
   afterAll(async () => { await db.$client.end({ timeout: 1 }); await temp?.cleanup(); });
@@ -58,6 +60,19 @@ describePostgres("already available connection requests", () => {
       responsibleUserId: "connection-owner", contextSnapshot: { issueId: f.issueId }, resultJson: { conversationContinuation: "continue_conversation_v1" } }).returning();
     return run!;
   }
+
+  it("wakes governed response recovery only when automatic cleanup retires a connection card", async () => {
+    const f = await seed();
+    const notified = vi.fn();
+    const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.nativeReviewResponse, notified);
+    try {
+      expect(await satisfiedConnectionIntentService(db).sweepPending()).toMatchObject({ satisfied: 1 });
+      expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, f.intent.id)))[0].status).toBe("expired");
+      expect(notified).toHaveBeenCalledOnce();
+      expect(await satisfiedConnectionIntentService(db).sweepPending()).toMatchObject({ satisfied: 0 });
+      expect(notified).toHaveBeenCalledOnce();
+    } finally { unsubscribe(); }
+  });
 
   it("ignores an already available connection before the worker retires its card", async () => {
     const f = await seed(); const run = await retry(f);
@@ -356,7 +371,7 @@ describePostgres("already available connection requests", () => {
 
   it("records a system completion and one durable continuation with a one-connection pool", async () => {
     const f = await seed();
-    const single = createDb(temp.connectionString, { maxConnections: 1 });
+    const single = createDb(externalUrl ?? temp.connectionString, { maxConnections: 1 });
     try {
       const outcomes = await Promise.all([satisfiedConnectionIntentService(single).sweepPending(), satisfiedConnectionIntentService(db).sweepPending()]);
       expect(outcomes.reduce((sum, outcome) => sum + outcome.satisfied, 0)).toBe(1);

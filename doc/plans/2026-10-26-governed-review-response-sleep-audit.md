@@ -241,3 +241,56 @@ Further producer audit findings, not completed migration claims:
 
 The worker remains unregistered and periodic repair is unchanged. These commits
 are checkpoints, not PR readiness or whole-instance sleep acceptance.
+
+## Interaction and task-authority checkpoint
+
+Five real interaction producer cases failed before wiring: skip, withdrawal,
+rejecting suggestions, completing item verdicts and declining a connection intent.
+They now pass through task-scoped notifications before the existing transaction's
+write. Checkbox and administrative settlement use the same narrow topic when
+the existing question/confirmation milestone fanout does not apply. Comment
+supersession of item verdicts now owns its notification and row mutation together;
+connection-intent ownership expiry receives its caller's issue transaction.
+
+Task status restoration and OAuth denial also reproduced missed wakes. Task-scoped
+response-availability changes now reach governed-response recovery. Direct and
+Cloud OAuth confirmation acceptance and automatic satisfied-connection retirement
+notify the affected task before their writes. OAuth terminal denial owns the
+signal and card mutation in one transaction; connection-intent retry phase changes
+remain pending and do not wake this worker. Existing policy remains authoritative:
+the attempted task-assignment restoration was rejected because externally bound
+tasks cannot be reassigned through issueService. Its test now verifies that
+restriction rather than bypassing it. Endpoint/identity configuration already
+uses the company milestone boundary for supported authority restoration.
+
+Current evidence: all 180 owner cases pass, including OAuth outer rollback/commit,
+plus 106 interaction service, nine telemetry, 50 satisfied-connection, and 84
+generic MCP/OAuth cases. Server typecheck passes. The first interaction consumer
+run skipped the nine telemetry cases because embedded PostgreSQL was unavailable;
+they now run through the standard validated external-database test option and pass.
+The satisfied-connection suite initially passed 49/50: its one-connection-pool
+fixture still used temp.connectionString after enabling external DB mode. That
+fixture now uses the selected URL and all 50 pass. The first OAuth typecheck caught
+nullable interactionId captured by a transaction callback; binding the checked ID
+locally repaired it without changing policy. Preserved evidence:
+/tmp/sleep49-interactions-before.log, /tmp/sleep49-interactions-after.log,
+/tmp/sleep49-interactions-consumers.log, /tmp/sleep49-authority-before.log,
+/tmp/sleep49-authority-after.log, /tmp/sleep49-authority-types.log,
+/tmp/sleep49-telemetry-consumers.log, /tmp/sleep49-satisfied-consumers.log,
+/tmp/sleep49-satisfied-consumers-v2.log, /tmp/sleep49-oauth.log,
+/tmp/sleep49-authority-final.log and /tmp/sleep49-authority-final-types.log.
+
+Further audit: change-consent consumes already accepted metadata and cannot clear
+a competing pending card. Confirmation-from-comment delegates resolution to the
+covered interaction service. Native interaction audit records change summaries
+only. Superseded native review retirement commits with a task-scoped native status
+decision. Tool-review projection and secret-proposal settlement already signal
+task milestones. Board claim and trusted-header membership restoration also
+signal existing company milestones; compatibility membership backfill is agent
+only. No new global live-authority registration dependency was found in governed
+review authorization, which reads its durable binding/principal/destination proof.
+
+Still inspect execution-state-only transitions (pending policy state can block a
+response without changing task status), prove real coordinator lease/retry release,
+and finish candidate query-cost/lifecycle/wiring acceptance. The worker remains
+unregistered and both periodic entrances remain intact.
