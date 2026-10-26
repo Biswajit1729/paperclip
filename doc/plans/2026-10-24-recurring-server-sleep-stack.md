@@ -2,6 +2,10 @@
 
 Baseline: `785d54636e1c8513ee5503d602daf6a5ee1970d6` (2026-10-24).
 
+Current integration baseline: master `507dc70be26c191e372f09e58dc0965e73bf8f57`
+(October 26). Earlier gate results below are historical; current acceptance is
+pending. See the final integration/review-repair section for the current state.
+
 The requested outcome is a reviewed PR stack for every remaining recurring server
 work item below. A PR owns one reason for background activity. Split compound
 items into separate PRs as their producer and lifecycle audits identify distinct
@@ -2902,3 +2906,59 @@ The compound callback's runtime-service release and agent-status projection are
 still outstanding. Workspace descriptor cleanup remains separate. All earlier
 inventory reasons, master propagation, older failed gates, and suppression debts
 remain active; this section does not narrow the original goal.
+
+## October 26 master integration and review repairs
+
+All 60 published branches (58 numbered duties and two auxiliary slices) now
+contain master `507dc70be26c191e372f09e58dc0965e73bf8f57` through normal parent
+merges. Earlier acceptance entries in this document describe their recorded
+historical heads; they do not certify these new integrated heads. The current
+stack still requires fresh CI, fresh review, and resolution of outstanding
+findings. Nothing has been merged into master.
+
+Three review/compatibility repairs were made at their owning stack boundaries:
+
+- Slice 01 / [#17443](https://github.com/paperclipai/paperclip/pull/17443):
+  a successfully read future custom-image expiry now runs at its saved deadline.
+  A five-second deadline and an earlier committed replacement previously waited
+  for the 30-second retry floor. Failure and unfinished-overdue work retain
+  backoff. Slice 02 carries the same correction into the shared deadline helper.
+  The new unit and real-producer regressions failed first; root verification
+  passed 47 custom-image cases and 39 startup cases. Slice 02 passed 122
+  custom-image, secret-proposal and startup cases.
+- Slice 17 / [#17518](https://github.com/paperclipai/paperclip/pull/17518):
+  plugin inventory notification batching is now an explicit, optional shared
+  deadline contract. Only the plugin scheduler opts into its existing bounded
+  batching latency; consumers without the option reconcile notifications
+  immediately. Known saved deadlines preempt batching, including a ten-second
+  job deadline. This preserves bounded full-inventory reads for bursts of
+  job-status writes without making every successful expiry pass a cooldown.
+  Newly changed plugin configuration retains bounded batching latency. Idle
+  queues still disarm. The focused owner run passed 76 cases.
+- Slice 51 / [#17717](https://github.com/paperclipai/paperclip/pull/17717):
+  HTTP readiness and later worker registration no longer wait for retained
+  physical-session cleanup. The existing scheduler-work and delivery owners
+  retain the original cleanup promise through idle drain and shutdown. A held
+  cleanup regression failed before the fix; 73 startup cases and 28 real-DB
+  retained-cleanup cases passed after it.
+
+Combined source revision `6a5ff3683614d8f954986157f158d74b1f653d22` passed
+workspace typechecking, the full build, and 246 focused cases across seven
+suites. The first combined run exposed the plugin batching dependency: 244
+passed and one failed. The explicit batching repair fixed that failure. This
+ledger-only follow-up does not alter the tested code. Earlier integrated-tip
+validation also covered 470 cases; that remains evidence for its recorded
+revision, not a substitute for fresh checks. Full local `test:run` was not
+repeated because of the previously recorded embedded PostgreSQL capacity
+limitation. Full remote CI remains required.
+
+Known acceptance debt still includes approved-tool rate-limit admission and
+permanent recovery classification, native recovery-notice lock ordering,
+workspace-export scheduling and plugin completion-persistence CI failures,
+cancellation lock failures, several retention/backlog/producer review findings,
+and the native-worker scheduling-suppression audit. Passing focused tests does
+not close those investigations. The remaining original inventory also remains
+in scope; the next native duty audit is agent-status projection. An empty local
+runtime-service map is already SQL/network quiet and does not by itself justify
+another queue. No deployed host suspension, external alarm coverage, or fleet
+savings are claimed by these repairs.
