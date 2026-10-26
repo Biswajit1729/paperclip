@@ -9666,6 +9666,7 @@ export function createToolGatewayService(
     },
 
     repairActionReviewProjections: reviewProjection.sweep,
+    actionReviewProjectionCompanies: reviewProjection.companies,
     settleInterruptedActionReviews: reviewInterruption.sweep,
     nextActionReviewInterruptionAt: reviewInterruption.next,
     sweepExpiredActionReviews: reviewExpiry.sweep,
