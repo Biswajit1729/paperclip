@@ -363,7 +363,7 @@ describeEmbeddedPostgres("tool gateway service", () => {
       }
       async function savedOutcome(pending: Awaited<ReturnType<typeof request>>, source = db,
         status: "executed" | "failed" | "expired" | "cancelled" = "executed") {
-        await writeToolReviewChange(source, async tx => {
+        await writeToolReviewChange(source, pending.companyId, async tx => {
           await tx.update(toolInvocations).set({ status: status === "executed" ? "succeeded" : "failed",
             errorCode: status === "executed" ? null : "saved_failure", errorMessage: null,
             resultSummary: { summary: "Durable result" }, completedAt: new Date() })
