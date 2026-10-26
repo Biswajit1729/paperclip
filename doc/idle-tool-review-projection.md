@@ -4,7 +4,11 @@ The tool-action request and invocation are authoritative. The interaction card
 is a projection of their outcome. Previously the aggregate maintenance tick
 joined these tables repeatedly, even when every card already matched.
 
-The projection worker now reconciles at startup and after committed changes.
+The projection worker reconstructs affected companies at startup and reconciles
+after committed changes. Producer hints carry the company ID. Subsequent
+candidate discovery and paginated repair queries filter by that company; review
+writes cannot drive a scan of another company's terminal history. The shared
+scoped worker dispatches one company per pass with one-second minimum spacing.
 It retains a 30-second retry only for a mismatch or failed reconciliation.
 Configured idle tools, pending reviews without terminal outcomes, and matching
 terminal history have no recurring projection SQL or provider calls. This is
@@ -14,14 +18,20 @@ worker quiet, not whole-instance suspension.
 
 `tool-review-projection.ts` owns candidate discovery and pagination. The gateway
 retains card interpretation, current-state checks, locks, activity publication,
-and the existing continuation callback. The scheduler consumes only `sweep`
-and the returned retry obligation. No provider payload enters shared scheduling.
+and the existing continuation callback. The scheduler consumes company discovery,
+`sweep(companyId)`, and the returned retry obligation. No provider payload enters shared scheduling.
 No table or migration is added.
 
 The existing review notification helper now also signals projection repair.
 Notifications are awaited before writes and inherit the outer transaction's
 commit, rollback, and uncertainty tracking. Unrelated review changes can cause
-one empty reconciliation; they do not create a recurring deadline.
+one empty company-scoped reconciliation; they do not create a recurring deadline.
+Interaction-only writes first check for an actual linked tool request using the
+company and affected card IDs. Generic confirmation kinds alone do not signal
+any tool-review queue. This also preserves recovery for legacy linked cards
+without current tool payload flags. These reads happen in the mutation owner,
+not a background poll. Sibling selection shares the update predicate and runs
+under the existing issue lock before publishing the notification.
 
 | Producer | Notification ownership |
 | --- | --- |
@@ -30,7 +40,7 @@ one empty reconciliation; they do not create a recurring deadline.
 | Pending expiry, approved recovery, interrupted claims, Test-tab settlement | Existing review-write boundary |
 | Review-queue invalidation | Existing review-write boundary |
 | Interaction withdrawal, skip, terminal-issue expiry | Linked-request resolution signals before the mutation |
-| Generic confirmation accept/reject, deleted-addressee cancellation | Projection notification before replacing card state in the owning transaction |
+| Linked tool-card accept/reject, deleted-addressee cancellation | Projection notification before replacing card state in the owning transaction; unlinked confirmations do not notify |
 | Sibling supersession, startup duplicate cleanup, new/historical comment supersession | Projection notification before card replacement, including cases where the request is already terminal |
 | Comment-based confirmation resolution | Calls the interaction owner inside the same outer transaction; its later comment-ID update shares that signal |
 
@@ -55,7 +65,11 @@ Candidate queries page in request-ID order, 100 rows at a time. A card that cann
 yet be projected does not starve later pages. Per-row failures do not prevent
 attempting the remaining candidates; failures keep the retry. A final mismatch
 check retains retries for no-op repairs rather than silently declaring them done.
-The joins inspect existing history on activation. This change removes repeated
+Failed companies retain their own backoff across notifications while other
+companies progress. An unresolved no-op projection retains a 30-second deadline;
+a new relevant company change can make it actionable sooner. A company pass
+still drains all its pages, preserving progress past an unprojectable card.
+The joins inspect that company's history on activation. This change removes repeated
 idle scans; it does not introduce an indexed projection-debt table or claim that
 an activated reconciliation has constant cost independent of history size.
 
@@ -104,3 +118,13 @@ interaction run passed 105 cases but timed out in one cleanup hook during a
 change or timeout increase was made to force that result. Full repository tests
 will run in CI; the local selections do not claim a complete repository test run.
 Fresh PR CI/review remains required.
+
+Company-scoping follow-up reproduced two regressions: captured recovery SQL lacked
+a company predicate, and ordinary confirmation creation/replacement/cancellation
+published three unnecessary tool-projection wakes. Both regressions now pass
+through real producers. Additional coverage keeps failed-company retry timing
+independent, proves ordinary mutations still complete without recovery scans,
+and exercises administrative repair of legacy cards identified by their saved
+link rather than payload flags.
+
+Company-scoping follow-up verification: all 180 gateway and startup cases and all 152 interaction and secret-proposal route cases passed against dedicated PostgreSQL test databases. Server typechecking passed. These are local checks; stack CI and deployed sleep qualification remain separate.
