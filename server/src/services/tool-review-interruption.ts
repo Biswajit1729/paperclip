@@ -28,7 +28,7 @@ export function toolReviewInterruptionService(db: Db, onSettled: (input: {
           cursor ? gt(toolActionRequests.id, cursor) : undefined,
         )).orderBy(asc(toolActionRequests.id)).limit(100);
         for (const row of rows) {
-          const settled = await writeToolReviewChange(db, async tx => {
+          const settled = await writeToolReviewChange(db, row.companyId, async tx => {
             const [invocation] = await tx.select().from(toolInvocations)
               .where(eq(toolInvocations.id, row.invocationId)).for("update");
             const [request] = await tx.select().from(toolActionRequests)
