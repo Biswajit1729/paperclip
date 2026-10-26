@@ -1,3 +1,4 @@
+import { notifyNativeWorkspaceFinalization } from "../native-workspace-finalization-notifications.js";
 import { isNativeResponseEvidence, notifyNativeResponsePresentation } from "../native-response-presentation-notifications.js";
 import { notifyNativeFinalizationWork } from "../native-finalization-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "../unsafe-workspace-export-notifications.js";
@@ -391,6 +392,7 @@ export class NativeRunCoordinatorStore {
         return { disposition: "duplicate" as const, resultId: existing.id };
       }
 
+      await notifyNativeWorkspaceFinalization(tx, this.#binding);
       const [inserted] = await tx
         .insert(nativeRunResults)
         .values({

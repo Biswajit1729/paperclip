@@ -2770,3 +2770,13 @@ Verify each duty's prior suppression contract and its settings activation wake
 before declaring it safe. This is outstanding stack acceptance work, not a claim
 that every listed duty has the same defect. All remaining duties and older gates
 remain active; no merge is authorized.
+
+
+Slice 52 producer audit correction: the hidden PRP coordinator has a second
+accepted-result writer. Added its missing transaction-aware workspace hint after
+two red real-producer regressions. The complete lifecycle suite passes all 18
+cases, covering first result plus outer commit/rollback for both writer paths.
+The previous head's startup gate passed, with Greptile 5/5. A separate CI import
+hook timeout (118 agent-skills cases skipped) passed all 118 locally and received
+one justified job retry. New producer-fix acceptance remains pending. No merge;
+all prior gate, suppression-audit and remaining-duty obligations remain open.

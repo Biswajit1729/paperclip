@@ -17,6 +17,7 @@ import { withNativeWorkspaceFinalizationOwnership } from "../services/native-run
 import { resumeNativeWorkspaceAfterOwnerStop } from "../services/native-runtime/native-workspace-owner-recovery.js";
 import * as platformProof from "../services/native-runtime/native-workspace-platform-proof.js";
 import { reconcileNativeFinalizations } from "../services/native-runtime/native-finalization-reconciler.js";
+import { NativeRunCoordinatorStore } from "../services/native-runtime/native-run-coordinator-store.js";
 import { PaperclipControlPlanePort } from "../services/native-runtime/paperclip-control-plane-port.js";
 import { notifyNativeFinalizationWork } from "../services/native-finalization-notifications.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
@@ -97,8 +98,13 @@ describe("workspace finalization scheduled lifecycle", () => {
     return { companyId, issueId, runId, agentId, sessionId: runId, completionContractId: contractId,
       completionContractSha256: contractId, sourceInstanceId, controlPlaneSourceInstanceId: "workspace-worker-test" };
   }
-  async function complete(binding: Awaited<ReturnType<typeof seed>>, writer: Db = db) {
-    const port = new PaperclipControlPlanePort(writer, binding);
+  async function complete(binding: Awaited<ReturnType<typeof seed>>, writer: Db = db,
+    producer: "control_plane" | "coordinator" = "control_plane") {
+    const port = producer === "control_plane" ? new PaperclipControlPlanePort(writer, binding)
+      : new NativeRunCoordinatorStore(writer, { ...binding, normalizedSessionId: binding.sessionId,
+        runnerSourceInstanceId: binding.sourceInstanceId,
+        completionContractRevision: CONTROL_PLANE_CONFORMANCE_RESULT.completionClaim.contractRevision,
+        completionContractCriterionIds: CONTROL_PLANE_CONFORMANCE_RESULT.completionClaim.criteria.map(item => item.criterionId) });
     await port.completeRun({ result: CONTROL_PLANE_CONFORMANCE_RESULT, terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL,
       callerResultId: `${binding.runId}:result` });
   }
@@ -125,10 +131,10 @@ describe("workspace finalization scheduled lifecycle", () => {
       } finally { await settings.updateExperimental({ enableWorktreeRunExecution: false }); }
     }
   });
-  it("is quiet with no work and retained history, then wakes on the first accepted result", async () => {
+  it.each(["control_plane", "coordinator"] as const)("is quiet with no work and retained history, then wakes on the first %s accepted result", async producer => {
     await start(); await flush(); await quiet();
     const binding = await seed();
-    await complete(binding); await flush();
+    await complete(binding, db, producer); await flush();
     expect(await successful(binding.runId)).toHaveLength(1);
     expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, binding.runId))).toHaveLength(1);
     expect(settled).not.toHaveBeenCalled(); // Result projection/resource release belong to their existing owners.
@@ -150,11 +156,14 @@ describe("workspace finalization scheduled lifecycle", () => {
     expect(await db.select().from(workspaceOperations).where(eq(workspaceOperations.heartbeatRunId, binding.runId))).toHaveLength(3);
     await flush(); await quiet();
   });
-  it.each(["commit", "rollback"])("respects the outer transaction's %s for the real result producer", async outcome => {
+  it.each([
+    ["commit", "control_plane"], ["rollback", "control_plane"],
+    ["commit", "coordinator"], ["rollback", "coordinator"],
+  ] as const)("respects the outer transaction's %s for the real %s result producer", async (outcome, producer) => {
     await start(); await flush();
     const binding = await seed();
     const transaction = db.transaction(async tx => {
-      await complete(binding, tx as unknown as Db);
+      await complete(binding, tx as unknown as Db, producer);
       await vi.advanceTimersByTimeAsync(5000);
       expect(await successful(binding.runId)).toHaveLength(0);
       if (outcome === "rollback") throw new Error("rollback fixture");

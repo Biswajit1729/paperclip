@@ -44,7 +44,7 @@ this slice alone does not make the whole orphan pass quiet.
 
 | Obligation / transition | Producer or durable source | Wake and stop condition |
 | --- | --- | --- |
-| First accepted result | `PaperclipControlPlanePort.completeRun` | Intent in the result's transaction; outer commit wakes, rollback creates no work |
+| First accepted result | `PaperclipControlPlanePort.completeRun` and `NativeRunCoordinatorStore.completeRun` (including terminal-event reconstruction) | Intent in the result's transaction; outer commit wakes, rollback creates no work |
 | Saved retry or finalization transition | Existing native-finalization notification fanout, coordinator and finalizer writers | Reconstruct `nextAttemptAt`; do not advance it on inspection |
 | Finalization lease | Existing coordinator row | Wait for the saved expiry; execution re-reads it before copy-back |
 | Workspace-operation progress/completion | Workspace recorder's `workspace_finalize` writes | Same-transaction scoped notification; any successful barrier disarms this worker |
@@ -170,3 +170,28 @@ Vitest child exited 130 and the wrapper exited 1. It is not a passing full run.
 The log is `/tmp/sleep52-full-test-run.log`; affected-suite passes and full remote
 CI remain separate evidence. No additional semaphore cleanup was performed.
 Latest-head remote gates and review must be refreshed after the fixture repair.
+
+
+## Second accepted-result producer
+
+The follow-on result-commit audit found the PRP coordinator's independent
+`NativeRunCoordinatorStore.completeRun` writer. Its first accepted-result write
+had no workspace notification; the narrower control-plane producer tests did
+not cover it. Two new real-database cases reproduced the defect: first result
+and outer commit both left workspace recovery quiet with no successful receipt.
+Rollback remained quiet as expected. Register the shared intent before this
+writer inserts the accepted row. Terminal-event reconstruction calls the same
+method, so it inherits the transaction boundary. No new table or caller wrapper.
+
+The full lifecycle suite now passes 18 cases, covering both supported result
+writers and their outer commit/rollback paths. Source search found these two
+production accepted-result writers; coordinator retry changes already use the
+native-finalization notification fanout.
+
+At the prior head `911bd1f7d0`, Greptile was 5/5 with both threads resolved and
+the startup CI repair passed. An independent agent-skills suite timed out in its
+30-second module-import hook (118 tests skipped); its complete local rerun passed
+all 118 tests in 18.66 seconds. One justified CI retry was requested. The first
+request returned HTTP 500 without starting an attempt; resubmission after verifying
+attempt 1 was complete started attempt 2. This is not acceptance of the new
+producer fix, whose current-head checks and review still need verification.
