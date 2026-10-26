@@ -643,3 +643,45 @@ Evidence: `/tmp/sleep50-physical-before.log` and `.status` (four failures),
 Governance/dependency races, remaining producer audits, discovery cost/backlog,
 startup registration/periodic removal and remote acceptance remain open. No PR
 or merge is claimed for slice 50, and the full original stack remains incomplete.
+
+## Governance commit checkpoint
+
+Seven regressions reproduced stale completion after a pending execution-policy
+hold, a newly linked pending approval, a reopened approval, a new pending
+interaction, and uncommitted changes to an approval, interaction or question's
+human-direction history. Reassessment's selected retired-review source now carries
+the governance gate used by its policy decision. The committer rechecks that gate
+under its existing task/run locks and rejects a changed kind/identity.
+
+`lockNativeGovernanceSources` belongs to the governance service. It share-locks
+all existing interactions on the task, linked approval rows and approval-link
+rows, and comments when the task has ordinary questions. It deliberately includes
+resolved rows, since reopening them can introduce a new gate. Question history
+depends on human comments, including deletion/trust fields, so locking only the
+question row would be insufficient. Every added source lock uses NOWAIT to avoid
+waiting behind a writer that may need the already-held task/run locks. New linked
+rows are fenced by their task foreign keys. A pending issue-owned execution stage
+is already protected by the task lock and takes priority without locking the
+lower-priority source rows. Existing governance policy and ordinary callers of
+`pendingNativeGovernance` are unchanged.
+
+The tests assert that no decision commits against changed or uncommitted facts,
+the task remains in review, and completion succeeds after the gate is removed or
+the competing writer rolls back. The concurrent writers have a two-second
+statement bound on the recovery transaction so a future blocking regression can
+unwind. All 129 status-corpus and 30 lifecycle tests pass together (159 total).
+The question-history fixture was subsequently strengthened to use a valid question
+payload; that case passes again and final server typecheck passes.
+
+Evidence: `/tmp/sleep50-governance-before.log` and `.status` (seven failures),
+`/tmp/sleep50-governance-after.log` and `.status` (159 passes),
+`/tmp/sleep50-governance-question.log` and `.status` (one focused pass), and
+`/tmp/sleep50-governance-final-types.log` and `.status` (pass). All handles are
+terminal. These guards run only for actual scheduled retired-review reassessment,
+not during idle discovery. Their task-history lock/query cost must be included in
+the remaining cost audit; a passing functional test does not establish that cost.
+
+Dependency/readiness and remaining selected-authority/evidence races, remaining
+producers (including handoffs and OAuth reopening), discovery/backlog costs,
+startup wiring, periodic removal and complete PR gates remain outstanding. No
+slice 50 PR or merge is claimed; the original full stack scope remains open.

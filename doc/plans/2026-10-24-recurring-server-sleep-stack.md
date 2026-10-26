@@ -2526,3 +2526,12 @@ lifecycle and workspace-owner consumer cases and server types pass. Existing
 orphan/stop-proof safeguards remain verified. Governance/dependencies, remaining
 producers, cost, integration and remote gates remain open, along with all other
 original duties and earlier stack findings. Nothing merged.
+
+Slice 50 governance checkpoint: seven stale-completion races reproduced changed
+execution policy, approvals, interactions and question history. The governance
+owner now supplies nonblocking source locks; status commit verifies the gate
+used by the selected decision. All 159 status/lifecycle cases pass, the valid
+question-history fixture passes on recheck, and server types pass. Dependency and
+remaining authority/producer audits, task-history/query costs, wiring, periodic
+removal and remote gates remain outstanding. The full stack remains incomplete;
+nothing merged.

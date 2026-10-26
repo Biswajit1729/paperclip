@@ -180,12 +180,14 @@ export async function reassessNativeStatusFromSource(
       assessment: reassessment,
       supersedesAssessmentId: assessment.id,
     });
+    const governanceGate = retiredAutomaticReview && currentIssue
+      ? await pendingNativeGovernance({ db, companyId: row.companyId, issueId: row.issueId,
+          runId: row.runId, executionState: record(currentIssue.executionState) }) : null;
     const decision = retiredAutomaticReview && currentIssue
       ? resolveNativeFinalizerStatus({
           hasPendingChildCompletion,
           assessment: reassessment, terminalState: "succeeded", workspaceFinalizeStatus: "succeeded",
-          governanceGate: await pendingNativeGovernance({ db, companyId: row.companyId, issueId: row.issueId,
-            runId: row.runId, executionState: record(currentIssue.executionState) }),
+          governanceGate,
           completionClaimPolicyAccepted: contractRow.risk === "low" && contractRow.completionAuthority === "agent_claim_policy",
           hasUnresolvedIssueBlockers: (readiness?.unresolvedBlockerCount ?? 0) > 0,
           reviewOwnerUserId: currentIssue.responsibleUserId ?? currentIssue.createdByUserId,
@@ -209,7 +211,7 @@ export async function reassessNativeStatusFromSource(
         decision,
         requireReassessmentSource: options.onlyWhenDue ? {
           phase: row.coordinatorPhase, resultId: resultRow.id, assessmentId: assessment.id,
-          decisionId: row.decisionId, agentId: row.agentId, retiredAutomaticReview: retiredAutomaticReview ? { contractId: contractRow.id } : null,
+          decisionId: row.decisionId, agentId: row.agentId, retiredAutomaticReview: retiredAutomaticReview ? { contractId: contractRow.id, governanceGate } : null,
         } : undefined,
         requireNoPendingChildCompletion: decision.statusAction === "done" ? childCompletionRecipient : undefined,
         supersedesCommittedDecisionId: row.coordinatorPhase === "committed"

@@ -11,7 +11,7 @@ import { notifyInstructionCollection } from "../instruction-collection-notificat
 import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { scheduledIssueMonitorWait } from "../issue-monitors.js";
 import { hasPublishedGitHubReview } from "../chat-channels/github/review-wait.js";
-import { pendingNativeGovernance } from "./native-governance.js";
+import { lockNativeGovernanceSources, pendingNativeGovernance } from "./native-governance.js";
 import { findSupersededExternalReviewRequests, supersedeExternalReviewRequestsInTransaction } from "./superseded-external-review-requests.js";
 import { normalizePrpResultSignals, type PrpStructuredRunResult } from "../../vendor/paperclip-runner/index.js";
 import { readNativeMonitorDelivery, type NativeMonitorDelivery } from "./native-monitor-delivery.js";
@@ -41,6 +41,7 @@ import {
 } from "@paperclipai/db";
 import {
   NATIVE_STATUS_ARBITER_POLICY_VERSION,
+  type NativeGovernanceGate,
   type NativeStatusDecision,
   type NativeStatusEffect,
 } from "./status-arbiter.js";
@@ -1605,7 +1606,7 @@ export async function commitNativeStatusDecision(input: {
   requireNoPendingChildCompletion?: NativeChildCompletionRecipient;
   requireReassessmentSource?: {
     phase: string; resultId: string; assessmentId: string; decisionId: string | null; agentId: string;
-    retiredAutomaticReview: { contractId: string } | null;
+    retiredAutomaticReview: { contractId: string; governanceGate: NativeGovernanceGate | null } | null;
   };
   requireModelRejectionOwner?: { agentId: string; reviewContext: NativeReviewAssignmentContext | null };
   requireProviderFailureOwner?: { agentId: string; reviewContext: NativeReviewAssignmentContext | null };
@@ -1691,6 +1692,13 @@ export async function commitNativeStatusDecision(input: {
               eq(workspaceOperations.heartbeatRunId, input.runId), eq(workspaceOperations.phase, "workspace_finalize")))
             .orderBy(desc(workspaceOperations.createdAt)).limit(1).for("share", { noWait: true });
           if (barrier && barrier.status !== "succeeded") throw new NativeStatusRaceError();
+          const executionState = record(issue.executionState);
+          if (executionState.status !== "pending") await lockNativeGovernanceSources({ db: tx as unknown as Db,
+            companyId: input.companyId, issueId: input.issueId });
+          const gate = await pendingNativeGovernance({ db: tx as unknown as Db, companyId: input.companyId,
+            issueId: input.issueId, runId: input.runId, executionState });
+          const expectedGate = expected.retiredAutomaticReview.governanceGate;
+          if (gate?.kind !== expectedGate?.kind || gate?.id !== expectedGate?.id) throw new NativeStatusRaceError();
         } catch (error) {
           if (record(error).code === "55P03" || record(record(error).cause).code === "55P03") throw new NativeStatusRaceError();
           throw error;

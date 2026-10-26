@@ -1,3 +1,4 @@
+import { pendingNativeGovernance } from "../services/native-runtime/native-governance.js";
 import { withNativeWorkspaceFinalizationOwnership } from "../services/native-runtime/native-workspace-finalization-ownership.js";
 import { ensureNativeCompletionContract } from "../services/native-runtime/completion-contracts.js";
 import { nativeStatusReassessmentWork } from "../services/native-runtime/native-status-reassessment-work.js";
@@ -16,6 +17,9 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { and, eq, sql } from "drizzle-orm";
 import {
   agents,
+  approvals,
+  issueApprovals,
+  issueComments,
   agentWakeupRequests,
   companies,
   completionContracts,
@@ -2603,6 +2607,84 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       expect(await reassessNativeStatusFromSource(db, selected, { onlyWhenDue: true })).toMatchObject({ kind: "committed" });
       expect((await issueService(db).getById(seeded.issueId))!.status).toBe("done");
       expect(await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, seeded.issueId))).toHaveLength(2);
+    }, 30_000,
+  );
+
+  it.each(["execution policy", "approval link", "approval reopening", "interaction", "approval writer", "interaction writer", "question history writer"] as const)(
+    "fences reassessment against changed governance: %s", async changed => {
+      const seeded = await seedAutomaticReview();
+      await dismissAutomaticCompletionReviews(db, seeded.issueId);
+      const [source] = await db.select({
+        runId: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
+        issueId: issues.id, issueStatus: issues.status, issueStatusVersion: issues.statusVersion,
+        issueDecisionId: issues.lastStatusDecisionId, coordinatorPhase: nativeRunFinalizations.phase,
+        assessmentId: nativeRunFinalizations.assessmentId, decisionId: nativeRunFinalizations.decisionId,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      }).from(nativeRunFinalizations).innerJoin(heartbeatRuns, eq(heartbeatRuns.id, nativeRunFinalizations.runId))
+        .innerJoin(issues, eq(issues.id, nativeRunFinalizations.issueId))
+        .where(eq(nativeRunFinalizations.runId, seeded.runId));
+      const selected = { ...source, assessmentId: source.assessmentId! };
+      const approvalId = randomUUID(), interactionId = randomUUID(), commentId = randomUUID();
+      const approvalCase = changed.startsWith("approval");
+      if (approvalCase) {
+        await db.insert(approvals).values({ id: approvalId, companyId, type: "approve_ceo_strategy", payload: {},
+          status: changed === "approval link" ? "pending" : "approved" });
+        if (changed !== "approval link") await db.insert(issueApprovals).values({ companyId, issueId: seeded.issueId, approvalId });
+      }
+      if (changed === "interaction writer" || changed === "question history writer") {
+        await db.insert(issueThreadInteractions).values({ id: interactionId, companyId, issueId: seeded.issueId,
+          sourceRunId: seeded.runId, kind: changed === "question history writer" ? "ask_user_questions" : "request_confirmation",
+          status: changed === "question history writer" ? "pending" : "accepted",
+          payload: changed === "question history writer"
+            ? { version: 1, questions: [{ id: "review", prompt: "Continue?", selectionMode: "single",
+                options: [{ id: "yes", label: "Yes" }] }] }
+            : { version: 1, prompt: "Review" },
+          createdAt: new Date(Date.now() - 2000) });
+        if (changed === "question history writer") await db.insert(issueComments).values({ id: commentId,
+          companyId, issueId: seeded.issueId, authorUserId: "operator", authorType: "user", body: "Continue with the new direction" });
+      }
+      const scope = { companyId, issueId: seeded.issueId, runId: seeded.runId, executionState: null };
+      expect(await pendingNativeGovernance({ db, ...scope })).toBeNull();
+      const transaction = db.transaction.bind(db);
+      let release!: () => void;
+      let writer: Promise<void> | undefined;
+      const intercept = vi.spyOn(db, "transaction").mockImplementationOnce((async (callback, options) => {
+        if (changed === "execution policy") await db.update(issues).set({ executionState: { status: "pending" } })
+          .where(eq(issues.id, seeded.issueId));
+        if (changed === "approval link") await db.insert(issueApprovals).values({ companyId, issueId: seeded.issueId, approvalId });
+        if (changed === "approval reopening") await db.update(approvals).set({ status: "revision_requested" }).where(eq(approvals.id, approvalId));
+        if (changed === "interaction") await db.insert(issueThreadInteractions).values({ id: interactionId,
+          companyId, issueId: seeded.issueId, sourceRunId: seeded.runId, kind: "request_confirmation",
+          status: "pending", payload: { version: 1, prompt: "Review" } });
+        if (changed.endsWith("writer")) {
+          let entered!: () => void;
+          const ready = new Promise<void>(resolve => { entered = resolve; });
+          const released = new Promise<void>(resolve => { release = resolve; });
+          const rollback = new Error("rollback governance writer");
+          writer = transaction(async tx => {
+            if (changed === "approval writer") await tx.update(approvals).set({ status: "revision_requested" }).where(eq(approvals.id, approvalId));
+            if (changed === "interaction writer") await tx.update(issueThreadInteractions).set({ status: "pending" }).where(eq(issueThreadInteractions.id, interactionId));
+            if (changed === "question history writer") await tx.update(issueComments).set({ deletedAt: new Date() }).where(eq(issueComments.id, commentId));
+            entered(); await released; throw rollback;
+          }).catch(error => { if (error !== rollback) throw error; });
+          await Promise.race([ready, writer]);
+        }
+        return transaction(async tx => {
+          await tx.execute(sql`set local statement_timeout = '2s'`);
+          return callback(tx);
+        }, options);
+      }) as typeof db.transaction);
+      try {
+        expect(await reassessNativeStatusFromSource(db, selected, { onlyWhenDue: true })).toEqual({ kind: "deferred", retry: true });
+      } finally { intercept.mockRestore(); release?.(); await writer; }
+      expect((await issueService(db).getById(seeded.issueId))!.status).toBe("in_review");
+      expect(await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, seeded.issueId))).toHaveLength(1);
+      if (changed === "execution policy") await db.update(issues).set({ executionState: null }).where(eq(issues.id, seeded.issueId));
+      if (changed === "approval link") await db.delete(issueApprovals).where(eq(issueApprovals.approvalId, approvalId));
+      if (changed === "approval reopening") await db.update(approvals).set({ status: "approved" }).where(eq(approvals.id, approvalId));
+      if (changed === "interaction") await db.delete(issueThreadInteractions).where(eq(issueThreadInteractions.id, interactionId));
+      expect(await reassessNativeStatusFromSource(db, selected, { onlyWhenDue: true })).toMatchObject({ kind: "committed" });
+      expect((await issueService(db).getById(seeded.issueId))!.status).toBe("done");
     }, 30_000,
   );
 
