@@ -2566,3 +2566,15 @@ The audit retains before/after evidence and the remaining handoff/authority
 coverage limits. Master is freshly verified at 1fbbef45a8. Discovery/cost proof,
 startup wiring, periodic removal, remote acceptance, earlier stack findings and
 the full original recurring-work scope remain incomplete. Nothing merged.
+
+
+Slice 50 scale checkpoint: 10,000 separate selected completed task/run histories
+produce zero company candidates (~35 ms); 10,000 actual candidates reconstruct
+in 101 bounded queries (~1.56 seconds/2.05 MB), with verified drain/abort behavior.
+A retired-review task with large review/comment/approval/dependency/workspace
+history settles in ~126 ms and disappears from discovery. The audit preserves
+two invalid benchmark-fixture attempts and the corrected fresh-task evidence.
+A permanent 103-item backlog test proves real settlement and SQL quiet; all 31
+lifecycle cases and server types pass. Remaining producer/authority audit,
+startup integration, periodic removal, remote gates and the full original stack
+scope remain open. Nothing merged.

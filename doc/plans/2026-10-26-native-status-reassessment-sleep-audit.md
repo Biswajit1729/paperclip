@@ -827,3 +827,66 @@ Remaining acceptance continues to include producer/authority audit, discovery
 and commit costs, backlog and lifecycle coverage, startup registration, periodic
 removal, PR publication and exact-head remote gates. The full original stack
 scope and older unresolved gates remain active.
+
+
+## Selected-history, backlog and commit cost checkpoint (2026-10-26)
+
+The earlier same-task/superseded-decision benchmark did not establish discovery
+cost for selected current history. A dedicated PostgreSQL 17 database now holds
+10,000 separate task/run/contract/result/assessment/decision/product bindings.
+Every task initially selects its own completed decision; accepted products predate
+the assessment. This is distinct from 10,000 obsolete decisions on one task.
+Fixture: /tmp/sleep50-scale-fixture.sql and .log/.status; database
+paperclip_sleep50_scale_20261026_test (snapshot of the completed corpus database,
+plus a separate synthetic company). All fixture inserts and measurements are
+local disposable test data, never deployed/customer data.
+
+At source 51f305f1d1 with the new backlog regression pending:
+- Startup discovery: 98.7 ms, three queries, 246 candidates from the original
+  corpus fixtures. None of the 10,000 completed synthetic tasks was a candidate.
+- Synthetic company: zero candidates, one query, 34.8 ms (warm EXPLAIN execution
+  33.5 ms); exact task/run scopes: one query each, about 1.8/2.1 ms.
+- Changing all synthetic tasks' authoritative status creates 10,000 actual
+  reassessment candidates. Reconstruction: 101 keyset queries, 1.56 seconds,
+  approximately 2.05 MB serialized entries. This is total startup/backlog cost,
+  not a constant-space claim; the coordinator retains outstanding entries.
+- Drain after two pages stops at two queries; an already-aborted request makes
+  zero queries. Interruption is between pages, not cancellation of an active SQL.
+- First/last backlog entries both commit real reassessments, disappear from
+  scoped discovery, and do not replay: 37/36 SQL statements, about 32/15 ms.
+
+Evidence: /tmp/sleep50-scale-measure.mts, .log/.status (exit 0), and
+/tmp/sleep50-scale-{startup,company,issue,run}.plan. No new index was justified by
+this selected-history measurement. It is local PostgreSQL evidence, not a remote
+network latency or fleet savings claim.
+
+A second fixture exercises retired-review reassessment with 10,000 resolved
+interactions, 10,000 comments, 10,000 linked approved approvals, 1,000 completed
+prerequisites sharing a workspace, and 10,000 successful workspace operations.
+One historical question forces the comment source-lock path too. Scoped discovery
+is one query/about 5.9 ms; complete guarded reassessment uses 83 SQL statements
+(including nine NOWAIT queries), takes about 126 ms, completes the task, and then
+returns zero candidates. Source locks are scoped to this task and its referenced
+prerequisites/workspaces; work grows with that history. The measurement does not
+assert that a remote database round trip has the same cost.
+
+Two failed benchmark attempts are retained. The first manually assigned version
+2 while a status-update trigger advanced the actual version to 4, so it measured
+the stale-status path and failed the intended completion assertion. A repair that
+rewound that already-processed fixture then reused its existing append-only
+assessment and hit status_decisions_company_assessment_uq. Neither failure was
+waived or changed in production code. A fresh untouched task with the actual
+trigger-generated version exercised the intended retired-review path. Evidence:
+/tmp/sleep50-task-history-measure.log/.status and
+/tmp/sleep50-task-history-final.log/.status (failures), fixture/repair logs under
+/tmp/sleep50-task-history-*, and /tmp/sleep50-task-history-fresh.log/.status (exit 0).
+
+The permanent lifecycle suite now seeds 103 actual retired-review obligations,
+verifies full discovery, one-page stop on admission loss, zero-query abort,
+coordinator dispatch across batches, exactly one additional decision per task,
+no rediscovery, and SQL quiet after settlement. All 31 lifecycle cases pass against
+retained history, and server typecheck passes:
+/tmp/sleep50-scale-lifecycle.log/.status and /tmp/sleep50-scale-types.log/.status.
+All handles are terminal. Startup registration/periodic removal, remaining
+producer/authority audit and remote acceptance still remain; the full stack
+objective and its earlier unresolved gates are not complete.

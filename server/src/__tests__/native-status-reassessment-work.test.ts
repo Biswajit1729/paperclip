@@ -125,6 +125,39 @@ describe("native reassessment worker lifecycle", () => {
     return { issueId, runId, workProductId, decisionId: committed.decision.id };
   }
 
+  it("bounds discovery by pages and drains a real reassessment backlog to SQL quiet", async () => {
+    const backlog = [];
+    for (let index = 0; index < 103; index++) {
+      const seeded = await seedReview();
+      await dismissAutomaticCompletionReviews(db, seeded.issueId);
+      backlog.push(seeded);
+    }
+    const work = nativeStatusReassessmentWork(db), scope = { companyId };
+    const expected = new Set(backlog.map(row => row.runId));
+    const discovered = await work.load(scope);
+    expect(discovered.filter(row => expected.has(row.id))).toHaveLength(103);
+    const debug = db.$client.options.debug;
+    let queries = 0, admissionChecks = 0;
+    db.$client.options.debug = (_id, query) => {
+      if (query.startsWith("select") && query.includes("native_run_finalizations")) queries++;
+    };
+    try {
+      await expect(work.load(scope, undefined, () => ++admissionChecks <= 1))
+        .rejects.toThrow("Native status reassessment discovery stopped");
+      expect(queries).toBe(1);
+      queries = 0;
+      await expect(work.load(scope, AbortSignal.abort())).rejects.toThrow("Native status reassessment discovery stopped");
+      expect(queries).toBe(0);
+    } finally { db.$client.options.debug = debug; }
+    await start(); await flush();
+    for (const seeded of backlog) {
+      expect(await status(seeded.issueId)).toBe("done");
+      expect(await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, seeded.issueId))).toHaveLength(2);
+    }
+    expect((await work.load(scope)).filter(row => expected.has(row.id))).toEqual([]);
+    await quiet();
+  }, 60_000);
+
   it("waits quietly for physical workspace ownership to release before reassessment", async () => {
     const seeded = await seedReview();
     await dismissAutomaticCompletionReviews(db, seeded.issueId);
