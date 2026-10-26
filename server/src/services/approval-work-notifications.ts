@@ -1,3 +1,4 @@
+import { notifyToolReviewChange } from "./tool-review-work-notifications.js";
 import { and, eq } from "drizzle-orm";
 import { issueApprovals, type Db } from "@paperclipai/db";
 import { notifyNativeReviewState } from "./native-review-state-notifications.js";
@@ -10,6 +11,8 @@ type ApprovalChangeScope = { approvalId?: string; issueIds?: string[] };
 export async function notifyApprovalWork(transaction: object, companyId: string, scope?: ApprovalChangeScope) {
   await notifyDeliveryWork(transaction, DELIVERY_QUEUES.approvalRetention);
   await notifyApprovalQueueWork(transaction, companyId);
+  // Formal decisions release parked tool reviews on the same outer commit.
+  await notifyToolReviewChange(transaction);
   const issueIds = new Set(scope?.issueIds);
   if (scope?.approvalId) {
     const links = await (transaction as Db).select({ issueId: issueApprovals.issueId }).from(issueApprovals)
