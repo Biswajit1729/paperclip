@@ -9,7 +9,7 @@ or change the one-hour review policy.
 
 The tool gateway owns request signing and authorization. `toolReviewExpiryService`
 owns pending-expiry selection and settlement. `registerToolReviewExpiryWork`
-supplies those operations to the existing shared deadline worker. Startup wires
+supplies company-scoped operations to the existing shared scoped deadline worker. Startup wires
 that contract without interpreting tool or provider behavior.
 
 The supported writers are:
@@ -27,8 +27,14 @@ The supported writers are:
 - Administrative interaction resolution signals in the caller-owned transaction
   before resolving linked requests. Review-queue invalidation signals before
   invalidating unreadable or unsigned requests.
+- Company deletion signals its company before removing saved review obligations.
 - The expiry worker signals before its own settlement. A compare-and-set against
   pending status and the observed update time protects concurrent resolution.
+
+Every notification requires the company ID. Normal commits reload only that
+company's saved minimum expiry; due cleanup selects only that company. Startup
+reconstructs all saved company deadlines once. A company with only unsigned
+null-expiry requests has no deadline.
 
 Only the SQL mutation is wrapped. Signing, provider requests, telemetry, and
 interaction publication are not moved inside an enclosing recovery transaction.
@@ -59,7 +65,10 @@ worker active. The concurrent index migration uses the existing top-level
 executor and is safe to apply again after interruption.
 
 The shared coordinator coalesces changes and preserves a write arriving during
-reconciliation. It retries failed or unfinished reconciliation after 30 seconds.
+reconciliation. Each due pass expires at most 100 rows for one company; companies
+rotate between passes until the backlog drains. Failed scopes retry independently
+with exponential backoff from 30 seconds to five minutes. Other companies retain
+their own deadlines. New writes do not erase a failed sweep's backoff.
 Once reconciliation completes with no deadline, it has no recurring SQL. Drain
 retains first writes without passive database scans; resume processes overdue
 reviews. Startup reconstructs persisted deadlines. Shutdown stops subscription
@@ -70,7 +79,10 @@ With heartbeat scheduling disabled, startup-only expiry remains as before.
 
 ## Verification scope
 
-Real PostgreSQL tests exercise normal gateway signing and human decisions,
+Real PostgreSQL tests record SQL to prove signing, human decisions, and due expiry
+remain company-scoped. They also verify five-second and earlier replacement
+deadlines, company deletion, and bounded multi-pass draining. Existing cases cover
+normal gateway signing and human decisions,
 configured idle and terminal history, outer commit/rollback, startup/restart,
 drain/resume, concurrent producer/read, unsigned rows, multi-page expiry, and
 injected invocation-write failure with atomic rollback and retry. Existing
