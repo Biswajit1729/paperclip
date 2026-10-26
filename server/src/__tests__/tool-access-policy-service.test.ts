@@ -1119,6 +1119,19 @@ describeEmbeddedPostgres("tool access policy service", () => {
       .toMatchObject({ decision: "rate_limited" });
   });
 
+  it.each(["pending", "approved"] as const)("retains a waiting invocation's consumed slot without bypassing %s approval policy", async approvalState => {
+    const { company, input, invocation, svc } = await admittedRateLimitedInvocation();
+    await db.update(toolInvocations).set({ status: "awaiting_approval", policyDecision: "require_approval", approvalState })
+      .where(eq(toolInvocations.id, invocation.id));
+    await db.insert(toolPolicies).values({ companyId: company.id, name: "Review admitted sends",
+      policyType: "require_approval", priority: 2, selectors: { toolName: "send_email" } });
+    const counters = await db.select().from(toolRateLimitCounters);
+    expect(await svc.decide(input, { admittedInvocationId: invocation.id }))
+      .toMatchObject({ allowed: false, decision: "require_approval" });
+    expect(await db.select().from(toolRateLimitCounters)).toEqual(counters);
+    expect(await svc.decide(input)).toMatchObject({ decision: "rate_limited" });
+  });
+
   it("rechecks a newly added rate policy rather than borrowing an older policy's consumed slot", async () => {
     const { company, input, invocation, svc } = await admittedRateLimitedInvocation();
     await svc.createPolicy(company.id, { name: "New send limit", policyType: "rate_limit", priority: 0,
@@ -1169,7 +1182,8 @@ describeEmbeddedPostgres("tool access policy service", () => {
       { actorType: "system" }, { actorId: randomUUID() }, { agentId: null }, { runId: null }, { issueId: null }, { gatewayId: null },
       { applicationId: null }, { connectionId: null }, { catalogEntryId: null }, { toolName: "different_tool" },
       { providerType: null }, { applicationKey: null }, { upstreamToolName: null }, { argumentsHash: "different" },
-      { status: "authorized" }, { policyDecision: "deny" }, { policyDecision: "require_approval", approvalState: "pending" },
+      { status: "authorized" }, { status: "succeeded" }, { status: "awaiting_approval" },
+      { status: "awaiting_approval", policyDecision: "require_approval", approvalState: "rejected" }, { policyDecision: "deny" }, { policyDecision: "require_approval", approvalState: "pending" },
     ];
     for (const mutation of mutations) {
       await db.update(toolInvocations).set(mutation).where(eq(toolInvocations.id, invocation.id));
