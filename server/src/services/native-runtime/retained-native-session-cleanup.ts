@@ -2,12 +2,8 @@ import { and, asc, eq, gt, inArray, isNotNull, isNull, lte, or, sql } from "driz
 import { heartbeatRuns, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
 import { nativeRunnerOwnershipNotHeldCondition } from "./native-runner-ownership.js";
 
-export type RetainedNativeSessionCleanupScope = {
-  companyId: string;
-  runId?: string;
-  issueId?: string;
-  agentId?: string;
-};
+import type { RetainedNativeSessionCleanupScope } from "../retained-native-session-cleanup-notifications.js";
+export type { RetainedNativeSessionCleanupScope } from "../retained-native-session-cleanup-notifications.js";
 
 /** Discovery grants no physical cleanup authority. Scheduled callers include
  * leased candidates so a future lease deadline cannot disappear during startup
@@ -118,6 +114,33 @@ export type NativeCleanupOutcome = {
   waitFor: "lease_expiry";
   retryAt: Date;
 };
+export type RetainedNativeSessionCleanup = (input: { companyId: string; runId: string }) => Promise<NativeCleanupOutcome>;
+
+// Startup/manual and scheduled callers share the same per-database lane. Join
+// duplicate runs and serialize different runs: even a refused inspection briefly
+// reserves physical session scope, so another cleanup must not mistake it for a
+// long-lived external owner and wait for a release notification that never comes.
+const operations = new WeakMap<Db, {
+  tail: Promise<void>;
+  runs: Map<string, Promise<NativeCleanupOutcome>>;
+}>();
+export function runRetainedNativeSessionCleanup(db: Db, input: { companyId: string; runId: string }, cleanup: RetainedNativeSessionCleanup) {
+  let owned = operations.get(db);
+  if (!owned) { owned = { tail: Promise.resolve(), runs: new Map() }; operations.set(db, owned); }
+  const existing = owned.runs.get(input.runId);
+  if (existing) return existing;
+  const pending = owned.tail.then(() => cleanup(input)).finally(() => {
+    if (owned.runs.get(input.runId) === pending) owned.runs.delete(input.runId);
+    if (!owned.runs.size && operations.get(db) === owned) operations.delete(db);
+  });
+  owned.runs.set(input.runId, pending);
+  owned.tail = pending.then(() => undefined, () => undefined);
+  return pending;
+}
+export function pendingRetainedNativeSessionCleanup(db: Db, runId: string) {
+  return operations.get(db)?.runs.get(runId);
+}
+
 type NativeCleanupSweep = {
   cursor: string | null;
   pending: Promise<NativeCleanupOutcome[]> | null;
@@ -131,10 +154,7 @@ const nativeCleanupSweeps = new WeakMap<Db, NativeCleanupSweep>();
 export function reconcileRetainedNativeSessionCleanups(
   db: Db,
   options: {
-    cleanup: (input: {
-      companyId: string;
-      runId: string;
-    }) => Promise<NativeCleanupOutcome>;
+    cleanup: RetainedNativeSessionCleanup;
     onError?: (error: unknown, runId: string) => void;
     limit?: number;
   },
@@ -161,7 +181,7 @@ export function reconcileRetainedNativeSessionCleanups(
     for (const candidate of candidates) {
       owned.cursor = candidate.runId;
       try {
-        outcomes.push(await options.cleanup({ companyId: candidate.companyId, runId: candidate.runId }));
+        outcomes.push(await runRetainedNativeSessionCleanup(db, { companyId: candidate.companyId, runId: candidate.runId }, options.cleanup));
       } catch (error) {
         options.onError?.(error, candidate.runId);
       }

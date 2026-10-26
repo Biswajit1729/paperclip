@@ -2630,3 +2630,16 @@ The owner audit preserves the reused-fixture failure and initial fixture type er
 Worker registration, producer/release notifications, quiet/lifecycle/cost proof,
 periodic removal and a slice 51 PR remain outstanding. No polling duty is claimed
 removed by this checkpoint; all original stack scope stays active and unmerged.
+
+
+Slice 51 worker checkpoint: retained cleanup now has scoped shared-scheduler
+reconstruction, exact lease deadlines, a concrete process-exit probe and event
+waiting for other owners. Startup/manual/scheduled attempts join duplicates and
+serialize different inspections. A real finalization-notification missed wake was
+reproduced and repaired through the existing transaction fanout. All 19 worker
+lifecycle cases, 36 existing cleanup/finalization cases, 37 reassessment consumer
+cases and server types pass. The 103-item backlog becomes SQL-quiet after settlement.
+Actual local/environment/process/maintenance producer coverage, physical callback
+drain ownership, large-history costs, startup wiring, periodic removal, publication
+and remote acceptance remain open. Periodic cleanup is still enabled; no new PR
+or merge is claimed and the full original stack scope stays active.

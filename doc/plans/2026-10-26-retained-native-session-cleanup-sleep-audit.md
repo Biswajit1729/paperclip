@@ -37,8 +37,16 @@ admission rules. No provider protocol belongs in index.ts or the generic schedul
   uncommitted assessments/decisions, saved finalization retry work, recorded runner
   epochs, operator-required source archives and ambiguous maintenance history.
 - The exact legacy two-entry pre-ownership maintenance exception remains unchanged.
-- No new table, migration, scheduled worker, timer, or provider operation is added.
-- **Periodic cleanup remains enabled. This checkpoint does not establish quiet.**
+- A separate shared-scheduler worker now consumes scoped candidates and typed
+  outcomes. Its lease deadline comes from durable state; a concrete unowned PID
+  gets a scoped 30-second absence probe. Session/environment/maintenance waits
+  need release notifications; ineligible history has no periodic fallback.
+- The existing finalization notification fanout includes cleanup. There is also
+  a per-database local release subscription boundary. Local producer coverage
+  remains incomplete and the worker is not registered in production startup.
+- No new table, migration, independent timer or provider operation is added.
+- **Periodic cleanup remains enabled. Worker fixtures prove quiet for their named
+  conditions; this checkpoint does not establish production or instance quiet.**
 
 ## Reactivation and outcome audit still required
 
@@ -64,16 +72,21 @@ malformed stored input, malformed JSON and missing/unsafe/changed proof artifact
 remain ineligible. Post-claim failures still retain the existing operator-required
 quarantine policy. No new physical retry is authorized by this outcome contract.
 
-The shared worker still needs to consume this contract. It must not drop deferred
-work without the corresponding release notification or concrete probe/deadline,
-and must not retry every ineligible retained history. A valid PID whose absence
+The shared worker consumes this contract, but is not enabled in startup yet.
+Before enabling it, complete the actual release producers for each waiting outcome.
+It must not drop deferred work without the corresponding release notification or
+concrete probe/deadline, and must not retry every ineligible retained history. A valid PID whose absence
 cannot be proven remains deferred and cannot grant cleanup authority. The supported
 process-exit observation and local session-release contracts remain to implement.
 
-Use the existing scoped deadline worker for reconstruction, coalescing, fair
-bounded dispatch, retries and drain retention. Keep eligibility and execution in
-the native cleanup owner. The new worker must join an already-running legacy
-startup/manual attempt and retain shutdown ownership of physical callbacks.
+The implementation uses the existing scoped deadline worker for reconstruction,
+coalescing, fair bounded dispatch, retries and drain retention. Eligibility and
+execution remain with the native cleanup owner. Duplicate startup/manual/scheduled
+attempts join their original per-run promise; different cleanup inspections share
+one per-database FIFO lane. Production wiring must provide a cleanup callback that
+retains ownership through the original physical callbacks, including ones that
+outlive a bounded maintenance timeout. Tests currently prove the promise-joining
+boundary; heartbeat's retained-callback drain still needs integration.
 Preserve startup/manual recovery compatibility while removing only this duty from
 the periodic orphan pass after coverage is complete.
 
@@ -112,7 +125,7 @@ worker lifecycle proof, deployed sleep proof or PR readiness.
 
 ## Remaining acceptance
 
-- [ ] Explicit transient/dormant/terminal cleanup outcomes and operational failures.
+- [x] Explicit transient/dormant/terminal cleanup outcomes and operational failures.
 - [ ] Full producer audit and real commit/rollback/reactivation tests.
 - [ ] Local session-release and retained-callback completion ownership.
 - [ ] Shared worker startup, first producer, retry, changes during sweep, drain,
@@ -173,3 +186,67 @@ Regression evidence:
 No source edits occurred during the cited local acceptance processes. No Cloud
 alarm coverage, sleep eligibility, quarantine policy or provider protocol changed.
 All other stack duties and older acceptance gaps remain open.
+
+
+## Shared worker checkpoint
+
+New owner: `native-runtime/retained-native-session-cleanup-work.ts`.
+Notification boundary: `retained-native-session-cleanup-notifications.ts`.
+The public finalization notification helper now wakes this queue in the same
+transaction as its other finalization duties. Provider mechanics stay in the
+executor. The scheduler receives only candidate identity, normalized outcome and
+next deadline; no provider selection was added to shared scheduling.
+
+- Discovery reconstructs scoped candidates in 100-row keyset pages and includes
+  future coordinator leases. Execution checks the current row before dispatch.
+- Worker batches contain one physical cleanup. Duplicate attempts join one promise;
+  different runs serialize through the same database lane. This preserves bounded
+  inspection and avoids mistaking another cleanup's brief session reservation for
+  a long-lived owner requiring a future release event.
+- A coordinator lease uses its saved expiry. `process_exit` retains one 30-second
+  probe for that concrete candidate. This exception is for a retained process
+  lacking a local exit callback, not idle-history polling; every attempt rechecks
+  all authority and physical evidence. It stops when the candidate settles,
+  becomes ineligible/operator-required, is deleted, or changes to an event wait.
+- Other deferred outcomes drop their scheduled entry until an owner release or
+  committed mutation reactivates discovery. **Those production release producers
+  must be installed and tested before periodic discovery is disabled.**
+- Local release subscriptions are scoped to the database owner and are explicitly
+  removed on shutdown. Coordinator shutdown waits for its joined operation.
+- No startup registration or periodic skip flag has been added yet. Cloud alarm
+  coverage and conservative sleep blockers remain unchanged.
+
+Evidence on this source checkpoint:
+
+- Initial worker tests: 12 passed, `/tmp/sleep51-worker-first.log` / `.status` (0).
+- Switching the first post-idle writer to the existing finalization notification
+  helper reproduced a missed cleanup wake: `/tmp/sleep51-finalization-signal-before.log`
+  / `.status` (1), one failed regression with 16 cases deliberately unselected.
+  Adding cleanup to that existing fanout repaired it. No new transaction wrapper
+  was introduced.
+- The expanded selection passes 18 cases, then 19 after adding a 103-item backlog.
+  `/tmp/sleep51-worker-second.log` and `/tmp/sleep51-worker-final.log`, status 0.
+  The final suite covers empty-to-active-to-quiet, real physical refusal with
+  retained history, named release signals, restart reconstruction, exact lease
+  expiry, early release, cancellation, concrete process probing, outer rollback,
+  first write during drain, failed work across drain, paused startup, discovery
+  failure, a committed wake during cleanup, duplicate joining, serialization,
+  shutdown, and completed history across discovery pages.
+- The release-signal tests exercise the notification boundary, not all real session,
+  environment and maintenance producers. The main first-writer test exercises
+  the existing finalization notification helper inside a real transaction, but
+  the complete domain-writer audit is still pending.
+- Existing manual/startup cleanup and finalization: all 36 cases pass on a fresh
+  database, `/tmp/sleep51-worker-legacy.log` / `.status` (0).
+- Existing reassessment worker: all 37 lifecycle/producer cases pass on a separate
+  fresh database after extending finalization fanout,
+  `/tmp/sleep51-worker-reassessment.log` / `.status` (0).
+- Server typecheck passes: `/tmp/sleep51-worker-types-final.log` / `.status` (0).
+  Total current selection: 92 passing cases. Earlier physical-operation and broader
+  executor results remain recorded above; they are not presented as rerun here.
+
+The 103-item test proves paged reconstruction, actual bounded draining and SQL
+quiet. It is not the outstanding large-history/candidate cost qualification.
+Remaining work includes every actual producer/release path, operational ownership
+through retained callbacks, startup integration, periodic removal, full PR checks
+and the rest of the recurring-server stack. No new PR or merge is claimed.
