@@ -5,6 +5,8 @@ import { issueRoutes } from "../routes/issues.js";
 import { errorHandler } from "../middleware/index.js";
 import { workProductService } from "../services/work-products.js";
 import { issueService } from "../services/issues.js";
+import { approvalService } from "../services/approvals.js";
+import { issueApprovalService } from "../services/issue-approvals.js";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -69,7 +71,7 @@ describe("native reassessment worker lifecycle", () => {
   async function status(issueId: string) {
     return (await db.select({ status: issues.status }).from(issues).where(eq(issues.id, issueId)))[0].status;
   }
-  async function seedReview() {
+  async function seedReview(evidenceRef?: string) {
     const issueId = randomUUID(), runId = randomUUID(), resultId = randomUUID(), contractId = randomUUID();
     const assessmentId = randomUUID(), workProductId = randomUUID();
     await db.insert(issues).values({ id: issueId, companyId, title: "Persisted native result", status: "in_progress", assigneeAgentId: agentId });
@@ -84,8 +86,8 @@ describe("native reassessment worker lifecycle", () => {
       serverFingerprint: resultId, schemaStatus: "accepted", canonicalSha256: resultId,
       resultJson: { result: { reportedWorkDisposition: "done", summary: "Completed", attentionRequests: [],
         completionClaim: { contractRevision: "test-v1", objectiveSatisfied: true, remainingWork: [],
-          criteria: [{ criterionId: "objective", status: "satisfied", evidenceRefs: [`work_product:${workProductId}`] }] },
-        verification: [{ commandOrCheck: "artifact", status: "passed", artifactRef: `work_product:${workProductId}` }],
+          criteria: [{ criterionId: "objective", status: "satisfied", evidenceRefs: [evidenceRef ?? `work_product:${workProductId}`] }] },
+        verification: [{ commandOrCheck: "artifact", status: "passed", artifactRef: evidenceRef ?? `work_product:${workProductId}` }],
       }, terminal: { runTerminalState: "succeeded" } } });
     await db.insert(issueWorkProducts).values({ id: workProductId, companyId, issueId, type: "artifact", provider: "paperclip",
       title: "Verified artifact", status: "ready_for_review", reviewState: "approved",
@@ -105,6 +107,51 @@ describe("native reassessment worker lifecycle", () => {
       status: "succeeded", exitCode: 0, cwd: process.cwd(), finishedAt: new Date() });
     return { issueId, runId, workProductId, decisionId: committed.decision.id };
   }
+
+  it.each(["resolution", "link", "bulk link"] as const)("wakes dormant evidence from real approval %s", async mutation => {
+    const approvalId = randomUUID();
+    const seeded = await seedReview(`approval:${approvalId}`);
+    await approvalService(db).create(companyId, { id: approvalId, type: "approve_ceo_strategy", payload: {},
+      status: mutation === "resolution" ? "pending" : "approved" });
+    if (mutation === "resolution") await issueApprovalService(db).link(seeded.issueId, approvalId);
+    await vi.advanceTimersByTimeAsync(1000);
+    await db.update(issueWorkProducts).set({ updatedAt: new Date() }).where(eq(issueWorkProducts.id, seeded.workProductId));
+    await start(); await flush(); await quiet();
+    expect(await status(seeded.issueId)).toBe("in_review");
+    if (mutation === "resolution") await approvalService(db).approve(approvalId, "board-user");
+    if (mutation === "link") await issueApprovalService(db).link(seeded.issueId, approvalId);
+    if (mutation === "bulk link") await issueApprovalService(db).linkManyForApproval(approvalId, [seeded.issueId]);
+    await flush();
+    expect(await status(seeded.issueId)).toBe("done");
+    expect(await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, seeded.issueId))).toHaveLength(2);
+    await quiet();
+  });
+
+  it("defers approval evidence until outer commit and ignores rolled-back approval", async () => {
+    const approvalId = randomUUID();
+    const seeded = await seedReview(`approval:${approvalId}`);
+    await approvalService(db).create(companyId, { id: approvalId, type: "approve_ceo_strategy", payload: {} });
+    await issueApprovalService(db).link(seeded.issueId, approvalId);
+    await vi.advanceTimersByTimeAsync(1000);
+    await db.update(issueWorkProducts).set({ updatedAt: new Date() }).where(eq(issueWorkProducts.id, seeded.workProductId));
+    await start(); await flush(); await quiet();
+    await expect(db.transaction(async tx => {
+      await approvalService(tx as unknown as typeof db).approve(approvalId, "board-user");
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(await status(seeded.issueId)).toBe("in_review");
+      throw new Error("rollback approval evidence");
+    })).rejects.toThrow("rollback approval evidence");
+    await flush(); await quiet();
+    expect(await status(seeded.issueId)).toBe("in_review");
+    await db.transaction(async tx => {
+      await approvalService(tx as unknown as typeof db).approve(approvalId, "board-user");
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(await status(seeded.issueId)).toBe("in_review");
+    });
+    await flush();
+    expect(await status(seeded.issueId)).toBe("done");
+    await quiet();
+  });
 
   it.each(["update", "create", "primary replacement", "import", "attachment", "source promotion"] as const)("wakes from the real work-product %s writer", async writer => {
     const seeded = await seedReview();

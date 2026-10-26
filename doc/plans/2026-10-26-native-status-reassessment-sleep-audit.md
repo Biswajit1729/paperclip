@@ -258,3 +258,46 @@ changes and workspace-finalization barriers. Workspace recovery writes a separat
 workspace_finalize success receipt; snapshot-only rows are not that barrier.
 Continue the concurrent authority audit, independent-current-history/backlog cost,
 lifecycle/failure evidence, startup/periodic wiring and full PR acceptance.
+
+
+## Approval evidence producer checkpoint
+
+Approval references are classified from the current approval status and its
+company/task link. A product can have changed after the selected assessment
+while that approval is still pending or unlinked. The worker correctly goes
+quiet with insufficient evidence, but must inspect that same candidate when
+an approval is resolved or linked later. This does not add a new reassessment
+condition: the existing changed-product predicate must still be satisfied.
+
+The existing `notifyApprovalWork` boundary now sends the same task scopes to
+native reassessment as to governed review responses, before the approval/link
+write. It already resolves linked task IDs for status changes and accepts
+explicit task scopes for link/unlink and bulk link. No new transaction wrapper,
+company scan, table, or provider policy was introduced. Unlinked approval creation
+has no task to reassess; the subsequent link owns activation. The production
+writer audit also found budget approval resolution and gateway formal-approval
+linking use this boundary with the appropriate scope. Company deletion removes
+the records rather than creating a surviving reassessment obligation.
+
+Four real PostgreSQL regressions failed before the notification: approval
+resolution, single link, bulk link, and an approval inside a caller-owned outer
+transaction. With the notification they pass, including no premature decision
+before outer commit, no decision after rollback, and driver-observed SQL quiet
+before activation and after settlement. The full lifecycle file now passes 17
+cases. Existing approval service and route-idempotency consumers pass another
+19 cases (36 total in the combined run). Server typecheck passes.
+
+Evidence: `/tmp/sleep50-approval-before.log` and `.status` (four failures),
+`/tmp/sleep50-approval-after.log` and `.status` (36 passes), and
+`/tmp/sleep50-approval-types.log` and `.status` (pass). The before and after runs
+used separate freshly migrated PostgreSQL test databases. This is local producer
+acceptance, not full slice or remote PR acceptance.
+
+Interaction evidence remains next: confirmation/question paths signal through
+chat milestones, while other interaction outcomes signal governed review response
+directly. Their common activation boundary must cover reassessment without teaching
+the scheduler interaction policy or coupling it to a review-specific worker.
+Several interaction mutations also lack either signal and require fact-level
+audit before the old polling path can be removed. Run evidence, ownership,
+completion contracts, workspace barriers, concurrent authority, discovery cost,
+and startup registration remain outstanding as listed above.

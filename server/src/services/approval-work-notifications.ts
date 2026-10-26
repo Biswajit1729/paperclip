@@ -1,5 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import { issueApprovals, type Db } from "@paperclipai/db";
+import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
 import { notifyNativeReviewResponse } from "./native-review-response-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 
@@ -16,7 +17,10 @@ export async function notifyApprovalWork(transaction: object, companyId: string,
       .where(and(eq(issueApprovals.companyId, companyId), eq(issueApprovals.approvalId, scope.approvalId)));
     for (const link of links) issueIds.add(link.issueId);
   }
-  for (const issueId of issueIds) await notifyNativeReviewResponse(transaction, { companyId, issueId });
+  for (const issueId of issueIds) {
+    await notifyNativeReviewResponse(transaction, { companyId, issueId });
+    await notifyNativeStatusReassessment(transaction, { companyId, issueId });
+  }
 }
 
 export function writeApprovalChange<T>(db: Db, companyId: string, write: (transaction: Db) => Promise<T>, scope?: ApprovalChangeScope): Promise<T> {
