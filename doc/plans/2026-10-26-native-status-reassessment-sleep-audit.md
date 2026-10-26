@@ -555,3 +555,42 @@ acceptance remain outstanding. The existing native workspace finalization owner
 already has a separate physical/durable ownership protocol; audit and reuse that
 boundary before adding any barrier fence. No slice 50 PR, merge, deployed sleep
 or completion of the overall stack is claimed by this checkpoint.
+
+## Workspace-barrier commit checkpoint
+
+Three regressions reproduced stale `done` decisions after the selected workspace
+barrier changed to failed, after a newer running finalization operation committed,
+and while another transaction held an uncommitted failure update to the selected
+barrier. The scheduled retired-review guard now reads the latest finalization
+barrier inside the existing status transaction and takes `FOR SHARE NOWAIT` on
+that row. Non-success or lock contention yields the existing retryable race
+outcome. A subsequent settled failed/running barrier is dormant until a producer
+changes it. Missing-barrier semantics remain unchanged from the legacy path.
+
+The transaction already holds `FOR UPDATE` on the task and native run. New
+`workspace_operations` rows reference the run through its foreign key, so inserts
+cannot commit past those locks; the latest-row share lock additionally fences
+status updates/deletion on an existing barrier. NOWAIT avoids waiting behind a
+writer that could need a row already held by the status transaction. The ordinary
+workspace recorder and recovery receipt producers remain unchanged by this fix;
+no advisory namespace, provider call, or recurring probe was added.
+
+All 120 status-corpus and 28 lifecycle tests pass together (148 total), with server
+types passing. The race tests preserve the competing state, assert no new status
+decision, verify dormancy for a persisted failed/running barrier, and verify
+completion after the original successful barrier is restored. The concurrent
+writer rolls back only after recovery returns; its two-second statement timeout
+bounds a future blocking regression. Existing lifecycle cases still exercise the
+real recorder's failed/successful receipts and outer commit/rollback behavior.
+Evidence: `/tmp/sleep50-barrier-before.log` and `.status` (three failures),
+`/tmp/sleep50-barrier-after.log` and `.status` (148 passes), and
+`/tmp/sleep50-barrier-types.log` and `.status` (pass). All handles are terminal.
+
+Physical workspace ownership is distinct from this receipt check. The existing
+native owner uses an advisory lock plus a durable run-profile token, removes only
+its own token after the action joins, and retains the token if cleanup cannot be
+confirmed. Its admission/release interaction with reassessment still needs audit;
+this checkpoint does not assert that a succeeded receipt alone proves physical
+ownership released. Governance/dependency facts, remaining producers, discovery
+cost, startup/periodic migration and remote acceptance remain open, as does the
+full original stack scope.

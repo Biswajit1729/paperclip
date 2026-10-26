@@ -2454,7 +2454,7 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     return seeded;
   }
 
-  it.each(["future", "claim", "unknown claim", "assessment", "result", "phase", "decision", "effects", "ownership", "run outcome", "task execution", "contract revision", "contract writer"] as const)(
+  it.each(["future", "claim", "unknown claim", "assessment", "result", "phase", "decision", "effects", "ownership", "run outcome", "task execution", "contract revision", "contract writer", "workspace status", "workspace operation", "workspace writer"] as const)(
     "guards scheduled reassessment against a changed %s at the commit boundary", async changed => {
       const seeded = await seedAutomaticReview();
       await dismissAutomaticCompletionReviews(db, seeded.issueId);
@@ -2478,6 +2478,9 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
         : changed === "decision" ? { decisionId: null } : null;
       const [originalRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId));
       const [originalIssue] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+      const [originalBarrier] = await db.select().from(workspaceOperations).where(and(
+        eq(workspaceOperations.heartbeatRunId, seeded.runId), eq(workspaceOperations.phase, "workspace_finalize")));
+      const newBarrierId = randomUUID();
       const replacementRunId = randomUUID();
       if (changed === "task execution") await db.insert(heartbeatRuns).values({
         id: replacementRunId, companyId, agentId, status: "running", runtimeMode: "native",
@@ -2505,14 +2508,23 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
           .where(eq(heartbeatRuns.id, seeded.runId));
         if (changed === "task execution") await db.update(issues).set({ executionRunId: replacementRunId })
           .where(eq(issues.id, seeded.issueId));
+        if (changed === "workspace status") await db.update(workspaceOperations).set({ status: "failed" })
+          .where(eq(workspaceOperations.id, originalBarrier.id));
+        if (changed === "workspace operation") await db.insert(workspaceOperations).values({
+          id: newBarrierId, companyId, heartbeatRunId: seeded.runId, issueId: seeded.issueId,
+          phase: "workspace_finalize", status: "running", cwd: process.cwd(),
+          createdAt: new Date(Math.max(Date.now(), originalBarrier.createdAt.getTime() + 1)),
+        });
         if (changed === "contract revision") await writeContract(db);
-        if (changed === "contract writer") {
+        if (changed === "contract writer" || changed === "workspace writer") {
           let writerReady!: () => void;
           const ready = new Promise<void>(resolve => { writerReady = resolve; });
           const released = new Promise<void>(resolve => { releaseWriter = resolve; });
-          const rollback = new Error("rollback competing contract");
+          const rollback = new Error("rollback competing writer");
           writer = transaction(async tx => {
-            await writeContract(tx as unknown as typeof db);
+            if (changed === "contract writer") await writeContract(tx as unknown as typeof db);
+            else await tx.update(workspaceOperations).set({ status: "failed" })
+              .where(eq(workspaceOperations.id, originalBarrier.id));
             writerReady();
             await released;
             throw rollback;
@@ -2520,7 +2532,7 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
           await Promise.race([ready, writer]);
         }
         return transaction(async tx => {
-          if (changed === "contract writer") await tx.execute(sql`set local statement_timeout = '2s'`);
+          if (changed === "contract writer" || changed === "workspace writer") await tx.execute(sql`set local statement_timeout = '2s'`);
           return callback(tx);
         }, options);
       }) as typeof db.transaction);
@@ -2557,6 +2569,14 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       }
       if (changed === "contract writer") expect(await db.select().from(completionContracts)
         .where(eq(completionContracts.id, newContractId!))).toHaveLength(0);
+      if (changed === "workspace status" || changed === "workspace operation") {
+        expect(await reassessNativeStatusFromSource(db, selected, { onlyWhenDue: true })).toEqual({ kind: "deferred" });
+        if (changed === "workspace status") await db.update(workspaceOperations).set({ status: originalBarrier.status })
+          .where(eq(workspaceOperations.id, originalBarrier.id));
+        else await db.delete(workspaceOperations).where(eq(workspaceOperations.id, newBarrierId));
+      }
+      if (changed === "workspace writer") expect((await db.select().from(workspaceOperations)
+        .where(eq(workspaceOperations.id, originalBarrier.id)))[0].status).toBe(originalBarrier.status);
       await db.update(nativeRunFinalizations).set({ phase: selected.coordinatorPhase,
         resultId: seeded.resultId, assessmentId: selected.assessmentId, decisionId: selected.decisionId,
         nextAttemptAt: null, leaseOwner: null, leaseExpiresAt: null }).where(eq(nativeRunFinalizations.runId, seeded.runId));

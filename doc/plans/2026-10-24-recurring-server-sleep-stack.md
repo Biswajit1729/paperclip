@@ -2509,3 +2509,11 @@ and server types pass. Failure logs and the lock-order rationale are recorded in
 the owner audit. Workspace/governance races, producer coverage, cost, startup
 integration, periodic removal, remote acceptance and the rest of the full stack
 remain open. Nothing merged.
+
+Slice 50 workspace-barrier checkpoint: three stale-completion regressions now
+pass after checking and share-locking the current barrier inside status commit.
+The check uses existing row/FK serialization and NOWAIT contention handling.
+All 148 status/lifecycle cases and server types pass. The owner audit preserves
+before-fix failures and distinguishes barrier receipts from physical workspace
+ownership, which still needs audit. Governance/dependencies, remaining producers,
+cost, wiring, periodic removal and PR acceptance remain open; nothing merged.

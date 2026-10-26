@@ -1680,6 +1680,18 @@ export async function commitNativeStatusDecision(input: {
           (issue.executionRunId !== null && issue.executionRunId !== input.runId))) {
         throw new NativeStatusRaceError();
       }
+      if (expected.retiredAutomaticReview) {
+        try {
+          const [barrier] = await tx.select({ status: workspaceOperations.status }).from(workspaceOperations)
+            .where(and(eq(workspaceOperations.companyId, input.companyId),
+              eq(workspaceOperations.heartbeatRunId, input.runId), eq(workspaceOperations.phase, "workspace_finalize")))
+            .orderBy(desc(workspaceOperations.createdAt)).limit(1).for("share", { noWait: true });
+          if (barrier && barrier.status !== "succeeded") throw new NativeStatusRaceError();
+        } catch (error) {
+          if (record(error).code === "55P03" || record(record(error).cause).code === "55P03") throw new NativeStatusRaceError();
+          throw error;
+        }
+      }
       const pendingEffect = expected.decisionId ? await tx.select({ id: statusDecisionEffects.id })
         .from(statusDecisionEffects).where(and(
           eq(statusDecisionEffects.companyId, input.companyId), eq(statusDecisionEffects.issueId, input.issueId),
