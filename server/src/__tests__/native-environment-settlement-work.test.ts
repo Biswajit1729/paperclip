@@ -263,7 +263,7 @@ describe("native environment release scheduling", () => {
       skipNativeRunProjection: true, skipNativeRecoveryNotices: true, skipExternalConversationSettlement: true,
       skipExternalAgentSettlement: true, skipNativeEnvironmentSettlement: delegated,
     });
-    expect(release).toHaveBeenCalledTimes(delegated ? 0 : 1);
+    expect(release.mock.calls.filter(([input]) => input.lease.heartbeatRunId === binding.runId)).toHaveLength(delegated ? 0 : 1);
     expect(runtimeRelease).toHaveBeenCalledWith(binding.runId);
     expect((await environmentService(db).getLeaseById(acquired.id))?.status).toBe(delegated ? "active" : "released");
   });
@@ -321,7 +321,7 @@ describe("native environment release scheduling", () => {
 
   it("permits the first attempt for a freshly prepared stop without bypassing an old retry", async () => {
     const binding = await committed(), sandboxId = randomUUID();
-    await db.insert(environments).values({ id: sandboxId, name: "Fresh stop", driver: "sandbox" });
+    await db.insert(environments).values({ id: sandboxId, name: `Fresh stop ${sandboxId}`, driver: "sandbox" });
     const acquired = await environmentService(db).acquireLease({ companyId, environmentId: sandboxId,
       heartbeatRunId: binding.runId, issueId: binding.issueId, leasePolicy: "ephemeral", provider: "e2b", providerLeaseId: "fresh-stop" });
     await start(); expect(stopOnly).toHaveBeenCalledTimes(1);
