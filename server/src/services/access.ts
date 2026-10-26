@@ -1197,6 +1197,7 @@ export function accessService(db: Db) {
   return {
     isInstanceAdmin,
     decide,
+    decideReads: authorization.decideReads,
     projectDiscoveryCandidateIds: authorization.projectDiscoveryCandidateIds,
     canUser,
     hasPermission,
