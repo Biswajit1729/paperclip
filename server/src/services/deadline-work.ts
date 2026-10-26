@@ -25,6 +25,8 @@ export function registerDeadlineWork(
       earliest = Date.now() + task.retryMs;
       await task.run();
       const deadline = await task.next();
+      // Back off failed or still-overdue work, not a successfully read future deadline.
+      if (deadline === null || deadline > Date.now()) earliest = 0;
       next = deadline === null ? null : Math.max(earliest, deadline);
       reconciled = generation;
     },
