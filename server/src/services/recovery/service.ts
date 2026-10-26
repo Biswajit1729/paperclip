@@ -1,5 +1,8 @@
 import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { boundRunIssueId } from "../run-task-binding.js";
+import { recoveryRunContextColumn, recoveryRunVersionColumn } from "./run-context-read.js";
+import { recoveryRunResultColumn } from "./run-result-read.js";
+import { readLegacyDispositionSource } from "./legacy-disposition-read.js";
 import { isAgentAwaitingSetup } from "../../modules/agent-lifecycle/index.js";
 import { onboardingFirstTaskAwaitingUserSql } from "./onboarding-first-task-wait.js";
 import { isAiAuthenticationBlocked } from "../ai-auth-failure.js";
@@ -20,13 +23,14 @@ import {
 import { CONTROLLER_LEASE_LOST_FAILURE_CODE, hasLiveLegacyController } from "../legacy-controller-lease.js";
 import { isCompletedOnboardingHandoffWake } from "../chat-completion-delivery.js";
 import { instanceSettingsService } from "../instance-settings.js";
-import { isWaitingConversation, settleConversationTurn, deliverConversationComments } from "../agent-conversations.js";
+import { isWaitingConversation, settleConversationTurnForRun, deliverConversationComments } from "../agent-conversations.js";
 import {
   and,
   asc,
   desc,
   eq,
   gt,
+  getTableColumns,
   gte,
   inArray,
   isNotNull,
@@ -104,6 +108,7 @@ import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { hasUnverifiedNativeWorkspaceFinalizationOwner } from "../native-runtime/native-workspace-finalization-recovery-state.js";
 import {
   legacyExecutionNeedsReconciliationWithEvidence,
+  legacyReconciliationRunFields,
   terminalizeLegacyExecution,
 } from "../legacy-execution-recovery.js";
 import { issueTreeControlService } from "../issue-tree-control.js";
@@ -156,6 +161,7 @@ import { withRecoveryContext } from "./status-only-context.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
 import {
   collectDispositionRepairSourceState,
+  dispositionRepairIssueFields,
   dispositionRepairDelayMs,
   DISPOSITION_REPAIR_MAX_ATTEMPTS,
 } from "./disposition-repair.js";
@@ -235,6 +241,11 @@ type ResolvedDependencyWakeBackstopOptions = {
   source?: ResolvedDependencyWakeBackstopSource;
 };
 
+const recoveryRunFields = {
+  ...getTableColumns(heartbeatRuns),
+  resultJson: recoveryRunResultColumn,
+};
+
 type LatestIssueRun =
   | (Pick<
       typeof heartbeatRuns.$inferSelect,
@@ -249,6 +260,7 @@ type LatestIssueRun =
       | "createdAt"
     > & {
       resultJson?: unknown;
+      rowVersion?: string;
     })
   | null;
 type SuccessfulLatestIssueRun = NonNullable<LatestIssueRun> & {
@@ -509,6 +521,7 @@ const TRANSIENT_INFRA_CONTINUATION_ERROR_CODES = new Set<string>([
 ]);
 
 const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
+  "project_access_denied",
   "native_provider_model_rejected",
   "provider_tool_definition_invalid",
   "adapter_engine_unavailable",
@@ -853,7 +866,7 @@ function formatIssueLinksForComment(
 }
 
 function isStrandedIssueRecoveryIssue(
-  issue: Pick<typeof issues.$inferSelect, "originKind">,
+  issue: Pick<RecoveryIssue, "originKind">,
 ) {
   return isStrandedIssueRecoveryOriginKind(issue.originKind);
 }
@@ -925,6 +938,10 @@ function isRepeatedProductiveContinuationRecovery(
   );
 }
 
+type RecoveryIssue = Omit<typeof issues.$inferSelect, "description">;
+
+const { description: _unusedIssueDescription, ...recoveryIssueFields } = getTableColumns(issues);
+
 export function recoveryService(
   db: Db,
   deps: {
@@ -979,9 +996,10 @@ export function recoveryService(
         status: heartbeatRuns.status,
         error: heartbeatRuns.error,
         errorCode: heartbeatRuns.errorCode,
-        contextSnapshot: heartbeatRuns.contextSnapshot,
+        contextSnapshot: recoveryRunContextColumn,
+        rowVersion: recoveryRunVersionColumn,
         livenessState: heartbeatRuns.livenessState,
-        resultJson: heartbeatRuns.resultJson,
+        resultJson: recoveryRunResultColumn,
         startedAt: heartbeatRuns.startedAt,
         createdAt: heartbeatRuns.createdAt,
       })
@@ -1009,9 +1027,10 @@ export function recoveryService(
         status: heartbeatRuns.status,
         error: heartbeatRuns.error,
         errorCode: heartbeatRuns.errorCode,
-        contextSnapshot: heartbeatRuns.contextSnapshot,
+        contextSnapshot: recoveryRunContextColumn,
+        rowVersion: recoveryRunVersionColumn,
         livenessState: heartbeatRuns.livenessState,
-        resultJson: heartbeatRuns.resultJson,
+        resultJson: recoveryRunResultColumn,
         startedAt: heartbeatRuns.startedAt,
         createdAt: heartbeatRuns.createdAt,
       })
@@ -1238,7 +1257,7 @@ export function recoveryService(
    * Keep it separate from the broader monitor/delegated/legacy wait predicate.
    */
   async function hasCurrentNativePassiveWait(
-    issue: typeof issues.$inferSelect,
+    issue: RecoveryIssue,
     latestRun: LatestIssueRun,
   ): Promise<boolean> {
     if (
@@ -1448,7 +1467,7 @@ export function recoveryService(
   }
 
   async function hasPersistedDurableWaitPath(
-    issue: typeof issues.$inferSelect,
+    issue: RecoveryIssue,
     latestRun: LatestIssueRun,
   ) {
     if (issue.monitorNextCheckAt) return true;
@@ -1513,7 +1532,7 @@ export function recoveryService(
   }
 
   async function nativeBlockedUnblockAction(
-    issue: typeof issues.$inferSelect,
+    issue: RecoveryIssue,
     latestRun: LatestIssueRun,
     database: Db = db,
   ) {
@@ -1584,7 +1603,7 @@ export function recoveryService(
   }
 
   async function repairNativeBlockedWait(
-    issue: typeof issues.$inferSelect,
+    issue: RecoveryIssue,
     latestRun: NonNullable<LatestIssueRun>,
     candidate: NonNullable<
       Awaited<ReturnType<typeof nativeBlockedUnblockAction>>
@@ -1620,7 +1639,10 @@ export function recoveryService(
         return false;
 
       const source = await tx
-        .select()
+        .select({
+          ...getTableColumns(heartbeatRuns),
+          rowVersion: recoveryRunVersionColumn,
+        })
         .from(heartbeatRuns)
         .where(
           and(
@@ -1636,8 +1658,9 @@ export function recoveryService(
         source.id !== latestRun.id ||
         source.agentId !== current.assigneeAgentId ||
         source.status !== "succeeded" ||
-        JSON.stringify(source.contextSnapshot) !==
-          JSON.stringify(latestRun.contextSnapshot)
+        (latestRun.rowVersion !== undefined
+          ? source.rowVersion !== latestRun.rowVersion
+          : JSON.stringify(source.contextSnapshot) !== JSON.stringify(latestRun.contextSnapshot))
       )
         return false;
       const proof = await nativeBlockedUnblockAction(
@@ -1784,7 +1807,7 @@ export function recoveryService(
   }
 
   async function wasTodoHandedBackDuringOrAfterLatestRun(
-    issue: typeof issues.$inferSelect,
+    issue: RecoveryIssue,
     latestRun: LatestIssueRun,
   ) {
     if (issue.status !== "todo" || latestRun?.status !== "succeeded")
@@ -1905,9 +1928,10 @@ export function recoveryService(
         status: heartbeatRuns.status,
         error: heartbeatRuns.error,
         errorCode: heartbeatRuns.errorCode,
-        contextSnapshot: heartbeatRuns.contextSnapshot,
+        contextSnapshot: recoveryRunContextColumn,
+        rowVersion: recoveryRunVersionColumn,
         livenessState: heartbeatRuns.livenessState,
-        resultJson: heartbeatRuns.resultJson,
+        resultJson: recoveryRunResultColumn,
         startedAt: heartbeatRuns.startedAt,
         createdAt: heartbeatRuns.createdAt,
       })
@@ -1994,7 +2018,7 @@ export function recoveryService(
   }) {
     if (input.retryOfRunId) {
       const [predecessor] = await db
-        .select()
+        .select(legacyReconciliationRunFields)
         .from(heartbeatRuns)
         .where(
           and(
@@ -2115,7 +2139,7 @@ export function recoveryService(
   }
 
   async function enqueueInitialAssignedTodoDispatch(
-    issue: typeof issues.$inferSelect,
+    issue: RecoveryIssue,
     agentId: string,
   ) {
     return deps.enqueueWakeup(agentId, {
@@ -2148,7 +2172,7 @@ export function recoveryService(
   // contract is that nothing runs until the user types. Until a user-authored
   // comment exists on it, the issue is intentionally idle rather than stranded.
   async function isOnboardingFirstTaskAwaitingUser(
-    issue: typeof issues.$inferSelect,
+    issue: RecoveryIssue,
   ) {
     if (issue.originKind !== ONBOARDING_FIRST_TASK_ORIGIN_KIND) return false;
     const [result] = await db.execute<{ awaiting: boolean }>(sql`SELECT
@@ -2157,7 +2181,7 @@ export function recoveryService(
   }
 
   async function isInvocationBudgetBlocked(
-    issue: typeof issues.$inferSelect,
+    issue: RecoveryIssue,
     agentId: string,
   ) {
     const budgetBlock = await budgets.getInvocationBlock(
@@ -2391,12 +2415,12 @@ export function recoveryService(
     }
   }
 
-  function isStrandedIssueRecoveryIssue(issue: typeof issues.$inferSelect) {
+  function isStrandedIssueRecoveryIssue(issue: RecoveryIssue) {
     return issue.originKind === STRANDED_ISSUE_RECOVERY_ORIGIN_KIND;
   }
 
   async function buildNestedStrandedRecoveryLine(
-    issue: typeof issues.$inferSelect,
+    issue: RecoveryIssue,
     prefix: string,
   ) {
     const sourceIssueId = readNonEmptyString(issue.originId);
@@ -2427,7 +2451,7 @@ export function recoveryService(
   }
 
   function resolveStrandedRecoveryRouting(input: {
-    issue: typeof issues.$inferSelect;
+    issue: RecoveryIssue;
     latestRun: LatestIssueRun;
   }) {
     const originalAgentId =
@@ -2450,7 +2474,7 @@ export function recoveryService(
   }
 
   function strandedRecoveryActionFingerprint(input: {
-    issue: typeof issues.$inferSelect;
+    issue: RecoveryIssue;
     recoveryCause: StrandedRecoveryCause;
     latestRun: LatestIssueRun;
   }) {
@@ -2496,7 +2520,7 @@ export function recoveryService(
   }
 
   function buildStrandedRecoveryActionEvidence(input: {
-    issue: typeof issues.$inferSelect;
+    issue: RecoveryIssue;
     latestRun: LatestIssueRun;
     previousStatus: StrandedPreviousStatus;
     recoveryCause: StrandedRecoveryCause;
@@ -2531,7 +2555,7 @@ export function recoveryService(
   }
 
   async function ensureSourceScopedStrandedRecoveryAction(input: {
-    issue: typeof issues.$inferSelect;
+    issue: RecoveryIssue;
     latestRun: LatestIssueRun;
     previousStatus: StrandedPreviousStatus;
     recoveryCause?: StrandedRecoveryCause;
@@ -2662,7 +2686,7 @@ export function recoveryService(
   }
 
   async function ensureProviderQuotaWaitRecoveryMonitor(input: {
-    issue: typeof issues.$inferSelect;
+    issue: RecoveryIssue;
     latestRun: LatestIssueRun;
     actionId: string;
     agentId: string;
@@ -2762,7 +2786,7 @@ export function recoveryService(
   }
 
   function buildRecoveryIssueInPlaceEscalationComment(input: {
-    issue: typeof issues.$inferSelect;
+    issue: RecoveryIssue;
     previousStatus: StrandedPreviousStatus;
     latestRun: LatestIssueRun;
     prefix: string;
@@ -2797,7 +2821,7 @@ export function recoveryService(
   }
 
   async function escalateStrandedRecoveryIssueInPlace(input: {
-    issue: typeof issues.$inferSelect;
+    issue: RecoveryIssue;
     previousStatus: StrandedPreviousStatus;
     latestRun: LatestIssueRun;
   }, transaction?: {
@@ -2936,7 +2960,7 @@ export function recoveryService(
     );
   }
 
-  async function openChildIssues(issue: typeof issues.$inferSelect) {
+  async function openChildIssues(issue: RecoveryIssue) {
     return db
       .select({ id: issues.id, identifier: issues.identifier })
       .from(issues)
@@ -2950,10 +2974,13 @@ export function recoveryService(
       );
   }
 
-  async function healthyOpenChildIssues(issue: typeof issues.$inferSelect, sameWorkspaceOnly = false) {
+  async function healthyOpenChildIssues(
+    issue: Pick<RecoveryIssue, "id" | "companyId" | "projectWorkspaceId">,
+    sameWorkspaceOnly = false,
+  ) {
     if (sameWorkspaceOnly && !issue.projectWorkspaceId) return [];
     const childCandidates = await db
-      .select()
+      .select({ ...dispositionRepairIssueFields, identifier: issues.identifier })
       .from(issues)
       .where(
         and(
@@ -2980,7 +3007,7 @@ export function recoveryService(
   }
 
   async function resolveContinuationWaitingOnReview(
-    issue: typeof issues.$inferSelect,
+    issue: RecoveryIssue,
   ) {
     const [existingBlockers, openChildren] = await Promise.all([
       existingUnresolvedBlockerIssues(issue.companyId, issue.id),
@@ -3081,7 +3108,7 @@ export function recoveryService(
   }
 
   async function resolveDispositionRepairActionAsCovered(
-    issue: typeof issues.$inferSelect,
+    issue: RecoveryIssue,
     reason: string,
   ) {
     const active = await recoveryActionsSvc.getActiveForIssue(
@@ -3115,7 +3142,7 @@ export function recoveryService(
   }
 
   async function ensureDispositionRepairAction(input: {
-    issue: typeof issues.$inferSelect;
+    issue: RecoveryIssue;
     latestRun: LatestIssueRun;
     fingerprint: string;
     attemptCount: number;
@@ -3193,7 +3220,7 @@ export function recoveryService(
   }
 
   async function scheduleDispositionRepairAttempt(input: {
-    issue: typeof issues.$inferSelect;
+    issue: RecoveryIssue;
     latestRun: LatestIssueRun;
     action: Awaited<ReturnType<typeof ensureDispositionRepairAction>>;
     fingerprint: string;
@@ -3466,7 +3493,10 @@ export function recoveryService(
 
   async function reconcileActiveRecoveryActions() {
     const rows = await db
-      .select({ action: issueRecoveryActions, issue: issues })
+      .select({
+        action: issueRecoveryActions,
+        issue: { ...dispositionRepairIssueFields, projectWorkspaceId: issues.projectWorkspaceId },
+      })
       .from(issueRecoveryActions)
       .innerJoin(
         issues,
@@ -3627,7 +3657,7 @@ export function recoveryService(
   }
 
   async function escalateDispositionRepair(input: {
-    issue: typeof issues.$inferSelect;
+    issue: RecoveryIssue;
     latestRun: LatestIssueRun;
     fingerprint: string;
     attemptCount: number;
@@ -3772,15 +3802,15 @@ export function recoveryService(
   }
 
   async function decidePersistedLegacyContinuation(
-    issue: typeof issues.$inferSelect,
+    issue: RecoveryIssue,
     runId: string,
     state: Awaited<ReturnType<typeof collectDispositionRepairSourceState>>,
     episode: LegacyDispositionEpisode,
     dispatchRunId?: string,
   ) {
-    const [run] = await db.select().from(heartbeatRuns).where(and(
-      eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, issue.companyId),
-    )).limit(1);
+    const source = await readLegacyDispositionSource(db, { companyId: issue.companyId, issueId: issue.id, runId });
+    if (source.kind === "skip") return source.decision;
+    const run = source.run;
     if (!run) return { kind: "skip" as const, reason: "missing_run" };
     const context = parseObject(run.contextSnapshot);
     if ((readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId)) !== issue.id) {
@@ -3817,7 +3847,7 @@ export function recoveryService(
   }
 
   async function legacyRepairDispatchBlock(runId: string): Promise<string | null> {
-    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).limit(1);
+    const [run] = await db.select(recoveryRunFields).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).limit(1);
     const context = parseObject(run?.contextSnapshot);
     if (!run || !parseObject(context.legacyDispositionEpisode).id) return null;
     if (!["queued", "running", "scheduled_retry"].includes(run.status)) return "repair_not_active";
@@ -3827,7 +3857,7 @@ export function recoveryService(
     const sourceId = readNonEmptyString(context.dispositionRepairSourceRunId) ?? readNonEmptyString(context.retryOfRunId);
     const issueId = readNonEmptyString(context.issueId);
     if (!sourceId || !issueId || episode.attempt < 1 || episode.attempt > episode.maxAttempts) return "invalid_repair_binding";
-    const [source] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, sourceId), eq(heartbeatRuns.companyId, run.companyId))).limit(1);
+    const [source] = await db.select(recoveryRunFields).from(heartbeatRuns).where(and(eq(heartbeatRuns.id, sourceId), eq(heartbeatRuns.companyId, run.companyId))).limit(1);
     if (!source || source.agentId !== run.agentId || legacyDispositionEpisode(source).id !== episode.id) return "invalid_repair_source";
     const [issue] = await db.select().from(issues).where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId))).limit(1);
     if (!issue) return "missing_issue";
@@ -3839,7 +3869,9 @@ export function recoveryService(
   }
 
   async function reconcileLegacyContinuation(runId: string) {
-    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).limit(1);
+    const [run] = await db.select(recoveryRunFields).from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.id, runId), not(eq(heartbeatRuns.runtimeMode, "native")), eq(heartbeatRuns.status, "succeeded"),
+    )).limit(1);
     if (!run || run.runtimeMode === "native" || run.status !== "succeeded") return "skipped" as const;
     const context = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
@@ -3850,7 +3882,7 @@ export function recoveryService(
   }
 
   async function reconcileDispositionRepair(
-    issue: typeof issues.$inferSelect,
+    issue: Pick<RecoveryIssue, "id" | "companyId">,
     latestRun: LatestIssueRun,
     options: { historicalAttemptCount?: number; legacyEpisode?: LegacyDispositionEpisode } = {},
   ): Promise<"queued" | "escalated" | "covered" | "skipped"> {
@@ -3997,7 +4029,7 @@ export function recoveryService(
   }
 
   async function escalateStrandedAssignedIssue(input: {
-    issue: typeof issues.$inferSelect;
+    issue: RecoveryIssue;
     previousStatus: StrandedPreviousStatus;
     latestRun: LatestIssueRun;
     comment?: string;
@@ -4368,7 +4400,7 @@ export function recoveryService(
   }
 
   async function scheduleProviderQuotaRecoveryMonitor(input: {
-    issue: typeof issues.$inferSelect;
+    issue: RecoveryIssue;
     latestRun: NonNullable<LatestIssueRun>;
     classification: Extract<
       NonNullable<AdapterFailureRecoveryClassification>,
@@ -4451,7 +4483,7 @@ export function recoveryService(
   }
 
   function getAdapterFailureRecoveryTargetAgentId(
-    issue: typeof issues.$inferSelect,
+    issue: RecoveryIssue,
   ) {
     if (issue.status !== "in_review") return issue.assigneeAgentId;
 
@@ -4466,7 +4498,7 @@ export function recoveryService(
   }
 
   function hasPendingProviderQuotaRecoveryMonitor(
-    issue: typeof issues.$inferSelect,
+    issue: RecoveryIssue,
     latestRun: LatestIssueRun,
     now: Date,
   ) {
@@ -4488,7 +4520,7 @@ export function recoveryService(
     issueCreatedAtGte?: Date | null;
   }) {
     const candidates = await db
-      .select()
+      .select(recoveryIssueFields)
       .from(issues)
       .where(
         and(
@@ -4567,7 +4599,7 @@ export function recoveryService(
       if (issue.conversationAgentId) {
         const lastRun = await getLatestIssueRun(issue.companyId, issue.id);
         if (lastRun?.status === "succeeded") {
-          if (await settleConversationTurn(db, (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, lastRun.id)))[0]!)) {
+          if (await settleConversationTurnForRun(db, issue.companyId, lastRun.id)) {
             const [current] = await db.select().from(issues).where(eq(issues.id, issue.id));
             if (current) Object.assign(issue, current);
           }
@@ -4795,7 +4827,7 @@ export function recoveryService(
         )
       ) {
         const [source] = await db
-          .select()
+          .select(legacyReconciliationRunFields)
           .from(heartbeatRuns)
           .where(
             and(
