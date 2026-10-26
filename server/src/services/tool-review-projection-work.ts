@@ -1,6 +1,6 @@
 import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
-import { registerDeadlineWork } from "./deadline-work.js";
+import { registerScopedDeadlineWork } from "./scoped-deadline-work.js";
 import type { toolReviewProjectionService } from "./tool-review-projection.js";
 
 export function registerToolReviewProjectionWork(
@@ -8,13 +8,16 @@ export function registerToolReviewProjectionWork(
   service: ReturnType<typeof toolReviewProjectionService>,
   canRun: () => boolean,
 ) {
-  let next: number | null = null;
-  return registerDeadlineWork(coordinator, DELIVERY_QUEUES.toolReviewProjection, {
-    retryMs: 30_000, canRun,
-    run: async () => {
-      const result = await service.sweep();
-      next = result.retry ? Date.now() + 30_000 : null;
+  return registerScopedDeadlineWork(coordinator, {
+    queue: DELIVERY_QUEUES.toolReviewProjection,
+    batchSize: 1,
+    decodeScope: hint => hint === "*" ? undefined : hint,
+    matches: (entry, companyId?: string) => companyId === undefined || entry.companyId === companyId,
+    load: async (companyId?: string) => (await service.companies(companyId))
+      .map(row => ({ ...row, id: row.companyId, dueAt: Date.now() })),
+    check: async entry => {
+      const result = await service.sweep(entry.companyId);
+      return result.retry ? { ...entry, dueAt: Date.now() + 30_000 } : null;
     },
-    next: async () => next,
-  });
+  }, canRun);
 }
