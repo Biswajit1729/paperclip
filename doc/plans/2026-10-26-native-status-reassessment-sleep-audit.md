@@ -511,3 +511,47 @@ Latest-contract, workspace-barrier, governance, dependency and other business-fa
 races remain open, along with remaining producers, query cost/backlog proof,
 startup wiring, periodic removal, publication and PR gates. The full original
 stack scope, older unresolved gates and master reconciliation remain outstanding.
+
+## Completion-contract serialization checkpoint
+
+The completion-contract writer is `ensureNativeCompletionContract`. Production
+callers are native run preparation and heartbeat runtime selection; both select
+or ensure the contract before their later run-state mutation. The writer owns a
+per-company/task advisory transaction lock, and revisions are append-only. The
+scheduled retired-review commit now calls the owner's
+`lockCurrentNativeCompletionContract` before taking coordinator/task/run row
+locks. The helper tries that same advisory lock without waiting and verifies the
+expected contract is still the latest revision. A busy writer or replaced
+contract returns the existing reassessment race outcome. The lock remains held
+through the status transaction. Explicit legacy reconciliation is unchanged.
+
+This order matters: inserting a contract acquires a foreign-key lock on its task.
+Trying to lock the task before recognizing an in-flight contract writer can wait
+behind that writer. The before-fix tests reproduced a stale `done` decision after
+a newer contract committed, and a 30-second timeout while a real contract writer
+held an uncommitted revision. The concurrency fixture now also applies a two-second
+statement timeout to the status transaction so a future blocking regression can
+unwind and release its competing writer rather than waiting for suite timeout.
+The writer uses the real service inside a caller-owned transaction; it is rolled
+back only after reassessment has returned its expected retry outcome.
+
+The updated tests prove no status decision commits against either race, a newer
+committed contract leaves the old result dormant on subsequent inspection, a
+rolled-back revision leaves no row, and restoring the original authoritative
+contract allows completion. The contract key is factored privately in its owning
+module so the writer and guard cannot diverge. No scheduler-specific SQL lock key
+or provider policy is introduced into shared scheduling.
+
+All 117 status-corpus and 28 worker lifecycle cases pass in one combined run
+(145 total), including the retained-history startup deadline regression. Server
+typecheck passes. Evidence: `/tmp/sleep50-contract-before.log` and `.status`
+(stale-completion failure and writer timeout), `/tmp/sleep50-contract-after.log`
+and `.status` (145 passes), `/tmp/sleep50-contract-types.log` and `.status`
+(pass). All commands have terminal status.
+
+Workspace-barrier and governance/dependency races, remaining producer coverage,
+query-cost/backlog proof, startup registration, periodic removal and full PR
+acceptance remain outstanding. The existing native workspace finalization owner
+already has a separate physical/durable ownership protocol; audit and reuse that
+boundary before adding any barrier fence. No slice 50 PR, merge, deployed sleep
+or completion of the overall stack is claimed by this checkpoint.

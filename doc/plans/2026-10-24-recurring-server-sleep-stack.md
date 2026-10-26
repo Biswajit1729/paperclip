@@ -2500,3 +2500,12 @@ saved retry deadline, all 28 lifecycle cases and server types pass. The owner
 audit preserves failures and handoff/contract producer findings. Remaining
 business-fact races, producer coverage, cost, wiring, periodic removal and PR
 acceptance are still open. Nothing merged; the full stack goal is incomplete.
+
+Slice 50 contract checkpoint: a newer committed completion contract reproduced
+stale completion; a real uncommitted writer reproduced blocking on the task lock.
+The contract owner now exposes a nonblocking current-revision guard, acquired
+before status row locks and held through commit. All 145 corpus/lifecycle tests
+and server types pass. Failure logs and the lock-order rationale are recorded in
+the owner audit. Workspace/governance races, producer coverage, cost, startup
+integration, periodic removal, remote acceptance and the rest of the full stack
+remain open. Nothing merged.

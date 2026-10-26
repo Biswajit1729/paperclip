@@ -1,3 +1,4 @@
+import { ensureNativeCompletionContract } from "../services/native-runtime/completion-contracts.js";
 import { nativeStatusReassessmentWork } from "../services/native-runtime/native-status-reassessment-work.js";
 import { reassessNativeStatusFromSource } from "../services/native-runtime/native-status-reassessment.js";
 import { NativeRunCoordinatorStore } from "../services/native-runtime/native-run-coordinator-store.js";
@@ -11,7 +12,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import {
   agents,
   agentWakeupRequests,
@@ -2453,7 +2454,7 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     return seeded;
   }
 
-  it.each(["future", "claim", "unknown claim", "assessment", "result", "phase", "decision", "effects", "ownership", "run outcome", "task execution"] as const)(
+  it.each(["future", "claim", "unknown claim", "assessment", "result", "phase", "decision", "effects", "ownership", "run outcome", "task execution", "contract revision", "contract writer"] as const)(
     "guards scheduled reassessment against a changed %s at the commit boundary", async changed => {
       const seeded = await seedAutomaticReview();
       await dismissAutomaticCompletionReviews(db, seeded.issueId);
@@ -2485,6 +2486,14 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       const originalEffects = await db.select().from(statusDecisionEffects).where(eq(statusDecisionEffects.decisionId, selected.decisionId!));
       expect(originalEffects.length).toBeGreaterThan(0);
       const transaction = db.transaction.bind(db);
+      let newContractId: string | undefined;
+      let releaseWriter: (() => void) | undefined;
+      let writer: Promise<void> | undefined;
+      const writeContract = async (owner: typeof db) => {
+        const saved = await ensureNativeCompletionContract({ db: owner, companyId,
+          issue: { id: seeded.issueId, title: "New direction", description: "Verify the revised objective" }, actorId: agentId });
+        newContractId = saved.row.id;
+      };
       const intercept = vi.spyOn(db, "transaction").mockImplementationOnce((async (callback, options) => {
         if (change) await db.update(nativeRunFinalizations).set(change).where(eq(nativeRunFinalizations.runId, seeded.runId));
         if (changed === "effects") await db.update(statusDecisionEffects).set({ deliveryState: "pending" })
@@ -2496,11 +2505,28 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
           .where(eq(heartbeatRuns.id, seeded.runId));
         if (changed === "task execution") await db.update(issues).set({ executionRunId: replacementRunId })
           .where(eq(issues.id, seeded.issueId));
-        return transaction(callback, options);
+        if (changed === "contract revision") await writeContract(db);
+        if (changed === "contract writer") {
+          let writerReady!: () => void;
+          const ready = new Promise<void>(resolve => { writerReady = resolve; });
+          const released = new Promise<void>(resolve => { releaseWriter = resolve; });
+          const rollback = new Error("rollback competing contract");
+          writer = transaction(async tx => {
+            await writeContract(tx as unknown as typeof db);
+            writerReady();
+            await released;
+            throw rollback;
+          }).catch(error => { if (error !== rollback) throw error; });
+          await Promise.race([ready, writer]);
+        }
+        return transaction(async tx => {
+          if (changed === "contract writer") await tx.execute(sql`set local statement_timeout = '2s'`);
+          return callback(tx);
+        }, options);
       }) as typeof db.transaction);
       try {
         expect(await reassessNativeStatusFromSource(db, selected, { onlyWhenDue: true })).toEqual({ kind: "deferred", retry: true });
-      } finally { intercept.mockRestore(); }
+      } finally { intercept.mockRestore(); releaseWriter?.(); await writer; }
       expect((await issueService(db).getById(seeded.issueId))!.status).toBe("in_review");
       expect(await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, seeded.issueId))).toHaveLength(1);
       if (change) expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, seeded.runId)))[0]).toMatchObject(change);
@@ -2525,6 +2551,12 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
         await db.update(issues).set({ executionRunId: originalIssue.executionRunId }).where(eq(issues.id, seeded.issueId));
         await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, replacementRunId));
       }
+      if (changed === "contract revision") {
+        expect(await reassessNativeStatusFromSource(db, selected, { onlyWhenDue: true })).toEqual({ kind: "deferred" });
+        await db.delete(completionContracts).where(eq(completionContracts.id, newContractId!));
+      }
+      if (changed === "contract writer") expect(await db.select().from(completionContracts)
+        .where(eq(completionContracts.id, newContractId!))).toHaveLength(0);
       await db.update(nativeRunFinalizations).set({ phase: selected.coordinatorPhase,
         resultId: seeded.resultId, assessmentId: selected.assessmentId, decisionId: selected.decisionId,
         nextAttemptAt: null, leaseOwner: null, leaseExpiresAt: null }).where(eq(nativeRunFinalizations.runId, seeded.runId));

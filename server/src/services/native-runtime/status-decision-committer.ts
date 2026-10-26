@@ -1,3 +1,4 @@
+import { lockCurrentNativeCompletionContract } from "./completion-contracts.js";
 import { isNativeRunnerOwnershipHeld } from "./native-runner-ownership.js";
 import { notifyNativeFinalizationWork } from "../native-finalization-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "../unsafe-workspace-export-notifications.js";
@@ -1602,7 +1603,7 @@ export async function commitNativeStatusDecision(input: {
   requireNoPendingChildCompletion?: NativeChildCompletionRecipient;
   requireReassessmentSource?: {
     phase: string; resultId: string; assessmentId: string; decisionId: string | null; agentId: string;
-    retiredAutomaticReview: boolean;
+    retiredAutomaticReview: { contractId: string } | null;
   };
   requireModelRejectionOwner?: { agentId: string; reviewContext: NativeReviewAssignmentContext | null };
   requireProviderFailureOwner?: { agentId: string; reviewContext: NativeReviewAssignmentContext | null };
@@ -1627,6 +1628,10 @@ export async function commitNativeStatusDecision(input: {
   const publications: ActivityPublication[] = [];
   const terminalRunsToEmit: (typeof heartbeatRuns.$inferSelect)[] = [];
   const committed = await input.db.transaction(async (tx) => {
+    const retiredReview = input.requireReassessmentSource?.retiredAutomaticReview;
+    if (retiredReview && !await lockCurrentNativeCompletionContract(tx as unknown as Db, {
+      companyId: input.companyId, issueId: input.issueId, contractId: retiredReview.contractId,
+    })) throw new NativeStatusRaceError();
     const coordinator = await tx
       .select()
       .from(nativeRunFinalizations)
