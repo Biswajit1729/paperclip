@@ -14,6 +14,7 @@ import { registerToolReviewExpiryWork } from "./services/tool-review-expiry-work
 import { registerGatewayCredentialExpiryWork } from "./services/gateway-credential-expiry-work.js";
 import { registerSecretProposalExpiryWork } from "./services/secret-proposal-expiry-work.js";
 import { registerCustomImageCleanupWork } from "./services/custom-image-cleanup-work.js";
+import { registerWorkspaceRecoveryWork } from "./services/workspace-recovery-work.js";
 import { registerEnvironmentCleanupWork } from "./services/environment-cleanup-work.js";
 import { loginCleanupSchedule } from "./services/login-cleanup-state.js";
 import { registerLoginCleanupWork } from "./services/login-cleanup-work.js";
@@ -29,6 +30,7 @@ import {
   NATIVE_HARNESS_BACKUP_EXPIRATION_STARTUP_DELAY_MS,
   nativeHarnessBackupExpirationService,
 } from "./services/native-runtime/native-harness-backup-expiration.js";
+import { onNativeRunnerEvidence } from "./services/native-runtime/native-runner-evidence-signal.js";
 import { gitRestorePointRetentionService, registerGitRestorePointWork } from "./services/git-restore-point-ledger.js";
 import {
   nativeWorkspaceSyncRetentionService,
@@ -54,6 +56,7 @@ import { chatCompletionDeliveryService } from "./services/chat-completion-delive
 // instrumentationReady before opening DB connections or constructing the
 // HTTP server, so trace coverage does not depend on incidental timing.
 import { instrumentationReady, shutdownInstrumentation } from "./instrumentation.js";
+import { createTrackedSingleFlight } from "./lib/single-flight.js";
 import { sentryReady, shutdownSentry, captureException } from "./sentry.js";
 import { setSentryRunLinkResolver } from "./sentry-links.js";
 import { createSentryRunLinkResolver } from "./services/sentry-run-links.js";
@@ -151,6 +154,7 @@ import {
 } from "./services/device-login-reaper.js";
 import { createProductionSetupTokenReaper } from "./services/setup-token-reaper.js";
 import { localAiLoginService } from "./services/local-ai-login.js";
+import { registerGitHubBotCloudSetupPoller } from "./services/chat-github-cloud-ingress.js";
 import { resolveWorktreeRunExecutionActivationState } from "./services/instance-settings.js";
 import {
   parseAdapterRegistryEnv,
@@ -1225,6 +1229,16 @@ async function startServerWithDatabaseTeardown(
       });
     heartbeatSchedulerInFlight.add(tracked);
   };
+  const runPeriodicRecovery = createTrackedSingleFlight({
+    trackWork: trackHeartbeatSchedulerWork,
+    onSkipped: (inFlightForMs) => {
+      if (inFlightForMs >= 3 * config.heartbeatSchedulerIntervalMs) {
+        logger.error({ inFlightForMs }, "periodic heartbeat recovery remains in flight; duplicate pass suppressed");
+      } else {
+        logger.warn({ inFlightForMs }, "skipped periodic heartbeat recovery tick; previous chain still in flight");
+      }
+    },
+  });
   const waitForHeartbeatSchedulerIdle = async () => {
     while (heartbeatSchedulerInFlight.size > 0) {
       await Promise.allSettled([...heartbeatSchedulerInFlight]);
@@ -1273,8 +1287,10 @@ async function startServerWithDatabaseTeardown(
   const nativeHarnessBackupExpiration = nativeHarnessBackupExpirationService(db as any, {
     dryRun: config.nativeHarnessBackupExpirationDryRun,
     closedForDays: config.nativeHarnessBackupExpirationDays,
+    evidenceRetentionDays: config.nativeRunnerEvidenceRetentionDays,
     shouldContinue: () => !heartbeatSchedulerStopped && !isIdleTaskDrainActive() && !isWarmStandby(),
   });
+  const unsubscribeNativeRunnerEvidence = onNativeRunnerEvidence(nativeHarnessBackupExpiration.noteEvidence);
   let nativeHarnessBackupExpirationInFlight = false;
   let nativeHarnessBackupExpirationContinuation: ReturnType<typeof setTimeout> | undefined;
   const sweepNativeHarnessBackups = () => {
@@ -1282,7 +1298,7 @@ async function startServerWithDatabaseTeardown(
     nativeHarnessBackupExpirationInFlight = true;
     trackHeartbeatSchedulerWork(nativeHarnessBackupExpiration.tick()
       .then((result) => {
-        if (result.candidates > 0 || result.failed > 0) {
+        if (result.candidates > 0 || result.evidenceCandidates > 0 || result.failed > 0) {
           logger.info({ ...result, dryRun: config.nativeHarnessBackupExpirationDryRun }, "native harness backup expiration");
         }
         if (result.truncated && !heartbeatSchedulerStopped) {
@@ -1343,6 +1359,9 @@ async function startServerWithDatabaseTeardown(
   });
   const deliveryWork = app.locals.deliveryWork as ReturnType<typeof createDeliveryWorkCoordinator>;
   const executionSchedule = executionControlSchedule(db);
+  const workspaceRecoveryRuntime = environmentRuntimeService(db, { pluginWorkerManager });
+  const workspaceRecoveryWork = registerWorkspaceRecoveryWork(db, deliveryWork, workspaceRecoveryRuntime,
+    accountingHeartbeat.resumeRemoteStopComments, () => !heartbeatSchedulerStopped);
   registerExecutionControlWork(deliveryWork, [
     { queue: DELIVERY_QUEUES.executionFinalization, run: () => reconcileAbandonedExecutionControl(db), next: executionSchedule.finalization },
     { queue: DELIVERY_QUEUES.executionStatus, run: () => deliverExecutionStatuses(db), next: executionSchedule.status },
@@ -1424,9 +1443,9 @@ async function startServerWithDatabaseTeardown(
       ?? process.env.PAPERCLIP_TOOL_RUNTIME_TRUSTED_HOST
       ?? null,
   });
-  const scheduleGitHubConnectionEventPoll = () => {
+  const scheduleGitHubConnectionEventPoll = (forSetup = false) => {
     if (isIdleTaskDrainActive() || heartbeatSchedulerStopped) return;
-    trackHeartbeatSchedulerWork(githubConnectionEvents.pollOnce()
+    const work = githubConnectionEvents.pollOnce({ forSetup })
       .then((result) => {
         if (result.leased > 0 || result.failed > 0) {
           logger.info(result, "GitHub connection event poll completed");
@@ -1434,8 +1453,13 @@ async function startServerWithDatabaseTeardown(
       })
       .catch((err) => {
         logger.error({ err }, "GitHub connection event poll failed");
-      }));
+      });
+    trackHeartbeatSchedulerWork(work);
+    return work;
   };
+  server.on("close", registerGitHubBotCloudSetupPoller(db, async () => {
+    await scheduleGitHubConnectionEventPoll(true);
+  }));
   const scheduleGitHubConnectionContinuitySweep = () => {
     if (isIdleTaskDrainActive() || heartbeatSchedulerStopped) return;
     trackHeartbeatSchedulerWork(tools.sweepGitHubConnectionContinuity()
@@ -1522,6 +1546,11 @@ async function startServerWithDatabaseTeardown(
         terminalDelayMs: config.gitRestorePointTerminalDelayDays * 24 * 60 * 60 * 1000,
         idleMs: config.gitRestorePointIdleDays > 0 ? config.gitRestorePointIdleDays * 24 * 60 * 60 * 1000 : null,
         keyDurable: config.storageProvider !== "s3" || Boolean(process.env.PAPERCLIP_SECRETS_MASTER_KEY?.trim()),
+      } : undefined,
+      taskDirectoryRetention: config.taskDirectoryRetentionEnabled ? {
+        dryRun: config.taskDirectoryRetentionDryRun,
+        terminalDelayMs: config.gitRestorePointTerminalDelayDays * 24 * 60 * 60 * 1000,
+        orphanGraceMs: config.taskDirectoryOrphanGraceDays * 24 * 60 * 60 * 1000,
       } : undefined,
       workspaceReaperCooldownDays: config.workspaceReaperCooldownDays,
       workspaceCompactionDelayMs: config.workspaceCompactionDelayHours === null
@@ -1908,7 +1937,7 @@ async function startServerWithDatabaseTeardown(
         if (!(await heartbeat.resolveSchedulingSuppression()).suppressed) {
           // Periodically reap orphaned runs (5-min staleness threshold) and make sure
           // persisted queued work is still being driven forward.
-          trackHeartbeatSchedulerWork(heartbeat
+          runPeriodicRecovery(() => heartbeat
             .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000, skipScheduledRetryCancellation: true, skipCapturedInstructionCommit: true, skipInstructionDirectoryCleanup: true, skipStoppedInstructionCollection: true, skipCancelledWorkspacePreservation: true })
             .then(() => heartbeat.promoteDueScheduledRetries())
             .then(async (promotion) => {
@@ -2099,10 +2128,12 @@ async function startServerWithDatabaseTeardown(
     clearInterval(nativeHarnessBackupExpirationInterval);
     clearTimeout(nativeHarnessBackupExpirationStartup);
     clearTimeout(nativeHarnessBackupExpirationContinuation);
+    unsubscribeNativeRunnerEvidence();
     await skillVersionRetention.dispose();
     await skillSourceSync.stop();
     unsubscribeChatCompletions();
     await deliveryWork.stop();
+    await workspaceRecoveryWork.stop();
     unregisterTerminalWorkspaceProbe?.();
     unsubscribeNativeWorkspaceSyncRetention?.();
     if (heartbeatSchedulerInterval) {
