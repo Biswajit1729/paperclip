@@ -34,7 +34,7 @@ export async function prepareApprovedToolReview(db: Db, input: {
       errorCode: string;
       errorMessage: string;
     }) {
-      await notifyToolReviewChange(tx);
+      await notifyToolReviewChange(tx, request.companyId);
       if (failure) await tx.update(toolInvocations).set({ ...failure, completedAt: now, updatedAt: now })
         .where(eq(toolInvocations.id, invocation.id));
       await tx.update(toolActionRequests).set({ status: projection.status,

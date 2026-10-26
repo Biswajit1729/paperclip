@@ -1,3 +1,4 @@
+import { deleteCompany } from "../services/company-deletion.js";
 import { subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { randomUUID } from "node:crypto";
@@ -297,12 +298,15 @@ describeEmbeddedPostgres("tool gateway service", () => {
       expect(selects).not.toHaveBeenCalled(); expect(executes).not.toHaveBeenCalled();
       selects.mockRestore(); executes.mockRestore();
     }
-    async function request(service = gateway, source = db) {
-      const session = await service.createSession(runSessionInput(fixture.company, fixture.agent, fixture.run));
+    async function request(service = gateway, source = db, context = fixture) {
+      const before = new Set((await source.select({ id: toolActionRequests.id }).from(toolActionRequests)
+        .where(eq(toolActionRequests.companyId, context.company.id))).map(row => row.id));
+      const session = await service.createSession(runSessionInput(context.company, context.agent, context.run));
       const noteId = randomUUID();
       await expect(service.executeTool({ sessionToken: session.token, tool: "mcp-remote-fixture:update_note",
         parameters: { noteId, body: "Awaiting a human" } })).rejects.toMatchObject({ reasonCode: "approval_required" });
-      const rows = await source.select().from(toolActionRequests).where(eq(toolActionRequests.companyId, fixture.company.id));
+      const rows = (await source.select().from(toolActionRequests).where(eq(toolActionRequests.companyId, context.company.id)))
+        .filter(row => !before.has(row.id));
       expect(rows).toHaveLength(1);
       return rows[0];
     }
@@ -668,6 +672,92 @@ describeEmbeddedPostgres("tool gateway service", () => {
       });
     });
 
+    async function requestWithExpiry(expiresAt: Date, context = fixture) {
+      return db.transaction(async tx => {
+        const source = tx as unknown as typeof db;
+        const pending = await request(createTestToolGatewayService(source), source, context);
+        const [saved] = await tx.update(toolActionRequests).set({ expiresAt })
+          .where(eq(toolActionRequests.id, pending.id)).returning();
+        return saved;
+      });
+    }
+
+    it("keeps signing and human resolution reads scoped to their company", async () => {
+      const other = await createRunFixture(db);
+      await db.insert(toolPolicies).values(reviewNotePolicyRow(other.company));
+      const foreign = await request(gateway, db, other);
+      await start(); await settle(1);
+      const reads: Array<{ query: string; params: unknown[] }> = [];
+      const debug = db.$client.options.debug;
+      db.$client.options.debug = (_id, query, params) => {
+        if (/^select/i.test(query) && query.includes('"tool_action_requests"') &&
+          (query.includes('min(') || query.includes('"expires_at" <='))) reads.push({ query, params: [...params] });
+      };
+      try {
+        for (let index = 0; index < 3; index++) {
+          const pending = await request(); await settle(1000);
+          await commitToolActionReview(db, { companyId: fixture.company.id, actionRequestId: pending.id,
+            decision: "rejected", actor: { userId: "reviewer" } });
+          await settle(1000);
+        }
+      } finally { db.$client.options.debug = debug; }
+      expect(reads.length).toBeGreaterThan(0);
+      for (const read of reads) {
+        expect(read.query).toContain('"tool_action_requests"."company_id" =');
+        expect(read.params).toContain(fixture.company.id);
+        expect(read.params).not.toContain(other.company.id);
+      }
+      expect((await db.select().from(toolActionRequests).where(eq(toolActionRequests.id, foreign.id)))[0].status).toBe("pending");
+      expect(coordinator!.nextWakeAt()).toBe(foreign.expiresAt!.getTime());
+    });
+
+    it("preserves a five-second deadline and an earlier committed replacement", async () => {
+      await start(); await quiet();
+      const later = await requestWithExpiry(new Date(Date.now() + 120_000)); await settle(1);
+      expect(coordinator!.nextWakeAt()).toBe(later.expiresAt!.getTime());
+      const earlier = await requestWithExpiry(new Date(Date.now() + 5000)); await settle(1);
+      expect(coordinator!.nextWakeAt()).toBe(earlier.expiresAt!.getTime());
+      await settle(6000); await expectExpired(earlier.id, earlier.invocationId);
+      expect(coordinator!.nextWakeAt()).toBe(later.expiresAt!.getTime());
+      await settle(120_000); await expectExpired(later.id, later.invocationId); await quiet();
+    });
+
+    it("limits due expiry reads to the company whose deadline arrived", async () => {
+      const other = await createRunFixture(db);
+      await db.insert(toolPolicies).values(reviewNotePolicyRow(other.company));
+      const foreign = await request(gateway, db, other);
+      const due = await requestWithExpiry(new Date(Date.now() + 5000));
+      await start(); await settle(1);
+      const reads: Array<{ query: string; params: unknown[] }> = [];
+      const debug = db.$client.options.debug;
+      db.$client.options.debug = (_id, query, params) => {
+        if (/^select/i.test(query) && query.includes('"tool_action_requests"') &&
+          (query.includes('min(') || query.includes('"expires_at" <='))) reads.push({ query, params: [...params] });
+      };
+      try { await settle(6000); } finally { db.$client.options.debug = debug; }
+      expect(reads.some(read => read.query.includes('"expires_at" <='))).toBe(true);
+      for (const read of reads) {
+        expect(read.query).toContain('"tool_action_requests"."company_id" =');
+        expect(read.params).toContain(fixture.company.id);
+        expect(read.params).not.toContain(other.company.id);
+      }
+      await expectExpired(due.id, due.invocationId);
+      expect((await db.select().from(toolActionRequests).where(eq(toolActionRequests.id, foreign.id)))[0].status).toBe("pending");
+      expect(coordinator!.nextWakeAt()).toBe(foreign.expiresAt!.getTime());
+    });
+
+    it("removes cached review deadlines after company deletion commits", async () => {
+      await request(); await start(); await settle(1);
+      expect(coordinator!.nextWakeAt()).not.toBeNull();
+      await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() })
+        .where(eq(heartbeatRuns.id, fixture.run.id));
+      await db.update(agents).set({ status: "terminated", lifecycleState: "terminated" })
+        .where(eq(agents.id, fixture.agent.id));
+      expect(await deleteCompany(db, fixture.company.id)).toMatchObject({ id: fixture.company.id });
+      await quiet();
+      expect(await gateway.actionReviewExpiryDeadlines()).toEqual([]);
+    });
+
     it("is quiet when configured idle, wakes on signing, expires the review and card, then stays quiet with history", async () => {
       await start(); await quiet();
       const pending = await request();
@@ -738,8 +828,8 @@ describeEmbeddedPostgres("tool gateway service", () => {
       let release!: () => void, reading!: () => void;
       const gate = new Promise<void>(resolve => { release = resolve; });
       const ready = new Promise<void>(resolve => { reading = resolve; });
-      const actual = gateway.nextActionReviewExpiryAt.bind(gateway);
-      vi.spyOn(gateway, "nextActionReviewExpiryAt").mockImplementationOnce(async () => {
+      const actual = gateway.actionReviewExpiryDeadlines.bind(gateway);
+      vi.spyOn(gateway, "actionReviewExpiryDeadlines").mockImplementationOnce(async () => {
         const deadline = await actual(); reading(); await gate; return deadline;
       });
       const starting = start(); await ready;
@@ -764,7 +854,11 @@ describeEmbeddedPostgres("tool gateway service", () => {
       await db.insert(toolActionRequests).values(Array.from({ length: 101 }, () => ({
         ...pending, id: randomUUID(), interactionId: null, expiresAt: past,
       })));
+      const passes = vi.spyOn(gateway, "sweepExpiredActionReviewsForCompany");
       await start(); await quiet();
+      const results = await Promise.all(passes.mock.results.map(result => result.value));
+      expect(results.length).toBeGreaterThan(1);
+      expect(results.every(result => result.scanned <= 100)).toBe(true);
       const rows = await db.select().from(toolActionRequests);
       expect(rows).toHaveLength(102);
       expect(rows.every(row => row.status === "expired")).toBe(true);
@@ -781,7 +875,8 @@ describeEmbeddedPostgres("tool gateway service", () => {
       expect((await db.select().from(toolActionRequests).where(eq(toolActionRequests.id, pending.id)))[0].status).toBe("pending");
       expect((await db.select().from(toolInvocations).where(eq(toolInvocations.id, pending.invocationId)))[0].status).toBe("awaiting_approval");
       await db.execute(sql`drop trigger sleep_review_fail on tool_invocations`);
-      expect(errors.every(error => (error as { cause?: Error }).cause?.message === "expiry settlement fixture failure")).toBe(true);
+      expect(errors.every(error => error instanceof AggregateError && error.errors.every(
+        failure => (failure as { cause?: Error }).cause?.message === "expiry settlement fixture failure"))).toBe(true);
       errors.length = 0;
       await settle(); await expectExpired(pending.id, pending.invocationId); await quiet();
     });
