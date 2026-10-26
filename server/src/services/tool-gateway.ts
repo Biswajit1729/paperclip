@@ -2509,7 +2509,7 @@ export function createToolGatewayService(
         signingSecret: options.toolActionSigningSecret,
       });
     } catch (error) {
-      await writeToolReviewChange(db, tx => tx
+      await writeToolReviewChange(db, actionRequest.companyId, tx => tx
         .update(toolActionRequests)
         .set({
           status: "cancelled",
@@ -2668,7 +2668,7 @@ export function createToolGatewayService(
     // an expired row. When the guard matches no row, the row is already resolved.
     // Do not emit an approval card for a dead row; throw a retriable conflict so
     // the retry finds the live request or creates a fresh, signable one.
-    const signedRows = await writeToolReviewChange(db, tx => tx
+    const signedRows = await writeToolReviewChange(db, actionRequest.companyId, tx => tx
       .update(toolActionRequests)
       .set({
         interactionId: interaction.id,
@@ -8498,7 +8498,7 @@ export function createToolGatewayService(
       pendingRequest.expiresAt.getTime() <= Date.now();
     if (pendingUnsigned || pendingExpired) {
       const now = new Date();
-      await writeToolReviewChange(db, tx => tx
+      await writeToolReviewChange(db, pendingRequest.companyId, tx => tx
         .update(toolActionRequests)
         .set({ status: "expired", resolvedAt: now, updatedAt: now })
         .where(
@@ -9533,7 +9533,7 @@ export function createToolGatewayService(
             signingSecret: options.toolActionSigningSecret,
           });
         } catch (error) {
-          await writeToolReviewChange(db, tx => tx
+          await writeToolReviewChange(db, pendingActionRequest.companyId, tx => tx
             .update(toolActionRequests)
             .set({
               status: "cancelled",
@@ -9574,7 +9574,7 @@ export function createToolGatewayService(
           tool,
           argumentsSummary: argumentValidation.summary,
         });
-        await writeToolReviewChange(db, tx => tx
+        await writeToolReviewChange(db, pendingActionRequest.companyId, tx => tx
           .update(toolActionRequests)
           .set({
             canonicalArgumentsHash,
@@ -9729,6 +9729,8 @@ export function createToolGatewayService(
 
     sweepExpiredActionReviews: reviewExpiry.sweep,
     nextActionReviewExpiryAt: reviewExpiry.next,
+    actionReviewExpiryDeadlines: reviewExpiry.deadlines,
+    sweepExpiredActionReviewsForCompany: reviewExpiry.sweepForCompany,
 
     async sweepActionReviews(input: { includeExpiry?: boolean } = {}) {
       // A process may stop between persisting a provider outcome and updating the
@@ -9943,7 +9945,7 @@ export function createToolGatewayService(
       }
       if (!signedPayload) {
         if (actionRequest.status === "pending") {
-          await writeToolReviewChange(db, tx => tx
+          await writeToolReviewChange(db, actionRequest.companyId, tx => tx
             .update(toolActionRequests)
             .set({
               status: "cancelled",
@@ -10512,7 +10514,7 @@ export function createToolGatewayService(
           actionRequest.expiresAt.getTime() <= Date.now()
         ) {
           const expiredAt = new Date();
-          const [expired] = await writeToolReviewChange(db, tx => tx
+          const [expired] = await writeToolReviewChange(db, actionRequest.companyId, tx => tx
             .update(toolActionRequests)
             .set({
               status: "expired",
@@ -10560,7 +10562,7 @@ export function createToolGatewayService(
             interaction?.kind === "request_confirmation" &&
             interaction.status === "accepted"
           ) {
-            const [approved] = await writeToolReviewChange(db, tx => tx
+            const [approved] = await writeToolReviewChange(db, actionRequest.companyId, tx => tx
               .update(toolActionRequests)
               .set({
                 status: "approved",
