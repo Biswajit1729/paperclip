@@ -2679,3 +2679,16 @@ cases and server types pass; 15 embedded-DB cases remain excluded for the record
 host limitation. The audit records earlier failures and fixture corrections.
 Startup wiring, query cost, periodic removal, full gates and publication remain.
 No PR or merge; the complete recurring-server scope and older stack gates stay open.
+
+
+Slice 51 startup integration: the enabled server now registers retained cleanup
+and its shutdown subscription. The periodic orphan pass skips this duty; explicit
+and startup recovery retain their bounded joined sweep. Heartbeat joins original
+scheduled physical operations through shutdown. All 100 startup/worker cases and
+server types pass. After the user's explicitly approved cleanup of 11 orphaned
+semaphore sets, the full executor suite passes all 814 cases with no exclusions,
+including strengthened initialization-release coverage. A 10,000-completed-session
+probe measures broad discovery at 28–30 ms locally and run-scoped discovery at
+0.030 ms; broad discovery remains linear in history and no deployed claim is made.
+Full workspace acceptance, PR publication/review, older gates and every remaining
+duty stay open. No merge has occurred.

@@ -11104,9 +11104,12 @@ describe("runnerd provider runtime wiring", () => {
     });
     state.createBackend.mockClear();
     state.createTransport.mockClear();
+    const db = leaseDb(execution);
+    const released = vi.fn();
+    const unsubscribe = onRetainedNativeSessionCleanupRelease(db, released);
     let settled = false;
     const preparation = createRunnerdBackend({
-      db: leaseDb(execution), execution, runnerInstanceId: "runner-overlap",
+      db, execution, runnerInstanceId: "runner-overlap",
       runnerEnvironment, prepareRunnerEnvironment,
       runnerExecutionTarget: {
         kind: "remote", transport: "sandbox", providerKey: "daytona",
@@ -11118,15 +11121,18 @@ describe("runnerd provider runtime wiring", () => {
       await assignedReady;
       expect(prepareRunnerEnvironment).toHaveBeenCalledOnce();
       expect(settled).toBe(false);
+      expect(released).not.toHaveBeenCalled();
       expect(state.createBackend).not.toHaveBeenCalled();
       if (failure === "assigned") releaseAssigned();
       else releaseEnvironment();
       await new Promise<void>(resolve => setImmediate(resolve));
       expect(settled).toBe(false);
+      expect(released).not.toHaveBeenCalled();
       expect(state.createBackend).not.toHaveBeenCalled();
       releaseEnvironment();
       releaseAssigned();
       const result = await preparation;
+      expect(released).toHaveBeenCalledExactlyOnceWith({ companyId: execution.binding.companyId, agentId: execution.binding.agentId });
       if (failure !== "success") {
         expect(result).toMatchObject({ error: { message: failure === "assigned" ? "assigned failed" : "environment failed" } });
         expect(state.createBackend).not.toHaveBeenCalled();
@@ -11142,6 +11148,7 @@ describe("runnerd provider runtime wiring", () => {
       releaseEnvironment();
       releaseAssigned();
       await preparation;
+      unsubscribe();
     }
   });
 

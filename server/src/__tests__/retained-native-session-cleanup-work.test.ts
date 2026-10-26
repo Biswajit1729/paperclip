@@ -1,3 +1,5 @@
+import { heartbeatService } from "../services/heartbeat.js";
+import * as nativeExecutor from "../services/native-runtime/native-session-executor.js";
 import { finalizeNativeRun } from "../services/native-runtime/native-run-finalizer.js";
 import { notifyNativeFinalizationWork } from "../services/native-finalization-notifications.js";
 import { randomUUID } from "node:crypto";
@@ -512,6 +514,27 @@ describe("retained native cleanup scheduled lifecycle", () => {
     finally { release.resolve(); }
     await Promise.all([active, queued]);
     expect(cleanup.mock.calls.map(([input]) => input.runId)).toEqual([first, second]);
+  });
+
+  it("joins scheduled physical cleanup through the assembled heartbeat shutdown owner", async () => {
+    const runId = await candidate();
+    const entered = deferred(), release = deferred();
+    const physical = vi.spyOn(nativeExecutor, "reconcileRetainedNativeSessionCleanup").mockImplementation(async (_db, input) => {
+      entered.resolve(); await release.promise; return settle(input);
+    });
+    const heartbeat = heartbeatService(db);
+    coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    worker = heartbeat.registerRetainedNativeSessionCleanupWork(coordinator, () => true);
+    await entered.promise;
+    let drained = false;
+    const draining = heartbeat.drainActiveRunExecutions().then(() => { drained = true; });
+    try {
+      await delay(10);
+      expect(drained).toBe(false);
+      expect(physical).toHaveBeenCalledExactlyOnceWith(db, { companyId, runId });
+    } finally { release.resolve(); }
+    await worker.ready; await draining; await flush();
+    expect(drained).toBe(true); await quiet();
   });
 
   it("waits on the original in-flight cleanup when shutdown begins", async () => {

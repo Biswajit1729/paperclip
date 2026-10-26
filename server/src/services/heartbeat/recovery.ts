@@ -1,3 +1,4 @@
+import { retainedNativeSessionCleanupWork } from "../native-runtime/retained-native-session-cleanup-work.js";
 import { reconcileRetainedNativeSessionCleanups } from "../native-runtime/retained-native-session-cleanup.js";
 import { createScheduledRetryCancellationRecovery } from "./scheduled-retry-cancellation.js";
 import { pendingCleanupDeadlineSql } from "../environment-cleanup-state.js";
@@ -1887,12 +1888,23 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     ).catch(() => undefined);
   }
 
+  function cleanupRetainedNativeSession(input: { companyId: string; runId: string }) {
+    const operation = reconcileRetainedNativeSessionCleanup(db, input);
+    // The worker receives the original outcome/error. Shutdown only needs to
+    // join its lifetime, including callbacks retained beyond a bounded attempt.
+    const tracked = operation.then(() => undefined, () => undefined);
+    activeRunExecutionPromises.add(tracked);
+    void tracked.then(() => activeRunExecutionPromises.delete(tracked));
+    return operation;
+  }
+  const retainedNativeCleanup = retainedNativeSessionCleanupWork(db, cleanupRetainedNativeSession);
+
   function scheduleRetainedNativeSessionCleanup() {
     // The per-database sweep joins startup and periodic callers. One bounded
     // control-only repair must not hold up unrelated provider ingress or the
     // entire orphan reaper, but shutdown must still await its physical owner.
     const cleanup = reconcileRetainedNativeSessionCleanups(db, {
-      cleanup: (input) => reconcileRetainedNativeSessionCleanup(db, input),
+      cleanup: cleanupRetainedNativeSession,
       onError: (error, runId) => {
         logger.warn(
           { err: error, runId },
@@ -1910,7 +1922,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
 
   let settledProcessesDiscovered = false;
 
-  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; skipScheduledRetryCancellation?: boolean; skipCapturedInstructionCommit?: boolean; skipInstructionDirectoryCleanup?: boolean; skipStoppedInstructionCollection?: boolean; skipCancelledWorkspacePreservation?: boolean; skipObsoletePolicyReviews?: boolean; skipAutomaticCompletionReviews?: boolean; skipUnsafeWorkspaceExports?: boolean; skipNativePendingEffects?: boolean; skipNativeResponsePresentation?: boolean; skipNativeReviewResponse?: boolean; skipNativeStatusReassessment?: boolean }) {
+  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; skipScheduledRetryCancellation?: boolean; skipCapturedInstructionCommit?: boolean; skipInstructionDirectoryCleanup?: boolean; skipStoppedInstructionCollection?: boolean; skipCancelledWorkspacePreservation?: boolean; skipObsoletePolicyReviews?: boolean; skipAutomaticCompletionReviews?: boolean; skipUnsafeWorkspaceExports?: boolean; skipNativePendingEffects?: boolean; skipNativeResponsePresentation?: boolean; skipNativeReviewResponse?: boolean; skipNativeStatusReassessment?: boolean; skipRetainedNativeSessionCleanup?: boolean }) {
     if (!opts?.skipCancelledWorkspacePreservation) await preserveCancelledNativeWorkspaces(db);
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const now = new Date();
@@ -1944,7 +1956,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         "failed to reconcile persisted native finalizations before orphan reaping",
       );
     });
-    scheduleRetainedNativeSessionCleanup();
+    if (!opts?.skipRetainedNativeSessionCleanup) scheduleRetainedNativeSessionCleanup();
     await reconcileRetainedWorkspaces(db, environmentRuntime, resumeRemoteStopComments);
     await dispatchPendingNativeStatusWakeups().catch((error) => {
       logger.warn(
@@ -2530,6 +2542,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
   }
 
   return {
+    registerRetainedNativeSessionCleanupWork: retainedNativeCleanup.register,
     registerScheduledRetryCancellationWork: scheduledRetryCancellation.register,
     sweepPendingCleanupLeases,
     markNativeOwnershipUnverified,

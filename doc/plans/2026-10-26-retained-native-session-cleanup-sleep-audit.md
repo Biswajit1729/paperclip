@@ -42,11 +42,13 @@ admission rules. No provider protocol belongs in index.ts or the generic schedul
   gets a scoped 30-second absence probe. Session/environment/maintenance waits
   need release notifications; ineligible history has no periodic fallback.
 - The existing finalization notification fanout includes cleanup. There is also
-  a per-database local release subscription boundary. Local producer coverage
-  remains incomplete and the worker is not registered in production startup.
+  a per-database local release subscription boundary. Durable owner releases,
+  local initialization/execution/warm-session releases and finalizer/heartbeat
+  terminal projection are covered. The worker is registered in server startup.
 - No new table, migration, independent timer or provider operation is added.
-- **Periodic cleanup remains enabled. Worker fixtures prove quiet for their named
-  conditions; this checkpoint does not establish production or instance quiet.**
+- **The periodic orphan pass now skips this cleanup duty. Startup and explicit
+  manual recovery remain supported. Tests establish worker quiet under named
+  conditions; deployed app/database suspension has not been qualified.**
 
 ## Reactivation and outcome audit still required
 
@@ -126,12 +128,12 @@ worker lifecycle proof, deployed sleep proof or PR readiness.
 ## Remaining acceptance
 
 - [x] Explicit transient/dormant/terminal cleanup outcomes and operational failures.
-- [ ] Full producer audit and real commit/rollback/reactivation tests.
+- [x] Producer audit and real commit/rollback/reactivation tests for the supported in-process writers.
 - [x] Local session-release and retained-callback completion ownership.
-- [ ] Shared worker startup, first producer, retry, changes during sweep, drain,
+- [x] Shared worker startup, first producer, retry, changes during sweep, drain,
       resume and shutdown; prove SQL/network quiet with retained history.
-- [ ] Discovery/backlog cost and fairness under realistic retained history.
-- [ ] Startup/periodic wiring and removal of this duty from the orphan pass.
+- [x] Discovery/backlog cost and fairness under the measured 10,000-history fixture.
+- [x] Startup/periodic wiring and removal of this duty from the orphan pass.
 - [ ] Applicable broader verification, complete PR template, CI and 5/5 review.
 
 All other duties in the recurring-server stack remain in scope. No merge is
@@ -422,3 +424,52 @@ Fresh origin/master remains 1fbbef45a8d399771add7a27a04b12f3a20e264c.
 Remaining: final producer/initialization audit, startup integration, history/query
 cost, periodic removal, broader acceptance and PR gates. Nothing is published or
 merged for slice 51; periodic cleanup is still enabled at this checkpoint.
+
+
+## Startup integration and full executor verification
+
+The enabled server path now registers the scoped worker with the shared delivery
+coordinator. Its admission predicate includes warm standby, task drain and server
+shutdown. Server shutdown removes local release subscriptions before stopping the
+coordinator. Heartbeat also tracks each original physical operation, so its direct
+execution drain joins scheduled cleanup independently of coordinator shutdown.
+The periodic orphan pass skips only retained-session cleanup. Startup recovery
+and explicit/manual recovery still call the bounded legacy sweep; all paths share
+the per-database lane and join identical run operations.
+
+The startup and assembled-heartbeat regressions first failed because registration
+was absent. After wiring, all 100 selected startup/worker tests and server types
+pass (/tmp/sleep51-startup-{before,after,types}.{log,status}). The assembled test
+holds the original cleanup promise and proves heartbeat's drain cannot finish
+before it settles. Existing worker tests cover drain/resume, error/retry, rollback,
+concurrent hints and saved lease deadlines.
+
+The user explicitly approved removal of 11 named orphaned PostgreSQL semaphore
+sets. Each exact ID/key and its recorded dead PIDs was rechecked; the corresponding
+shared-memory segment was absent. Only those 11 approved sets were removed.
+The complete executor suite then passed all 814 tests, with no exclusions
+(/tmp/sleep51-executor-full.log and .status). This supersedes the earlier 15-case
+host limitation for this suite; it does not erase the earlier failed setup evidence.
+The four overlapping initialization cases now also prove no cleanup release hint
+until both original preparation operations settle, on success and failure.
+
+The query-cost probe cloned 10,000 settled retained sessions, with real result,
+assessment, decision and finalization foreign keys, in an isolated database.
+EXPLAIN ANALYZE measured startup at 29.764 ms/62,266 shared-hit blocks, company
+scope at 27.731 ms/63,190 blocks, agent-release scope at 27.672 ms/63,190 blocks,
+and run scope at 0.030 ms/6 blocks. All return zero candidates. Broad discovery
+still grows with retained history; these local warm-cache measurements are not a
+fleet latency guarantee. It runs on startup or a relevant scope change, not on a
+recurring idle scan. The separate 103-candidate test covers paging and settlement.
+No new index is claimed necessary or added from this bounded measurement.
+
+Probe source: /tmp/sleep51-cost-probe.mts. Plans: /tmp/sleep51-cost-final.log
+(status 0). Initial root invocation failed because tsx is package-local; the
+corrected invocation then exposed a copied supersedes-assessment FK from the
+fixture. The seed transaction rolled back. Clearing that copied predecessor link
+produced the successful realistic-history fixture; no constraint was disabled.
+
+Broader workspace verification, publication and all remote CI/review gates remain.
+The four older stack gates were refreshed and still need repair: #17490/#17572
+E2E shard 3, #17576 security/review findings, and #17580 review findings.
+Nothing in this stack is merged or authorized for merge.
