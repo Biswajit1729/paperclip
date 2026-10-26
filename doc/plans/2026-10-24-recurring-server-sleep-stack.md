@@ -2264,3 +2264,22 @@ and all final-head PR gates remain open. No PR has been merged by this stack wor
 Final slice 47 source passes workspace typecheck/build and 158 worker/startup
 cases, including exact near-term concurrent deadlines. Remote publication and
 acceptance are the next gates; local success does not satisfy the full stack.
+
+## Slice 47 published; slice 48 response-owner audit
+
+Slice 47 is draft [#17690](https://github.com/paperclipai/paperclip/pull/17690),
+head `56c3601ea605b333141e86e0a810ed790fb6ce48`, based on #17687. Its final local
+checks passed; remote CI and Greptile are running. No merge or remote acceptance
+is claimed yet.
+
+Slice 48 starts accepted-response presentation recovery, excluding governed-review
+presentation. Its current helper conflates dormant/settled work and transient
+failures as false; resolve that owner contract before removing its backstop.
+The exact null-lease, digest, selected-answer, and publication-authority fences
+must remain intact. The existing external-chat baseline passed 33 selected cases;
+1,551 others were not selected. See the
+[response-presentation audit](2026-10-25-native-response-presentation-sleep-audit.md).
+
+The old action-required check on #17576 is Superagent Security Scan. Its existing
+voice-review findings and the older E2E failures remain outstanding. Work on the
+rest of the original stack continues; none of these gates are waived.
