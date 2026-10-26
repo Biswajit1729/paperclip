@@ -844,6 +844,21 @@ export async function repairCommittedNativeChatResponse(
   db: Db,
   input: { companyId: string; issueId: string; runId: string },
 ): Promise<boolean> {
+  try {
+    return await recoverCommittedNativeChatResponse(db, input);
+  } catch (error) {
+    logger.warn(
+      { runId: input.runId, error },
+      "Committed chat response is awaiting presentation retry",
+    );
+    return false;
+  }
+}
+
+export async function recoverCommittedNativeChatResponse(
+  db: Db,
+  input: { companyId: string; issueId: string; runId: string },
+): Promise<boolean> {
   let agentId: string | null = null;
   let materialized = false;
   try {
@@ -1095,13 +1110,7 @@ export async function repairCommittedNativeChatResponse(
     });
   } catch (error) {
     if (error instanceof CommittedChatResponseAuthorizationError) return false;
-    // Keep transient failures visible and retryable without reclassifying the
-    // committed run or acknowledging a publication that never committed.
-    logger.warn(
-      { runId: input.runId, error },
-      "Committed chat response is awaiting presentation retry",
-    );
-    return false;
+    throw error;
   }
   if (materialized && agentId)
     publishChatPublicationCommitSignal({

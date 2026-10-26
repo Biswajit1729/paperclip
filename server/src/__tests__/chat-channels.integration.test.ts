@@ -248,6 +248,7 @@ import type {
 import {
   finalizeNativeRun,
   repairCommittedNativeChatResponse,
+  recoverCommittedNativeChatResponse,
 } from "../services/native-runtime/native-run-finalizer.js";
 import { NativeRunCoordinatorStore } from "../services/native-runtime/native-run-coordinator-store.js";
 import { reconcileNativeFinalizations } from "../services/native-runtime/native-finalization-reconciler.js";
@@ -71948,6 +71949,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
                 })
               : context.repair(),
         ).resolves.toBe(false);
+        await expect(recoverCommittedNativeChatResponse(db, {
+          companyId: mutation === "cross_company" ? randomUUID() : context.fixture.companyId,
+          issueId: context.issue.id,
+          runId: mutation === "cross_run" ? randomUUID() : context.runId,
+        })).resolves.toBe(false);
         await expect(
           db
             .select()
@@ -72611,6 +72617,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     try {
       await locked;
       await expect(context.repair()).resolves.toBe(false);
+      await expect(recoverCommittedNativeChatResponse(db, {
+        companyId: context.fixture.companyId, issueId: context.issue.id, runId: context.runId,
+      })).rejects.toThrow();
       await expect(
         db
           .select()

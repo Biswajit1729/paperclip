@@ -107,3 +107,19 @@ The monitor-continuation and control-plane-port suites currently require embedde
 PostgreSQL directly. Qualify a validated external-test path if needed before using
 their results on this host; do not count skipped or initialization-failed suites.
 No sleep or migrated-worker behavior is established by this baseline.
+
+## Initial owner-contract change
+
+`recoverCommittedNativeChatResponse` now exposes the existing transaction and
+returns false for settled/ineligible/authorization-denied state, while propagating
+operational failures. The existing `repairCommittedNativeChatResponse` wrapper
+retains logging and false-on-error behavior for current callers. Authority checks,
+lock order, target materialization, and commit signaling remain in the same owner.
+The commit signal itself contains subscriber errors, so the wrapper does not hide
+a previously propagated publication error.
+
+The same 33-case real-PostgreSQL selection passes after this change, with added
+assertions that the new entry point rejects under actual source-action lock
+contention and returns false for the existing authorization/binding fences. The
+server typecheck passes (`/tmp/sleep48-contract-typecheck.log`). Worker discovery,
+producer notifications, startup wiring, and periodic removal are not implemented.

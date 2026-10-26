@@ -2283,3 +2283,14 @@ must remain intact. The existing external-chat baseline passed 33 selected cases
 The old action-required check on #17576 is Superagent Security Scan. Its existing
 voice-review findings and the older E2E failures remain outstanding. Work on the
 rest of the original stack continues; none of these gates are waived.
+
+Slice 48's first owner-contract change now passes the same 33 real-PostgreSQL
+response cases plus server typecheck. The strict recovery entry point propagates
+operational errors; existing callers keep their logging/boolean contract. No
+response worker has been wired and no response polling is removed yet.
+
+The Superagent action-required gate on #17576 was traced to review 5643793631,
+inline finding 4371283330: repeated connection/health writes reload the full live
+voice-session inventory. This is the already-recorded bounded-discovery issue,
+not a missing credential or permission. It still needs a code/test repair and
+fresh review; the gate must not be bypassed.
