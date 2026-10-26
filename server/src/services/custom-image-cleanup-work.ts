@@ -24,6 +24,8 @@ export function registerCustomImageCleanupWork(
       const result = await service.cleanupExpiredSetupSessions();
       if (result.timedOut > 0 || result.failed > 0) logger.warn(result, "environment customImage setup cleanup changed sessions");
       const deadline = await service.nextSetupCleanupAt();
+      // Back off failed or still-overdue work, not a successfully read future deadline.
+      if (deadline === null || deadline > Date.now()) earliest = 0;
       next = deadline === null ? null : Math.max(earliest, deadline);
       reconciled = generation;
     },
