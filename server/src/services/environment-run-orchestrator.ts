@@ -691,15 +691,15 @@ export function environmentRunOrchestrator(
 
     let releasedLeases: EnvironmentRuntimeLeaseRecord[];
     try {
-      releasedLeases = await environmentRuntime.releaseRunLeases(
+      const releaseArgs: Parameters<typeof environmentRuntime.releaseRunLeases> = [
         input.heartbeatRunId,
         status,
         (leaseId, error) => result.errors.push({ leaseId, error }),
         input.providerResourceDisposition,
-        ...(input.respectCleanupDeadlines
-          ? [input.cancelActiveWork, { respectCleanupDeadlines: true }] as const
-          : input.cancelActiveWork ? [true] as const : []),
-      );
+      ];
+      if (input.cancelActiveWork) releaseArgs[4] = true;
+      if (input.respectCleanupDeadlines) releaseArgs[5] = { respectCleanupDeadlines: true };
+      releasedLeases = await environmentRuntime.releaseRunLeases(...releaseArgs);
     } catch (err) {
       result.errors.push({ leaseId: "*", error: err });
       return result;
