@@ -1,5 +1,5 @@
 import { claimToolTestApproval, persistToolTestOutcome, startToolTestInvocation, type ToolTestApprovalClaim } from "./tool-test-approval.js";
-import { prepareApprovedToolReview, recoverApprovedToolReviews } from "./tool-review-recovery.js";
+import { approvedToolReviewCompanies, prepareApprovedToolReview, recoverApprovedToolReviews } from "./tool-review-recovery.js";
 import { toolReviewExpiryService } from "./tool-review-expiry.js";
 import { writeToolReviewChange } from "./tool-review-work-notifications.js";
 import { restConnectorFor } from "./connectors/rest-registry.js";
@@ -9656,7 +9656,9 @@ export function createToolGatewayService(
     actionReviewExpiryDeadlines: reviewExpiry.deadlines,
     sweepExpiredActionReviewsForCompany: reviewExpiry.sweepForCompany,
 
-    async recoverApprovedActionReviews() {
+    approvedActionReviewCompanies: (companyId?: string) => approvedToolReviewCompanies(db, companyId),
+
+    async recoverApprovedActionReviews(companyId?: string) {
       return recoverApprovedToolReviews(db, async row => {
         try {
           const prepared = await prepareApprovedToolReview(db, { actionRequestId: row.request.id,
@@ -9677,7 +9679,7 @@ export function createToolGatewayService(
           logger.warn({ err, actionRequestId: row.request.id }, "Could not recover approved tool action");
           return true;
         }
-      });
+      }, companyId);
     },
 
     async sweepActionReviews(input: { includeExpiry?: boolean; includeApproved?: boolean } = {}) {

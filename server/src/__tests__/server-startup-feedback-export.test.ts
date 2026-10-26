@@ -67,6 +67,7 @@ const {
       },
       toolGateway: {
         recoverApprovedActionReviews: vi.fn(async () => ({ scanned: 0, retry: false })),
+        approvedActionReviewCompanies: vi.fn(async () => []),
         sweepActionReviews: vi.fn(async () => ({ scanned: 0 })),
         sweepExpiredActionReviews: vi.fn(async () => ({ scanned: 0 })),
         nextActionReviewExpiryAt: vi.fn(async () => null),

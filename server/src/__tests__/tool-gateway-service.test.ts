@@ -338,6 +338,43 @@ describeEmbeddedPostgres("tool gateway service", () => {
         expect(await db.select().from(toolCallEvents).where(eq(toolCallEvents.reasonCode, "approved_action_executed"))).toHaveLength(1);
       });
 
+      it("does not scan another company's approved backlog after review writes", async () => {
+        const other = await createRunFixture(db);
+        await db.insert(toolPolicies).values(reviewNotePolicyRow(other.company));
+        const foreign = await request(gateway, db, other);
+        await db.update(toolActionRequests).set({ signedArguments: signToolArguments({
+          invocationId: foreign.invocationId, toolName: "mcp-remote-fixture:update_note",
+          canonicalArguments: canonicalToolArguments({ noteId: "legacy", body: "inert" }),
+          signingSecret: testToolActionSigningSecret,
+        }) }).where(eq(toolActionRequests.id, foreign.id));
+        await commitToolActionReview(db, { companyId: other.company.id, actionRequestId: foreign.id,
+          decision: "approved", actor: { userId: "board" } });
+        await startRecovery(); await quiet();
+        const reads: Array<{ query: string; params: unknown[] }> = [];
+        const debug = db.$client.options.debug;
+        db.$client.options.debug = (_id, query, params) => {
+          if (/^select/i.test(query) && query.includes('"tool_action_requests"') &&
+            query.includes('"tool_action_requests"."status" =') && params.includes("approved"))
+            reads.push({ query, params: [...params] });
+        };
+        try {
+          for (let index = 0; index < 3; index++) {
+            const pending = await request(); await settle(1500);
+            await approve(pending); await settle(1500); await executed(pending);
+          }
+        } finally { db.$client.options.debug = debug; }
+        expect(reads.length).toBeGreaterThan(0);
+        for (const read of reads) {
+          expect(read.query).toContain('"tool_action_requests"."company_id" =');
+          expect(read.params).toContain(fixture.company.id);
+          expect(read.params).not.toContain(other.company.id);
+        }
+        expect((await db.select().from(toolActionRequests).where(eq(toolActionRequests.id, foreign.id)))[0].status).toBe("approved");
+        expect((await db.select().from(toolInvocations).where(eq(toolInvocations.id, foreign.invocationId)))[0].status).toBe("awaiting_approval");
+        expect(await db.select().from(toolCallEvents).where(eq(toolCallEvents.reasonCode, "approved_action_executed"))).toHaveLength(3);
+        await quiet();
+      });
+
       it.each(["foreground", "recovery"] as const)("preserves the admitted rate slot for an agent action through %s approval", async mode => {
         await db.insert(toolPolicies).values({ companyId: fixture.company.id, name: "One reviewed note",
           policyType: "rate_limit", priority: 1, selectors: { toolName: "mcp-remote-fixture:update_note" },
@@ -366,6 +403,45 @@ describeEmbeddedPostgres("tool gateway service", () => {
         expect(recover).toHaveBeenCalledTimes(1); expect(coordinator!.nextWakeAt()).not.toBeNull();
         await settle(10_000); expect(recover).toHaveBeenCalledTimes(1);
         recover.mockRestore(); await settle(); await executed(pending); await quiet();
+      });
+
+      it("preserves a failed company's retry across writes while another company executes", async () => {
+        const pending = await request(); await approve(pending);
+        const original = gateway.approveActionRequest.bind(gateway);
+        const dispatch = vi.spyOn(gateway, "approveActionRequest").mockImplementation(async input => {
+          if (input.companyId === fixture.company.id) throw new Error("Company dependency unavailable");
+          return original(input);
+        });
+        await startRecovery();
+        expect(dispatch).toHaveBeenCalledTimes(1);
+        const retryAt = coordinator!.nextWakeAt();
+        expect(retryAt).not.toBeNull();
+        const later = await request(); await approve(later);
+        const other = await createRunFixture(db);
+        await db.insert(toolPolicies).values(reviewNotePolicyRow(other.company));
+        const foreign = await request(gateway, db, other);
+        await commitToolActionReview(db, { companyId: other.company.id, actionRequestId: foreign.id,
+          decision: "approved", actor: { userId: "board" } });
+        await settle(5000); await executed(foreign);
+        expect(dispatch.mock.calls.filter(([input]) => input.companyId === fixture.company.id)).toHaveLength(1);
+        expect(coordinator!.nextWakeAt()).toBe(retryAt);
+        dispatch.mockRestore();
+        await settle(); await executed(pending); await executed(later); await quiet();
+        expect(await db.select().from(toolCallEvents).where(eq(toolCallEvents.reasonCode, "approved_action_executed"))).toHaveLength(3);
+      });
+
+      it("disarms a failed company's recovery after company deletion commits", async () => {
+        const pending = await request(); await approve(pending);
+        const dispatch = vi.spyOn(gateway, "approveActionRequest").mockRejectedValue(new Error("Company dependency unavailable"));
+        await startRecovery(); expect(coordinator!.nextWakeAt()).not.toBeNull();
+        await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() })
+          .where(eq(heartbeatRuns.id, fixture.run.id));
+        await db.update(agents).set({ status: "terminated", lifecycleState: "terminated" })
+          .where(eq(agents.id, fixture.agent.id));
+        await deleteCompany(db, fixture.company.id);
+        await settle(1500);
+        expect(coordinator!.nextWakeAt()).toBeNull();
+        expect(dispatch).toHaveBeenCalledTimes(1); await quiet();
       });
 
       it.each([null, "unreadable-old-signature"])("settles an approved invalid signature (%s) without recurring recovery", async signedArguments => {
