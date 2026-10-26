@@ -102,6 +102,21 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(await runs()).toHaveLength(15);
     expect(rpc).not.toHaveBeenCalled();
   });
+  it("honors a saved deadline inside the notification batching window", async () => {
+    const row = await job();
+    const deadline = new Date(Date.now() + 10_000);
+    await pluginJobStore(db).updateRunTimestamps(row.id, new Date(0), deadline);
+    await start();
+    // registerPlugin produces a local wake immediately after startup. It may
+    // batch the reload but must not replace the known ten-second deadline.
+    await settled();
+    expect(coordinator!.nextWakeAt()).toBe(deadline.getTime());
+    expect(rpc).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(Math.max(0, deadline.getTime() - Date.now()));
+    await completed();
+    expect(rpc).toHaveBeenCalledOnce();
+    expect(rpc.mock.calls[0][2]).toMatchObject({ job: { scheduledAt: deadline.toISOString() } });
+  });
   it("keeps configured manual-only and invalid schedules quiet", async () => {
     await job("manual", ""); await job("invalid", "not cron"); await start(); await quiet(); expect(rpc).not.toHaveBeenCalled();
   });
