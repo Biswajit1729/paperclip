@@ -120,6 +120,38 @@ passed. The first acceptance command matched no files; the corrected
 `tool-gateway.test.ts` selection passed. Fresh PR CI/review remains required.
 
 
+## Approved-review follow-up repairs (2026-10-26)
+
+Slice 05 preserves the rate slot admitted before a human review. Agent and
+Test-tab foreground/recovery paths reuse only the exact invocation/context and
+unchanged rate-policy admission while rechecking current policy. A one-call
+limit must not reject the same approved operation against its own occupied slot.
+
+Recovery now locks and rereads invocation/request history before dispatch.
+Finished records repair the request without provider replay; executing records
+retain unknown-outcome recovery. Invalid signatures, unusable formal approvals,
+and inconsistent invocation states settle once. Missing signing-key configuration
+and temporary dependencies retain retries. Company mismatches never mutate the
+foreign invocation. No new table or generic HTTP-error discard rule is introduced.
+
+Formal approvals awaiting human input have no recovery cadence. The existing
+approval service publishes commit-aware review notifications for approve/reject
+and cancellation. Its shared record owner retains the decision validation/CAS
+contract; hire decisions remain with their lifecycle owner. Revision/resubmission
+keeps the review parked, and startup rediscovers saved work. Budget approval writes
+belong to budget incidents, not tool-gateway formal reviews. Company deletion
+removes the dependent work. These exclusions come from the producer audit.
+
+Local evidence: the four rate-admission regressions, seven permanent-record
+regressions, and four formal-approval commit/rollback regressions failed before
+their respective repairs. The complete gateway, policy, approval-service and
+signature suites pass (208 tests), and server typechecking passes. Configuration
+failure, company boundaries, concurrent claims, provider-outcome persistence
+failure, restart and paging remain covered. The paging fixture now has independent
+invocations instead of 101 approvals sharing an already-expired invocation.
+Full remote checks and downstream integration verification remain required;
+this is not an all-stack acceptance or deployed-sleep claim.
+
 ## Next owner audit: approved tool-action recovery
 
 The next branch is `codex/sleep-05-approved-tool-recovery`, based on pending
