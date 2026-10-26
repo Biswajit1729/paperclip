@@ -1,3 +1,4 @@
+import { withNativeWorkspaceFinalizationOwnership } from "../services/native-runtime/native-workspace-finalization-ownership.js";
 import { ensureNativeCompletionContract } from "../services/native-runtime/completion-contracts.js";
 import { nativeStatusReassessmentWork } from "../services/native-runtime/native-status-reassessment-work.js";
 import { reassessNativeStatusFromSource } from "../services/native-runtime/native-status-reassessment.js";
@@ -2454,7 +2455,7 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     return seeded;
   }
 
-  it.each(["future", "claim", "unknown claim", "assessment", "result", "phase", "decision", "effects", "ownership", "run outcome", "task execution", "contract revision", "contract writer", "workspace status", "workspace operation", "workspace writer"] as const)(
+  it.each(["future", "claim", "unknown claim", "assessment", "result", "phase", "decision", "effects", "ownership", "run outcome", "task execution", "contract revision", "contract writer", "workspace status", "workspace operation", "workspace writer", "workspace owner", "workspace owner receipt"] as const)(
     "guards scheduled reassessment against a changed %s at the commit boundary", async changed => {
       const seeded = await seedAutomaticReview();
       await dismissAutomaticCompletionReviews(db, seeded.issueId);
@@ -2515,6 +2516,20 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
           phase: "workspace_finalize", status: "running", cwd: process.cwd(),
           createdAt: new Date(Math.max(Date.now(), originalBarrier.createdAt.getTime() + 1)),
         });
+        if (changed === "workspace owner receipt") await db.update(heartbeatRuns).set({
+          runnerProfileJson: { ...originalRun.runnerProfileJson, nativeWorkspaceFinalizationOwner: {
+            token: randomUUID(), hostname: "unverified-controller", pid: 12345, processStartedAt: new Date().toISOString(),
+          } },
+        }).where(eq(heartbeatRuns.id, seeded.runId));
+        if (changed === "workspace owner") {
+          let entered!: () => void;
+          const ready = new Promise<void>(resolve => { entered = resolve; });
+          const released = new Promise<void>(resolve => { releaseWriter = resolve; });
+          writer = withNativeWorkspaceFinalizationOwnership({ db, companyId, runId: seeded.runId }, async () => {
+            entered(); await released;
+          }).then(() => undefined);
+          await Promise.race([ready, writer]);
+        }
         if (changed === "contract revision") await writeContract(db);
         if (changed === "contract writer" || changed === "workspace writer") {
           let writerReady!: () => void;
@@ -2577,6 +2592,11 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       }
       if (changed === "workspace writer") expect((await db.select().from(workspaceOperations)
         .where(eq(workspaceOperations.id, originalBarrier.id)))[0].status).toBe(originalBarrier.status);
+      if (changed === "workspace owner receipt") {
+        expect(await reassessNativeStatusFromSource(db, selected, { onlyWhenDue: true })).toEqual({ kind: "deferred" });
+        await db.update(heartbeatRuns).set({ runnerProfileJson: originalRun.runnerProfileJson })
+          .where(eq(heartbeatRuns.id, seeded.runId));
+      }
       await db.update(nativeRunFinalizations).set({ phase: selected.coordinatorPhase,
         resultId: seeded.resultId, assessmentId: selected.assessmentId, decisionId: selected.decisionId,
         nextAttemptAt: null, leaseOwner: null, leaseExpiresAt: null }).where(eq(nativeRunFinalizations.runId, seeded.runId));

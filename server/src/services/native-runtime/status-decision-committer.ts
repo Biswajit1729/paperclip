@@ -1,3 +1,5 @@
+import { hasNativeWorkspaceFinalizationOwner } from "./native-workspace-finalization-recovery-state.js";
+import { tryLockNativeWorkspaceFinalization } from "./native-workspace-finalization-ownership.js";
 import { lockCurrentNativeCompletionContract } from "./completion-contracts.js";
 import { isNativeRunnerOwnershipHeld } from "./native-runner-ownership.js";
 import { notifyNativeFinalizationWork } from "../native-finalization-notifications.js";
@@ -1632,6 +1634,7 @@ export async function commitNativeStatusDecision(input: {
     if (retiredReview && !await lockCurrentNativeCompletionContract(tx as unknown as Db, {
       companyId: input.companyId, issueId: input.issueId, contractId: retiredReview.contractId,
     })) throw new NativeStatusRaceError();
+    if (retiredReview && !await tryLockNativeWorkspaceFinalization(tx as unknown as Db, input)) throw new NativeStatusRaceError();
     const coordinator = await tx
       .select()
       .from(nativeRunFinalizations)
@@ -1677,6 +1680,7 @@ export async function commitNativeStatusDecision(input: {
       )).for("update").limit(1).then(rows => rows[0]);
       if (!run || run.runtimeMode !== "native" || isNativeRunnerOwnershipHeld(run)) throw new NativeStatusRaceError();
       if (expected.retiredAutomaticReview && (run.status !== "succeeded" ||
+          hasNativeWorkspaceFinalizationOwner(run.runnerProfileJson) ||
           (issue.executionRunId !== null && issue.executionRunId !== input.runId))) {
         throw new NativeStatusRaceError();
       }

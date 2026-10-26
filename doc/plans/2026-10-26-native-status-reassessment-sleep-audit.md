@@ -594,3 +594,52 @@ this checkpoint does not assert that a succeeded receipt alone proves physical
 ownership released. Governance/dependency facts, remaining producers, discovery
 cost, startup/periodic migration and remote acceptance remain open, as does the
 full original stack scope.
+
+## Physical workspace ownership checkpoint
+
+Four regressions reproduced completion while physical workspace authority was
+still outstanding: a live owner at startup, an unverified persisted owner at
+startup, a real owner acquired after reassessment's read, and an owner receipt
+written after that read. Scheduled retired-review reassessment now treats a
+persisted owner as dormant. At commit it tries the existing physical-finalization
+advisory lock before acquiring row locks, then rechecks owner presence on the
+locked run. This closes the lock-before-receipt acquisition window as well as
+retained ownership after a disconnected lock connection. The lock/presence
+helpers remain with native workspace ownership/recovery; no provider policy is
+added to scheduling. Explicit legacy reassessment remains unchanged.
+
+With only those guards installed, the real-owner lifecycle test reproduced a
+second gap: the task stayed in review after the owner released. Normal release
+now registers reassessment intent in a short transaction before removing only
+its own token. Physical work, assertion of ownership and joining the copyback
+callback remain outside that transaction. Failed/uncertain cleanup retains the
+existing durable owner and joined-token behavior. Verified operator recovery
+registers the same run/task signal in its existing transaction before removing
+the verified owner. Its physical-lock check now uses the same owner's helper.
+The source audit found these two removal paths; reconstruction preserves the
+owner field rather than clearing it.
+
+The real-owner lifecycle test proves task preservation and driver-observed worker
+SQL quiet while ownership remains, reactivation after release, and quiet after
+completion. A separate unverified-owner case proves no completion or recurring
+worker query despite a successful workspace receipt. Commit-race tests preserve
+competing ownership and complete only after it is released/restored. The existing
+verified-recovery test additionally reads the run from the reassessment callback
+and sees the committed released profile, with the coordinator unchanged.
+
+All 122 status-corpus, 30 reassessment lifecycle and 65 workspace finalization
+consumer cases pass together (217 total), and server typecheck passes. Existing
+consumers cover live ownership, disconnected lock sessions, retained joined-owner
+receipts, orphan copyback children, verified stop/replay, and current-task fencing.
+The workspace suite now accepts a validated dedicated external test database URL,
+uses it for restart/competing clients, and closes its primary client on teardown.
+It ran in its own fresh database: its connection-termination tests must not share
+a database with another suite. No production database or provider was used.
+
+Evidence: `/tmp/sleep50-physical-before.log` and `.status` (four failures),
+`/tmp/sleep50-physical-guard.log` and `.status` (release missed wake after guard),
+`/tmp/sleep50-physical-after.log` and `.status` (217 passes), and
+`/tmp/sleep50-physical-types.log` and `.status` (pass). All handles are terminal.
+Governance/dependency races, remaining producer audits, discovery cost/backlog,
+startup registration/periodic removal and remote acceptance remain open. No PR
+or merge is claimed for slice 50, and the full original stack remains incomplete.

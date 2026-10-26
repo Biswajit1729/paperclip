@@ -1,3 +1,4 @@
+import { withNativeWorkspaceFinalizationOwnership } from "../services/native-runtime/native-workspace-finalization-ownership.js";
 import express from "express";
 import { appendHeartbeatRunEvent } from "../services/heartbeat-run-events.js";
 import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
@@ -123,6 +124,40 @@ describe("native reassessment worker lifecycle", () => {
       status: "succeeded", exitCode: 0, cwd: process.cwd(), finishedAt: new Date() });
     return { issueId, runId, workProductId, decisionId: committed.decision.id };
   }
+
+  it("waits quietly for physical workspace ownership to release before reassessment", async () => {
+    const seeded = await seedReview();
+    await dismissAutomaticCompletionReviews(db, seeded.issueId);
+    let enter!: () => void, release!: () => void;
+    const entered = new Promise<void>(resolve => { enter = resolve; });
+    const released = new Promise<void>(resolve => { release = resolve; });
+    const owner = withNativeWorkspaceFinalizationOwnership({ db, companyId, runId: seeded.runId }, async () => {
+      enter(); await released;
+    });
+    try {
+      await Promise.race([entered, owner]);
+      await start(); await flush();
+      expect(await status(seeded.issueId)).toBe("in_review");
+      await quiet();
+    } finally { release(); await owner; }
+    await flush();
+    expect(await status(seeded.issueId)).toBe("done");
+    await quiet();
+  });
+
+  it("keeps an unverified workspace owner dormant despite a successful receipt", async () => {
+    const seeded = await seedReview();
+    await dismissAutomaticCompletionReviews(db, seeded.issueId);
+    const owner = { token: randomUUID(), hostname: "unverified-controller", pid: 12345,
+      processStartedAt: new Date().toISOString() };
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeWorkspaceFinalizationOwner: owner } })
+      .where(eq(heartbeatRuns.id, seeded.runId));
+    await start(); await flush();
+    expect(await status(seeded.issueId)).toBe("in_review");
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId)))[0]
+      .runnerProfileJson?.nativeWorkspaceFinalizationOwner).toEqual(owner);
+    await quiet();
+  });
 
   it.each(["ordinary", "native source"] as const)("wakes from a committed control-plane evidence event through the %s append path", async path => {
     const seeded = await seedReview("event:1");

@@ -2517,3 +2517,12 @@ All 148 status/lifecycle cases and server types pass. The owner audit preserves
 before-fix failures and distinguishes barrier receipts from physical workspace
 ownership, which still needs audit. Governance/dependencies, remaining producers,
 cost, wiring, periodic removal and PR acceptance remain open; nothing merged.
+
+Slice 50 physical-owner checkpoint: four unsafe-completion regressions and a
+subsequent release missed wake were reproduced and repaired. Scheduled retired-
+review reassessment respects the existing physical lock and durable owner receipt;
+normal/verified owner release wakes it through committed intent. All 217 status,
+lifecycle and workspace-owner consumer cases and server types pass. Existing
+orphan/stop-proof safeguards remain verified. Governance/dependencies, remaining
+producers, cost, integration and remote gates remain open, along with all other
+original duties and earlier stack findings. Nothing merged.

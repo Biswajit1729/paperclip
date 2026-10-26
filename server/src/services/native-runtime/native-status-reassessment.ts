@@ -1,3 +1,4 @@
+import { hasNativeWorkspaceFinalizationOwner } from "./native-workspace-finalization-recovery-state.js";
 import { and, desc, eq, gt, or } from "drizzle-orm";
 import { completionContracts, heartbeatRuns, issueWorkProducts, issues, nativeRunResults,
   statusDecisions, workAssessments, workspaceOperations, type Db } from "@paperclipai/db";
@@ -148,6 +149,7 @@ export async function reassessNativeStatusFromSource(
       .where(and(eq(completionContracts.companyId, row.companyId), eq(completionContracts.issueId, row.issueId)))
       .orderBy(desc(completionContracts.revision)).limit(1).then((entries) => entries[0]) : null;
     if (retiredAutomaticReview && (!currentIssue || currentRun?.status !== "succeeded"
+      || (options.onlyWhenDue && hasNativeWorkspaceFinalizationOwner(currentRun.runnerProfileJson))
       || latestContract?.id !== contractRow.id
       || (currentIssue.executionRunId && currentIssue.executionRunId !== row.runId))) return { kind: "deferred" };
     const reviewBarrier = retiredAutomaticReview ? await db.select({ status: workspaceOperations.status })
