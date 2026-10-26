@@ -34,6 +34,7 @@ import {
   toolGatewaySessions,
   toolInvocations,
   toolPolicies,
+  toolRateLimitCounters,
 } from "@paperclipai/db";
 import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
 import type { VercelConnectClient } from "../services/vercel-connect.js";
@@ -332,6 +333,22 @@ describeEmbeddedPostgres("tool gateway service", () => {
         expect(await db.select().from(toolCallEvents).where(eq(toolCallEvents.reasonCode, "approved_action_executed"))).toHaveLength(1);
       });
 
+      it.each(["foreground", "recovery"] as const)("preserves the admitted rate slot for an agent action through %s approval", async mode => {
+        await db.insert(toolPolicies).values({ companyId: fixture.company.id, name: "One reviewed note",
+          policyType: "rate_limit", priority: 1, selectors: { toolName: "mcp-remote-fixture:update_note" },
+          config: { limit: 1, windowSeconds: 3600, keyBy: ["agent", "tool"] } });
+        const pending = await request();
+        const counters = await db.select().from(toolRateLimitCounters);
+        expect(counters).toHaveLength(1); expect(counters[0].remaining).toBe(0);
+        if (mode === "foreground") {
+          await gateway.approveActionRequest({ companyId: fixture.company.id, actionRequestId: pending.id, actor: { userId: "board" } });
+          await startRecovery();
+        } else { await approve(pending); await startRecovery(); }
+        await settle(); await executed(pending); await quiet();
+        expect(await db.select().from(toolRateLimitCounters)).toEqual(counters);
+        expect(await db.select().from(toolCallEvents).where(eq(toolCallEvents.reasonCode, "approved_action_executed"))).toHaveLength(1);
+      });
+
       it("reconstructs a saved approved action after restart", async () => {
         const pending = await request(); await approve(pending);
         await startRecovery(); await settle(); await executed(pending); await quiet();
@@ -387,7 +404,7 @@ describeEmbeddedPostgres("tool gateway service", () => {
         draining = false; await settle(); await executed(pending); await quiet();
       });
 
-      async function testRequest(provider: NonNullable<ToolGatewayServiceOptions["remoteHttpRequest"]>) {
+      async function testRequest(provider: NonNullable<ToolGatewayServiceOptions["remoteHttpRequest"]>, rateLimited = false) {
         await db.insert(companyMemberships).values({ companyId: fixture.company.id, principalType: "user",
           principalId: "board", status: "active", membershipRole: "owner" });
         const remote = await createRemoteMcpToolFixture(db, fixture.company.id);
@@ -395,6 +412,9 @@ describeEmbeddedPostgres("tool gateway service", () => {
           .where(eq(toolCatalogEntries.id, remote.catalogEntry.id));
         await db.insert(toolPolicies).values({ companyId: fixture.company.id, name: "Review connected writes",
           policyType: "require_approval", priority: 10, selectors: { connectionId: remote.connection.id } });
+        if (rateLimited) await db.insert(toolPolicies).values({ companyId: fixture.company.id, name: "One reviewed test call",
+          policyType: "rate_limit", priority: 1, selectors: { connectionId: remote.connection.id },
+          config: { limit: 1, windowSeconds: 3600, keyBy: ["agent", "tool"] } });
         gateway = createTestToolGatewayService(db, { remoteHttpRequest: provider });
         const result = await gateway.executeTestCall({ companyId: fixture.company.id, connectionId: remote.connection.id,
           agentId: fixture.agent.id, userId: "board", toolName: "needs_input", parameters: { value: "reviewed" } });
@@ -435,6 +455,20 @@ describeEmbeddedPostgres("tool gateway service", () => {
         } finally { remoteCall.release(); }
         await running; await settle(); await executed(pending); await quiet();
         expect(remoteCall.provider).toHaveBeenCalledTimes(1);
+      });
+
+      it.each(["foreground", "recovery"] as const)("preserves the admitted rate slot for a Test-tab action through %s approval", async mode => {
+        const remoteCall = providerFixture(); remoteCall.release();
+        const { pending } = await testRequest(remoteCall.provider, true);
+        const counters = await db.select().from(toolRateLimitCounters);
+        expect(counters).toHaveLength(1); expect(counters[0].remaining).toBe(0);
+        if (mode === "foreground") {
+          await gateway.approveActionRequest({ companyId: fixture.company.id, actionRequestId: pending.id, actor: { userId: "board" } });
+          await startRecovery();
+        } else { await approve(pending); await startRecovery(); }
+        await settle(); await executed(pending); await quiet();
+        expect(await db.select().from(toolRateLimitCounters)).toEqual(counters);
+        expect(remoteCall.provider).toHaveBeenCalledOnce();
       });
 
       it("repairs completed Test-tab history without sending the request again", async () => {

@@ -7652,7 +7652,10 @@ export function createToolGatewayService(
       if (!(await approvedManagedArgumentsRemainCurrent(session, tool, signedPayload.arguments))) {
         throw new ToolGatewayHttpError(409, "Approved tool action managed arguments changed after review", "approved_tool_managed_arguments_changed");
       }
-      const access = await policyService.decide(policyInputForTool({ session, tool, parameters: signedPayload.arguments }));
+      const access = await policyService.decide(
+        policyInputForTool({ session, tool, parameters: signedPayload.arguments, consumeRateLimit: false }),
+        { admittedInvocationId: invocation.id },
+      );
       if (!access.allowed && access.decision !== "require_approval") {
         throw new ToolGatewayHttpError(403, access.explanation, access.reasonCode);
       }
@@ -8094,7 +8097,9 @@ export function createToolGatewayService(
           session,
           tool,
           parameters: signedPayload.arguments,
+          consumeRateLimit: false,
         }),
+        { admittedInvocationId: invocation.id },
       );
       if (
         !currentAccess.allowed &&
@@ -9996,7 +10001,9 @@ export function createToolGatewayService(
             session,
             tool,
             parameters: signedPayload.arguments,
+            consumeRateLimit: false,
           }),
+          { admittedInvocationId: invocation.id },
         );
         if (!access.allowed && access.decision !== "require_approval")
           throw new ToolGatewayHttpError(
