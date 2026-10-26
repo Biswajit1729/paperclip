@@ -1,3 +1,4 @@
+import { notifyNativeWorkspaceFinalization } from "../native-workspace-finalization-notifications.js";
 import { tryLockNativeWorkspaceFinalization } from "./native-workspace-finalization-ownership.js";
 import { notifyNativeStatusReassessment } from "../native-status-reassessment-notifications.js";
 import os from "node:os";
@@ -66,6 +67,7 @@ export async function resumeNativeWorkspaceAfterOwnerStop(input: {
     const now = new Date();
     const proof = { owner: prior, resultId: result.id, actorId: input.actorId,
       stopEvidence: confirmation.stopEvidence, confirmedAt: now.toISOString() };
+    await notifyNativeWorkspaceFinalization(tx, { companyId: input.companyId, issueId: input.issueId, runId: input.runId });
     await notifyNativeStatusReassessment(tx, { companyId: input.companyId, issueId: input.issueId, runId: input.runId });
     await tx.update(heartbeatRuns).set({
       runnerProfileJson: sql`${heartbeatRuns.runnerProfileJson} - ${OWNER_KEY}`, updatedAt: now,

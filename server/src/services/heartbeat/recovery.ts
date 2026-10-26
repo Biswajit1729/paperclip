@@ -1,3 +1,5 @@
+import { nativeWorkspaceFinalizationWork } from "../native-runtime/native-workspace-finalization-work.js";
+import { attemptNativeWorkspaceFinalization } from "../native-runtime/native-workspace-finalizer.js";
 import { retainedNativeSessionCleanupWork } from "../native-runtime/retained-native-session-cleanup-work.js";
 import { reconcileRetainedNativeSessionCleanups } from "../native-runtime/retained-native-session-cleanup.js";
 import { createScheduledRetryCancellationRecovery } from "./scheduled-retry-cancellation.js";
@@ -1898,6 +1900,17 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     return operation;
   }
   const retainedNativeCleanup = retainedNativeSessionCleanupWork(db, cleanupRetainedNativeSession);
+  const nativeWorkspaceFinalization = nativeWorkspaceFinalizationWork(db, {
+    environmentRuntime, pluginWorkerManager: dependencies.pluginWorkerManager,
+    onWorkspaceSettled: settleRecoveredNativeWorkspace,
+    attempt: input => {
+      const operation = attemptNativeWorkspaceFinalization(input);
+      const tracked = operation.then(() => undefined, () => undefined);
+      activeRunExecutionPromises.add(tracked);
+      void tracked.then(() => activeRunExecutionPromises.delete(tracked));
+      return operation;
+    },
+  });
 
   function scheduleRetainedNativeSessionCleanup() {
     // The per-database sweep joins startup and periodic callers. One bounded
@@ -1922,7 +1935,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
 
   let settledProcessesDiscovered = false;
 
-  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; skipScheduledRetryCancellation?: boolean; skipCapturedInstructionCommit?: boolean; skipInstructionDirectoryCleanup?: boolean; skipStoppedInstructionCollection?: boolean; skipCancelledWorkspacePreservation?: boolean; skipObsoletePolicyReviews?: boolean; skipAutomaticCompletionReviews?: boolean; skipUnsafeWorkspaceExports?: boolean; skipNativePendingEffects?: boolean; skipNativeResponsePresentation?: boolean; skipNativeReviewResponse?: boolean; skipNativeStatusReassessment?: boolean; skipRetainedNativeSessionCleanup?: boolean }) {
+  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; skipScheduledRetryCancellation?: boolean; skipCapturedInstructionCommit?: boolean; skipInstructionDirectoryCleanup?: boolean; skipStoppedInstructionCollection?: boolean; skipCancelledWorkspacePreservation?: boolean; skipObsoletePolicyReviews?: boolean; skipAutomaticCompletionReviews?: boolean; skipUnsafeWorkspaceExports?: boolean; skipNativePendingEffects?: boolean; skipNativeResponsePresentation?: boolean; skipNativeReviewResponse?: boolean; skipNativeStatusReassessment?: boolean; skipRetainedNativeSessionCleanup?: boolean; skipNativeWorkspaceFinalization?: boolean }) {
     if (!opts?.skipCancelledWorkspacePreservation) await preserveCancelledNativeWorkspaces(db);
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const now = new Date();
@@ -1947,6 +1960,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       skipNativeResponsePresentation: opts?.skipNativeResponsePresentation,
       skipNativeReviewResponse: opts?.skipNativeReviewResponse,
       skipNativeStatusReassessment: opts?.skipNativeStatusReassessment,
+      skipNativeWorkspaceFinalization: opts?.skipNativeWorkspaceFinalization,
       environmentRuntime,
       pluginWorkerManager: dependencies.pluginWorkerManager,
       onWorkspaceSettled: settleRecoveredNativeWorkspace,
@@ -2543,6 +2557,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
 
   return {
     registerRetainedNativeSessionCleanupWork: retainedNativeCleanup.register,
+    registerNativeWorkspaceFinalizationWork: nativeWorkspaceFinalization.register,
     registerScheduledRetryCancellationWork: scheduledRetryCancellation.register,
     sweepPendingCleanupLeases,
     markNativeOwnershipUnverified,

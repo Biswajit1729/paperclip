@@ -2713,3 +2713,24 @@ are finished. Audit first-result publication in `paperclip-control-plane-port.ts
 workspace operation writes, durable workspace-owner release, retry updates and
 cleanup completion before disabling their existing recovery paths. No migration
 of these next duties is claimed by slice 51.
+
+## 2026-10-26: verified slice 51 and workspace-finalization migration
+
+[#17717](https://github.com/paperclipai/paperclip/pull/17717) is verified at
+`d0036fce3e039e91ab2bf2602e3e6a87a4476491`: all 56 remote check/status entries
+passed or intentionally skipped, Greptile 5/5 on that head, and no unresolved
+review threads. It remains draft/open and unmerged. The older local full-suite
+run was interrupted with exit 130 after current-head CI passed; do not count it
+as a local full-suite pass. The separate local resource-limit failure remains
+recorded. The explicitly approved 11 semaphore sets were removed once.
+
+Slice 52 is `codex/sleep-52-native-workspace-finalization` on that parent.
+[Its audit](2026-10-26-native-workspace-finalization-sleep-audit.md) records the
+copy-back obligation, exact owner/proof outcomes, commit/release producers,
+shared-scheduler integration, and 12 passing real-database lifecycle cases.
+The periodic orphan pass skips only this physical-copyback duty. Result projection
+and resource settlement retain existing recovery and are the next separate slices.
+Final full verification, publication and review are pending for slice 52. Inspected
+master is `a1f77821b9cd5c9c846fdf7a0fa5cc620ad2b6bb`; stack-base propagation is
+still outstanding. Older gates (#17490, #17572, #17576, #17580) and the rest of the
+requested recurring-server inventory remain active. No merge is authorized.

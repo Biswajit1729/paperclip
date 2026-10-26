@@ -1017,6 +1017,7 @@ export function heartbeatService(
     drainRunningRunsForShutdown,
     registerScheduledRetryCancellationWork,
     registerRetainedNativeSessionCleanupWork,
+    registerNativeWorkspaceFinalizationWork,
   } = createHeartbeatRecovery(db, {
     pluginWorkerManager: options.pluginWorkerManager,
     enterShutdown: () => { shutdownInProgress = true; },
@@ -4071,6 +4072,9 @@ export function heartbeatService(
     triggerIssueMonitor,
 
     reportRunActivity: clearDetachedRunWarning,
+    registerNativeWorkspaceFinalizationWork: (
+      coordinator: Parameters<typeof registerNativeWorkspaceFinalizationWork>[0], canRun: () => boolean,
+    ) => registerNativeWorkspaceFinalizationWork(coordinator, () => canRun() && readTaskDrain(new Date()) === null),
     registerRetainedNativeSessionCleanupWork: (
       coordinator: Parameters<typeof registerRetainedNativeSessionCleanupWork>[0], canRun: () => boolean,
     ) => registerRetainedNativeSessionCleanupWork(coordinator, () => canRun() && readTaskDrain(new Date()) === null),
