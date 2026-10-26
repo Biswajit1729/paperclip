@@ -2780,3 +2780,22 @@ The previous head's startup gate passed, with Greptile 5/5. A separate CI import
 hook timeout (118 agent-skills cases skipped) passed all 118 locally and received
 one justified job retry. New producer-fix acceptance remains pending. No merge;
 all prior gate, suppression-audit and remaining-duty obligations remain open.
+
+## Slice 52 accepted; slice 53 implementation checkpoint
+
+Slice 52 [#17734](https://github.com/paperclipai/paperclip/pull/17734) is verified
+at `d5c540b1c0df9aba35262ba121c651806bbca161`: all current checks/statuses pass or
+intentionally skip, Greptile 5/5, both review threads resolved. The preceding
+startup timeout received one justified retry which passed. The interrupted local
+full-suite run remains an interruption, not a local pass. The PR is draft/open.
+
+Slice 53, `codex/sleep-53-native-result-commit`, moves accepted-result commit after
+a successful workspace barrier to scoped transaction wakes and saved deadlines.
+[Its audit](2026-10-26-native-result-commit-sleep-audit.md) records both real writers,
+pending-effect/cancellation handoffs, atomic claim deferrals and 96 focused
+passing cases. Committed projection and resource settlement retain existing
+recovery. Publication and final local/remote gates remain pending.
+
+Master refreshed to `49bd7a4ba6`; subsequent finalization changes must be reconciled
+through the stack before final acceptance. All earlier gate failures, suppression
+audits and remaining inventory duties stay open. Nothing was merged.

@@ -1,3 +1,4 @@
+import { notifyNativeResultCommit } from "../native-result-commit-notifications.js";
 import { releaseRetainedNativeSessionCleanup } from "../retained-native-session-cleanup-notifications.js";
 import type { NativeCleanupOutcome } from "./retained-native-session-cleanup.js";
 import { notifyNativeStatusReassessment } from "../native-status-reassessment-notifications.js";
@@ -7219,6 +7220,7 @@ export async function cancelNativeSession(
       if (!written) throw new Error("native_cancellation_binding_changed");
       // Cancellation is also an authority fence for a durable retry whose
       // preceding provider has already failed. No in-memory session is needed.
+      await notifyNativeResultCommit(tx, { companyId: cancellationContext.companyId, runId });
       await tx
         .update(nativeRunFinalizations)
         .set({

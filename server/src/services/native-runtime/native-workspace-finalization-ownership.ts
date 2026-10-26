@@ -1,3 +1,4 @@
+import { notifyNativeResultCommit } from "../native-result-commit-notifications.js";
 import { notifyNativeWorkspaceFinalization, releaseNativeWorkspaceFinalization } from "../native-workspace-finalization-notifications.js";
 import { notifyNativeStatusReassessment } from "../native-status-reassessment-notifications.js";
 import { beginRunPhase } from "../execution-preparation-timing.js";
@@ -298,6 +299,7 @@ export async function withNativeWorkspaceFinalizationOwnership<T>(
       joinedOwnerTokens.add(owner.token);
       try {
         await input.db.transaction(async tx => {
+          await notifyNativeResultCommit(tx, { companyId: input.companyId, runId: input.runId });
           await notifyNativeWorkspaceFinalization(tx, { companyId: input.companyId, runId: input.runId });
           await notifyNativeStatusReassessment(tx, { companyId: input.companyId, runId: input.runId });
           await tx.update(heartbeatRuns).set({

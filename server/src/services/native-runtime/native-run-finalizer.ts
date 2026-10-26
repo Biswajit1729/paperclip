@@ -1,3 +1,4 @@
+import { notifyNativeResultCommit } from "../native-result-commit-notifications.js";
 import { notifyRetainedNativeSessionCleanup } from "../retained-native-session-cleanup-notifications.js";
 import { notifyNativeFinalizationWork } from "../native-finalization-notifications.js";
 import { notifyUnsafeWorkspaceExportRunChange } from "../unsafe-workspace-export-notifications.js";
@@ -171,9 +172,16 @@ async function acceptedInteractionFromRun(input: {
     .then((rows) => rows[0] ?? null);
 }
 
+export class NativeFinalizationDeferredError extends Error {
+  constructor(readonly reason: "lease_busy" | "retry_not_due") {
+    super(`native_finalization_${reason}`);
+  }
+}
+
 async function claimCoordinator(input: {
   db: Db;
   runId: string;
+  onlyWhenDue?: boolean;
   preserveProviderAttempt?: boolean;
 }) {
   const leaseOwner = `native-finalizer:${randomUUID()}`;
@@ -208,14 +216,17 @@ async function claimCoordinator(input: {
     }
     if (coordinator.phase === "terminal_failure")
       throw new Error("native_finalization_terminal_failure");
+    if (input.onlyWhenDue && coordinator.nextAttemptAt && coordinator.nextAttemptAt > now)
+      throw new NativeFinalizationDeferredError("retry_not_due");
     if (
       coordinator.leaseOwner &&
       coordinator.leaseExpiresAt &&
       coordinator.leaseExpiresAt > now &&
       coordinator.leaseOwner !== leaseOwner
     )
-      throw new Error("native_finalization_lease_busy");
+      throw new NativeFinalizationDeferredError("lease_busy");
     if (coordinator.decisionId) await notifyNativeFinalizationWork(tx, coordinator);
+    else await notifyNativeResultCommit(tx, coordinator);
     const [updated] = await tx
       .update(nativeRunFinalizations)
       .set({
@@ -1172,6 +1183,8 @@ export async function finalizeNativeRun(input: {
   db: Db;
   runId: string;
   workspaceFinalizeStatus: "succeeded" | "failed";
+  /** Scheduled recovery rechecks a saved retry under the coordinator claim lock. */
+  onlyWhenDue?: boolean;
   /** Reconciliation owns terminal run projection; the live heartbeat does it afterward. */
   projectRunStatus?: boolean;
   skipNativeResponsePresentation?: boolean;
@@ -1192,6 +1205,7 @@ export async function finalizeNativeRun(input: {
     db: input.db,
     runId: input.runId,
     preserveProviderAttempt: input.preserveProviderAttempt,
+    onlyWhenDue: input.onlyWhenDue,
   });
   const coordinator = claim.coordinator;
   if (!claim.leaseOwner && coordinator.phase === "committed") {

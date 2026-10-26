@@ -1,3 +1,4 @@
+import { notifyNativeResultCommit } from "./native-result-commit-notifications.js";
 import { notifyNativeWorkspaceFinalization } from "./native-workspace-finalization-notifications.js";
 import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
 import { writeEnvironmentCleanup } from "./environment-cleanup-notifications.js";
@@ -245,6 +246,7 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
       const next = { ...current!, revision: current!.revision + 1, phase: "reconcile_effects" as const,
         state: "complete" as const, nextAttemptAt: null };
       const activity = await db.transaction(async tx => {
+        await notifyNativeResultCommit(tx, input);
         await notifyNativeWorkspaceFinalization(tx, input);
         await notifyNativeStatusReassessment(tx, input);
         await tx.insert(workspaceOperations).values({ companyId: input.companyId, issueId: input.issueId,

@@ -383,6 +383,7 @@ type NativeReconciliationOptions = {
   skipNativeReviewResponse?: boolean;
   skipNativeStatusReassessment?: boolean;
   skipNativeWorkspaceFinalization?: boolean;
+  skipNativeResultCommit?: boolean;
   pluginWorkerManager?: WorkspaceWorkers;
   environmentRuntime?: EnvironmentRuntimeService;
   onWorkspaceSettled?: (input: {
@@ -666,6 +667,7 @@ async function reconcileNativeFinalizationsPass(
         }
         continue;
       }
+      if (options.skipNativeResultCommit && row.coordinatorPhase !== "committed") continue;
       try {
         const finalized = await finalizeNativeRun({
           db,
@@ -718,6 +720,7 @@ async function reconcileNativeFinalizationsPass(
       }
       continue;
     }
+    if (options.skipNativeResultCommit && row.coordinatorPhase !== "committed") continue;
     const replayDecision = resolveNativeReconciliationStatus({
       facts: { canonicalReplay: true },
       priorIssueStatus: row.issueStatus as NativeAuthoritativeIssueStatus,

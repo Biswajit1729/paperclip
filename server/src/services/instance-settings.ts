@@ -1,3 +1,4 @@
+import { notifyNativeResultCommit } from "./native-result-commit-notifications.js";
 import { notifyNativeWorkspaceFinalization } from "./native-workspace-finalization-notifications.js";
 import { notifyCancelledWorkspacePreservation } from "./cancelled-workspace-preservation-notifications.js";
 import { notifyInstructionCollection } from "./instruction-collection-notifications.js";
@@ -627,6 +628,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
           await notifyDirectoryCleanup(tx);
           await notifyInstructionCollection(tx);
           await notifyCancelledWorkspacePreservation(tx);
+          await notifyNativeResultCommit(tx);
           await notifyNativeWorkspaceFinalization(tx);
         }
         if (patch.enableChatConnectors !== undefined) await notifyVoiceChange(tx);
