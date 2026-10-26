@@ -207,7 +207,7 @@ export async function reassessNativeStatusFromSource(
         decision,
         requireReassessmentSource: options.onlyWhenDue ? {
           phase: row.coordinatorPhase, resultId: resultRow.id, assessmentId: assessment.id,
-          decisionId: row.decisionId, agentId: row.agentId,
+          decisionId: row.decisionId, agentId: row.agentId, retiredAutomaticReview: !!retiredAutomaticReview,
         } : undefined,
         requireNoPendingChildCompletion: decision.statusAction === "done" ? childCompletionRecipient : undefined,
         supersedesCommittedDecisionId: row.coordinatorPhase === "committed"

@@ -2453,7 +2453,7 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     return seeded;
   }
 
-  it.each(["future", "claim", "unknown claim", "assessment", "result", "phase", "decision", "effects", "ownership"] as const)(
+  it.each(["future", "claim", "unknown claim", "assessment", "result", "phase", "decision", "effects", "ownership", "run outcome", "task execution"] as const)(
     "guards scheduled reassessment against a changed %s at the commit boundary", async changed => {
       const seeded = await seedAutomaticReview();
       await dismissAutomaticCompletionReviews(db, seeded.issueId);
@@ -2476,6 +2476,12 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
         : changed === "phase" ? { phase: "terminal_failure" }
         : changed === "decision" ? { decisionId: null } : null;
       const [originalRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId));
+      const [originalIssue] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+      const replacementRunId = randomUUID();
+      if (changed === "task execution") await db.insert(heartbeatRuns).values({
+        id: replacementRunId, companyId, agentId, status: "running", runtimeMode: "native",
+        nativeIssueId: seeded.issueId, contextSnapshot: { issueId: seeded.issueId },
+      });
       const originalEffects = await db.select().from(statusDecisionEffects).where(eq(statusDecisionEffects.decisionId, selected.decisionId!));
       expect(originalEffects.length).toBeGreaterThan(0);
       const transaction = db.transaction.bind(db);
@@ -2486,6 +2492,10 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
         if (changed === "ownership") await db.update(heartbeatRuns).set({ status: "running",
           runtimeMode: "native", errorCode: "native_execution_ownership_unverified", nativePhase: "terminal_failure" })
           .where(eq(heartbeatRuns.id, seeded.runId));
+        if (changed === "run outcome") await db.update(heartbeatRuns).set({ status: "failed" })
+          .where(eq(heartbeatRuns.id, seeded.runId));
+        if (changed === "task execution") await db.update(issues).set({ executionRunId: replacementRunId })
+          .where(eq(issues.id, seeded.issueId));
         return transaction(callback, options);
       }) as typeof db.transaction);
       try {
@@ -2505,6 +2515,15 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
           .toMatchObject({ status: "running", errorCode: "native_execution_ownership_unverified" });
         await db.update(heartbeatRuns).set({ status: originalRun.status, runtimeMode: originalRun.runtimeMode,
           errorCode: originalRun.errorCode, nativePhase: originalRun.nativePhase }).where(eq(heartbeatRuns.id, seeded.runId));
+      }
+      if (changed === "run outcome") {
+        expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId)))[0].status).toBe("failed");
+        await db.update(heartbeatRuns).set({ status: originalRun.status }).where(eq(heartbeatRuns.id, seeded.runId));
+      }
+      if (changed === "task execution") {
+        expect((await issueService(db).getById(seeded.issueId))!.executionRunId).toBe(replacementRunId);
+        await db.update(issues).set({ executionRunId: originalIssue.executionRunId }).where(eq(issues.id, seeded.issueId));
+        await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, replacementRunId));
       }
       await db.update(nativeRunFinalizations).set({ phase: selected.coordinatorPhase,
         resultId: seeded.resultId, assessmentId: selected.assessmentId, decisionId: selected.decisionId,

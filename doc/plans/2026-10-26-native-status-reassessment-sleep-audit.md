@@ -456,3 +456,58 @@ Evidence: `/tmp/sleep50-events-before.log` and `.status` (four failures),
 this checkpoint are terminal. Case-handoff creation/cancellation, remaining
 contract/ownership/authority producers and the full acceptance tasks listed above
 remain outstanding; the old periodic reassessment path is still enabled.
+
+## Scheduled retired-review authority checkpoint
+
+Two commit-boundary regressions reproduce unsafe completion: after reassessment
+reads a succeeded run, a competing writer can change its outcome to failed or
+bind the task to a different run without changing the task's status version.
+Both previously committed a `done` decision. The scheduled source contract now
+identifies retired automatic-review reassessment, and the existing status
+committer rechecks run success and task execution ownership under its existing
+coordinator/task/run locks. It adds no outer transaction, lock order, provider
+call, or database query. Explicit legacy reconciliation remains unchanged.
+
+The two regressions assert that the competing state survives, no new decision
+commits, and reassessment succeeds once the original authority is restored.
+All 115 status-corpus cases pass. The combined corpus/lifecycle run initially
+finished with 142 passes and one failed lifecycle assertion: retained test
+history needs multiple startup batches, so the first registered wake can be the
+next batch rather than the target's future retry. The retry test now waits for
+startup batches to settle while asserting that the target stays in review,
+then verifies the exact saved deadline before and after restart. All 28 lifecycle
+cases pass against that same retained-history database; final server types pass.
+This is 143 distinct passing cases across runs, not a green initial combined run.
+
+Evidence: `/tmp/sleep50-authority-before.log` and `.status` (two failures),
+`/tmp/sleep50-authority-after.log` and `.status` (115 corpus passes and 27/28
+lifecycle passes), `/tmp/sleep50-authority-lifecycle.log` and `.status` (28 passes),
+and `/tmp/sleep50-authority-final-types.log` and `.status` (pass). All launched
+handles reached terminal status. No remote acceptance or host sleep is claimed.
+
+Producer audit notes for the next checkpoint:
+
+- Handoff evidence is accepted for every persisted non-cancelled state. Delivery,
+  completion, leases and retries do not change that classification. Agent-created
+  handoffs require the source run to be running and own the task; their generated
+  UUID is returned after creation. Board requests can use the current execution
+  binding. Do not add wake traffic to every handoff lease renewal.
+- Task mutation cancellations are in the issue transaction, which also signals
+  reassessment. Direct handoff cancellation, delivery cancellation, and run-control
+  cancellation still require their own transaction/activation audit; no complete
+  handoff producer-coverage claim is made here.
+- Superseded external-review withdrawal is called by the status committer inside
+  its decision transaction, which already signals native finalization and chat
+  milestones. OAuth authorization-start separately reopens/creates a pending
+  confirmation; its interaction writes remain to be audited.
+- The evidence classifier checks target-agent existence, not invokable status.
+  Do not add status-change fanout based only on the name of that check.
+- Completion-contract creation is serialized with the per-company/task advisory
+  lock in `ensureNativeCompletionContract`. Checking the latest revision before
+  the commit transaction is still insufficient. Audit its callers' lock order
+  before extending the scheduled commit guard.
+
+Latest-contract, workspace-barrier, governance, dependency and other business-fact
+races remain open, along with remaining producers, query cost/backlog proof,
+startup wiring, periodic removal, publication and PR gates. The full original
+stack scope, older unresolved gates and master reconciliation remain outstanding.

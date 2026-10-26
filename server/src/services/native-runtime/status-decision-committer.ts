@@ -1602,6 +1602,7 @@ export async function commitNativeStatusDecision(input: {
   requireNoPendingChildCompletion?: NativeChildCompletionRecipient;
   requireReassessmentSource?: {
     phase: string; resultId: string; assessmentId: string; decisionId: string | null; agentId: string;
+    retiredAutomaticReview: boolean;
   };
   requireModelRejectionOwner?: { agentId: string; reviewContext: NativeReviewAssignmentContext | null };
   requireProviderFailureOwner?: { agentId: string; reviewContext: NativeReviewAssignmentContext | null };
@@ -1670,6 +1671,10 @@ export async function commitNativeStatusDecision(input: {
         eq(heartbeatRuns.nativeIssueId, input.issueId), eq(heartbeatRuns.agentId, expected.agentId),
       )).for("update").limit(1).then(rows => rows[0]);
       if (!run || run.runtimeMode !== "native" || isNativeRunnerOwnershipHeld(run)) throw new NativeStatusRaceError();
+      if (expected.retiredAutomaticReview && (run.status !== "succeeded" ||
+          (issue.executionRunId !== null && issue.executionRunId !== input.runId))) {
+        throw new NativeStatusRaceError();
+      }
       const pendingEffect = expected.decisionId ? await tx.select({ id: statusDecisionEffects.id })
         .from(statusDecisionEffects).where(and(
           eq(statusDecisionEffects.companyId, input.companyId), eq(statusDecisionEffects.issueId, input.issueId),

@@ -416,13 +416,21 @@ describe("native reassessment worker lifecycle", () => {
     await dismissAutomaticCompletionReviews(db, seeded.issueId);
     const future = new Date(Date.now() + 60_000);
     await db.update(nativeRunFinalizations).set({ nextAttemptAt: future }).where(eq(nativeRunFinalizations.runId, seeded.runId));
+    const waitForSavedDeadline = async () => {
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(idleWorkSnapshot().active).toBe(0);
+        expect(coordinator!.nextWakeAt()).toBe(future.getTime());
+        expect(await status(seeded.issueId)).toBe("in_review");
+      }, { timeout: 15_000 });
+    };
     await start();
-    expect(coordinator!.nextWakeAt()).toBe(future.getTime());
+    await waitForSavedDeadline();
     await vi.advanceTimersByTimeAsync(20_000);
     expect(await status(seeded.issueId)).toBe("in_review");
     await coordinator!.stop(); coordinator = undefined;
     await start();
-    expect(coordinator!.nextWakeAt()).toBe(future.getTime());
+    await waitForSavedDeadline();
     await vi.advanceTimersByTimeAsync(Math.max(0, future.getTime() - Date.now())); await flush();
     expect(await status(seeded.issueId)).toBe("done");
     expect(await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, seeded.issueId))).toHaveLength(2);

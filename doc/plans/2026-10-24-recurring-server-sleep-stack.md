@@ -2490,3 +2490,13 @@ embedded-PostgreSQL failures and the external-database test repairs are preserve
 in the owner audit. Approval/interaction/run evidence and workspace producers,
 concurrent authority, backlog cost, startup wiring and periodic removal remain.
 Master remains 1fbbef45a8; older stack gates and the full original scope stay open.
+
+Slice 50 authority checkpoint: two real commit-boundary regressions reproduced
+stale completion after the source run failed or another run took task execution.
+The scheduled retired-review path now rechecks both facts under existing locks.
+All 115 status-corpus cases pass. A retained-history startup assertion failed in
+the combined run; after waiting for bounded startup batches while enforcing the
+saved retry deadline, all 28 lifecycle cases and server types pass. The owner
+audit preserves failures and handoff/contract producer findings. Remaining
+business-fact races, producer coverage, cost, wiring, periodic removal and PR
+acceptance are still open. Nothing merged; the full stack goal is incomplete.
