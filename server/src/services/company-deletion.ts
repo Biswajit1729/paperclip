@@ -66,6 +66,7 @@ export async function deleteCompany(db: Db, id: string) {
         if (!existing) return null;
         await chatCompanyDeletion.deleteCompanyData(tx, id);
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.secretProposalExpiry, id);
         await agentObservabilityService(tx as unknown as Db).removeForCompanyDeletion(id);
         // Finance can reference costs and both can reference runs. Incidents
         // reference policies and approvals; delete these dependents first.
