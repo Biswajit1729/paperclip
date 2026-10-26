@@ -1,9 +1,11 @@
+import { latestFailedRunsByAgent } from "@paperclipai/shared";
 import { prepareRuntimeSettingsPatch } from "../services/agent-runtime-settings.js";
 import { completeSetupTokenAiConnection } from "../services/setup-token-ai-connection.js";
 import { cancellationRequestId } from "../services/native-runtime/native-cancellation-request.js";
 import { agentHarnessType, isEnvironmentDriverSupportedForAdapter, normalizeClaudeRunnerOptions, type AgentConfigurationWarning, type AgentRunnerChoice } from "@paperclipai/shared";
 import { resolveNewAgentRunnerForCompany } from "../services/agent-runner-selection.js";
 import { agentEnvironmentTestService } from "../services/agent-environment-test.js";
+import { qualifyAgentRunner } from "../services/agent-runner-qualification.js";
 import { createAgentLifecycle } from "../services/agent-lifecycle.js";
 
 import { agentIdentityService } from "../services/agent-identity.js";
@@ -65,6 +67,7 @@ import {
   normalizeIssueIdentifier,
   resetAgentSessionSchema,
   testAdapterEnvironmentSchema,
+  qualifyAgentRunnerSchema,
   type AgentDesiredSkillEntry,
   type AgentSkillAssignmentMode,
   type AgentSkillSnapshot,
@@ -96,6 +99,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { trackAgentCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
+import { registerAgentProjectAccessRoutes } from "./agent-project-access.js";
 import { inheritNativeRunnerAdapterConfig } from "../services/native-runtime/native-agent-runtime-inheritance.js";
 import { agentInstructionRevisionService } from "../services/agent-instruction-revisions.js";
 import { agentInstructionWorkingCopyService } from "../services/agent-instruction-working-copies.js";
@@ -1799,6 +1803,25 @@ export function agentRoutes(
     }
     await assertCanUpdateAgent(req, targetAgent);
   }
+
+  router.post("/agents/:id/qualify-runner", validate(qualifyAgentRunnerSchema), async (req, res) => {
+    const agent = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Agent not found");
+    if (!agent) return;
+    await assertCanUpdateAgent(req, agent);
+    const result = await qualifyAgentRunner(db, agent, req.body.expectedEnvironmentId, options.pluginWorkerManager);
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: agent.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      action: "agent.runner_qualification_tested",
+      entityType: "agent",
+      entityId: agent.id,
+      details: { environmentId: req.body.expectedEnvironmentId, ok: result.ok,
+        platformQualificationRecorded: result.details?.platformQualificationRecorded === true },
+    });
+    res.json(result);
+  });
 
   async function assertCanReadAgent(req: Request, targetAgent: { id: string; companyId: string }) {
     if (!hasCompanyAccess(req, targetAgent.companyId)) {
@@ -4897,6 +4920,8 @@ export function agentRoutes(
     res.status(201).json({ ...redactAgentRowForResponse(agent), ...(configurationWarnings.length ? { configurationWarnings } : {}) });
   });
 
+  registerAgentProjectAccessRoutes(router, db);
+
   router.patch("/agents/:id/permissions", validate(updateAgentPermissionsSchema), async (req, res) => {
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
@@ -6886,7 +6911,8 @@ export function agentRoutes(
       ? Math.max(1, Math.min(HEARTBEAT_RUN_LIST_MAX_LIMIT, parseInt(limitParam, 10) || HEARTBEAT_RUN_LIST_DEFAULT_LIMIT))
       : HEARTBEAT_RUN_LIST_DEFAULT_LIMIT;
     const summary = req.query.summary === "true" || req.query.summary === "1";
-    const runs = await heartbeat.list(companyId, agentId, limit, { summary });
+    const recentRuns = await heartbeat.list(companyId, agentId, limit, { summary });
+    const runs = req.query.latestFailuresOnly === "true" ? latestFailedRunsByAgent(recentRuns) : recentRuns;
     const readDecisions = await getHeartbeatRunReadDecisions(db, access, req.actor, runs);
     res.json(await runRedactions.redactForRuns(companyId, runs.map((run, index) =>
       readDecisions[index] ? run : redactHeartbeatRunListRow(run)),
@@ -7534,7 +7560,11 @@ export function agentRoutes(
 
     const afterSeq = Number(req.query.afterSeq ?? 0);
     const limit = Number(req.query.limit ?? 200);
-    const events = await heartbeat.listEvents(runId, Number.isFinite(afterSeq) ? afterSeq : 0, Number.isFinite(limit) ? limit : 200);
+    const cursor = Number.isFinite(afterSeq) ? afterSeq : 0;
+    const pageLimit = Number.isFinite(limit) ? limit : 200;
+    const events = await (req.query.view === "conversation"
+      ? heartbeat.listEvents(runId, cursor, pageLimit, true)
+      : heartbeat.listEvents(runId, cursor, pageLimit));
     const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
     const redactedEvents = events.map((event) =>
       redactCurrentUserValue({
@@ -7554,24 +7584,32 @@ export function agentRoutes(
 
     const offset = Number(req.query.offset ?? 0);
     const limitBytes = readRunLogLimitBytes(req.query.limitBytes);
-    const result = await heartbeat.readLog(run, {
-      offset: Number.isFinite(offset) ? offset : 0,
-      limitBytes,
-    });
+    const controller = new AbortController();
+    const cancelRead = () => controller.abort();
+    res.once("close", cancelRead);
+    try {
+      const result = await heartbeat.readLog(run, {
+        offset: Number.isFinite(offset) ? offset : 0,
+        limitBytes,
+        ...(req.query.alignStartToRecord === "true" ? { alignStartToRecord: true } : {}),
+        signal: controller.signal,
+      });
 
-    res.set("Cache-Control", "no-cache, no-store");
-    res.json(await runRedactions.redactForRun(run.companyId, run.id, result));
+      res.set("Cache-Control", "no-cache, no-store");
+      res.json(await runRedactions.redactForRun(run.companyId, run.id, result));
+    } finally {
+      res.off("close", cancelRead);
+    }
   });
 
   router.get("/heartbeat-runs/:runId/workspace-operations", async (req, res) => {
     const runId = readHeartbeatRunId(req);
-    const run = await getAccessibleResource(req, res, heartbeat.getRun(runId), "Heartbeat run not found");
+    const run = await getAccessibleResource(req, res, heartbeat.getRunWorkspaceAccess(runId), "Heartbeat run not found");
     if (!run) return;
     if (!(await assertRunTelemetryReadAllowed(req, res, run.companyId))) return;
     if (!(await assertRunReadAllowed(req, res, run))) return;
 
-    const context = asRecord(run.contextSnapshot);
-    const executionWorkspaceId = asNonEmptyString(context?.executionWorkspaceId);
+    const executionWorkspaceId = asNonEmptyString(run.executionWorkspaceId);
     const operations = await workspaceOperations.listForRun(runId, executionWorkspaceId);
     const visibleOperations = [];
     for (const operation of operations) {
