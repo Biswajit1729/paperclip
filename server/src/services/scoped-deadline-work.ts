@@ -10,6 +10,8 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
   coordinator: ReturnType<typeof createDeliveryWorkCoordinator>,
   options: {
     queue: DeliveryQueue;
+    batchSize?: number;
+    minimumPassIntervalMs?: number;
     decodeScope(hint: string): Scope | undefined;
     matches(entry: Entry, scope?: Scope): boolean;
     load(scope?: Scope, signal?: AbortSignal): Promise<Entry[]>;
@@ -31,6 +33,7 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
     return [...dirty].map(hint => { try { return options.decodeScope(hint); } catch { return undefined; } });
   }
   function next() {
+    if (!canRun()) return dirty.size > 0 || entries.size > 0 ? Date.now() + 30_000 : null;
     let nextAt: number | null = null;
     const take = (at: number) => { nextAt = nextAt === null ? at : Math.min(nextAt, at); };
     for (const hint of dirty.has("*") ? ["*"] : dirty) take(Math.max(earliest, scopeFailures.get(hint)?.retryAt ?? 0));
@@ -45,7 +48,7 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
     onSettled: hints => { for (const hint of hints ?? ["*"]) dirty.add(hint); },
     run: async signal => {
       if (!canRun() || Date.now() < earliest) return;
-      earliest = Date.now() + 1000;
+      earliest = Date.now() + (options.minimumPassIntervalMs ?? 1000);
       const errors: unknown[] = [];
       const requested = (dirty.has("*") ? ["*"] : [...dirty]).filter(hint => (scopeFailures.get(hint)?.retryAt ?? 0) <= Date.now());
       const covered = requested.includes("*") ? [...dirty] : requested;
@@ -72,7 +75,7 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
       const due = [...entries.values()].filter(entry => !unavailable.some(scope => options.matches(entry, scope))
         && Math.max(entry.dueAt, failures.get(entry.id)?.retryAt ?? 0) <= Date.now())
         .sort((a, b) => a.dueAt - b.dueAt || a.id.localeCompare(b.id));
-      const batch = takeCompanyWorkBatch(due, 25, lastCompany); lastCompany = batch.lastCompany;
+      const batch = takeCompanyWorkBatch(due, options.batchSize ?? 25, lastCompany); lastCompany = batch.lastCompany;
       for (const entry of batch.entries) {
         if (signal.aborted || !canRun()) break;
         try {
@@ -87,6 +90,10 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
     // idle hold during drain. The coordinator still fences unresolved XIDs.
     hasPending: async () => canRun() && dirty.size > 0,
     nextRunAt: next,
+    nextRunAtOnError: next,
   });
-  return worker;
+  return { ...worker, invalidate(hint = "*") {
+    dirty.add(hint);
+    worker.wake();
+  } };
 }
