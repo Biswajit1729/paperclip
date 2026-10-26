@@ -1,3 +1,4 @@
+import { nativeStatusReassessmentWork } from "../services/native-runtime/native-status-reassessment-work.js";
 import { reassessNativeStatusFromSource } from "../services/native-runtime/native-status-reassessment.js";
 import { NativeRunCoordinatorStore } from "../services/native-runtime/native-run-coordinator-store.js";
 import { registerNativePendingEffectWork } from "../services/native-runtime/native-pending-effect-work.js";
@@ -2488,7 +2489,7 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
         return transaction(callback, options);
       }) as typeof db.transaction);
       try {
-        expect(await reassessNativeStatusFromSource(db, selected, { onlyWhenDue: true })).toEqual({ kind: "deferred" });
+        expect(await reassessNativeStatusFromSource(db, selected, { onlyWhenDue: true })).toEqual({ kind: "deferred", retry: true });
       } finally { intercept.mockRestore(); }
       expect((await issueService(db).getById(seeded.issueId))!.status).toBe("in_review");
       expect(await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, seeded.issueId))).toHaveLength(1);
@@ -2513,6 +2514,110 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       expect(await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, seeded.issueId))).toHaveLength(2);
     }, 30_000,
   );
+
+  describe("native status reassessment work", () => {
+    const selectedScope = (seeded: { issueId: string; runId: string }) => ({ companyId, issueId: seeded.issueId, runId: seeded.runId });
+
+    it.each(["retired review", "new evidence", "task status"] as const)("discovers and settles %s without revisiting settled history", async trigger => {
+      const seeded = await seedAutomaticReview();
+      const work = nativeStatusReassessmentWork(db), scope = selectedScope(seeded);
+      expect(await work.load(scope)).toEqual([]);
+      if (trigger === "retired review") await dismissAutomaticCompletionReviews(db, seeded.issueId);
+      if (trigger === "new evidence") {
+        const [assessment] = await db.select().from(workAssessments).where(eq(workAssessments.id, seeded.assessmentId));
+        await db.update(workAssessments).set({ createdAt: new Date(Date.now() - 2000),
+          assessmentJson: { ...assessment.assessmentJson, allCriteriaSatisfied: false } }).where(eq(workAssessments.id, seeded.assessmentId));
+        await db.update(issueWorkProducts).set({ updatedAt: new Date() }).where(eq(issueWorkProducts.id, seeded.workProductId));
+      }
+      if (trigger === "task status") await db.update(issues).set({ status: "blocked", statusVersion: 2 }).where(eq(issues.id, seeded.issueId));
+      const pending = await work.load(scope);
+      expect(pending).toMatchObject([{ id: seeded.runId, dueAt: 0 }]);
+      expect(await work.check(pending[0])).toBeNull();
+      expect((await issueService(db).getById(seeded.issueId))!.status).toBe(trigger === "task status" ? "blocked" : "done");
+      expect(await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, seeded.issueId))).toHaveLength(2);
+      expect(await work.load(scope)).toEqual([]);
+      expect(await work.check(pending[0])).toBeNull();
+      expect(await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, seeded.issueId))).toHaveLength(2);
+    });
+
+    it("respects a saved retry and live lease, then reloads the released owner", async () => {
+      const seeded = await seedAutomaticReview();
+      await dismissAutomaticCompletionReviews(db, seeded.issueId);
+      const work = nativeStatusReassessmentWork(db), scope = selectedScope(seeded);
+      const future = new Date(Date.now() + 60_000), lease = new Date(Date.now() + 120_000);
+      await db.update(nativeRunFinalizations).set({ nextAttemptAt: future, leaseOwner: "finalizer", leaseExpiresAt: lease })
+        .where(eq(nativeRunFinalizations.runId, seeded.runId));
+      const [pending] = await work.load(scope);
+      expect(pending.dueAt).toBe(lease.getTime());
+      expect(await work.check(pending)).toEqual(pending);
+      expect((await issueService(db).getById(seeded.issueId))!.status).toBe("in_review");
+      await db.update(nativeRunFinalizations).set({ nextAttemptAt: null, leaseOwner: null, leaseExpiresAt: null })
+        .where(eq(nativeRunFinalizations.runId, seeded.runId));
+      expect(await work.check(pending)).toBeNull();
+      expect((await issueService(db).getById(seeded.issueId))!.status).toBe("done");
+    });
+
+    it("leaves insufficient evidence dormant until a later change satisfies the contract", async () => {
+      const seeded = await seedAutomaticReview();
+      const work = nativeStatusReassessmentWork(db), scope = selectedScope(seeded);
+      const [assessment] = await db.select().from(workAssessments).where(eq(workAssessments.id, seeded.assessmentId));
+      await db.update(workAssessments).set({ createdAt: new Date(Date.now() - 2000),
+        assessmentJson: { ...assessment.assessmentJson, allCriteriaSatisfied: false } }).where(eq(workAssessments.id, seeded.assessmentId));
+      await db.update(issueWorkProducts).set({ reviewState: "changes_requested", updatedAt: new Date() })
+        .where(eq(issueWorkProducts.id, seeded.workProductId));
+      const [pending] = await work.load(scope);
+      expect(pending).toBeDefined();
+      expect(await work.check(pending)).toBeNull();
+      expect((await issueService(db).getById(seeded.issueId))!.status).toBe("in_review");
+      expect(await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, seeded.issueId))).toHaveLength(1);
+      await db.update(issueWorkProducts).set({ reviewState: "approved", updatedAt: new Date() })
+        .where(eq(issueWorkProducts.id, seeded.workProductId));
+      const [changed] = await work.load(scope);
+      expect(await work.check(changed)).toBeNull();
+      expect((await issueService(db).getById(seeded.issueId))!.status).toBe("done");
+    });
+
+    it.each(["unknown lease", "pending effect", "ownership"] as const)("waits for the %s owner to release its obligation", async held => {
+      const seeded = await seedAutomaticReview();
+      await dismissAutomaticCompletionReviews(db, seeded.issueId);
+      const work = nativeStatusReassessmentWork(db), scope = selectedScope(seeded);
+      const [pending] = await work.load(scope);
+      if (held === "unknown lease") await db.update(nativeRunFinalizations).set({ leaseOwner: "unknown", leaseExpiresAt: null })
+        .where(eq(nativeRunFinalizations.runId, seeded.runId));
+      if (held === "pending effect") await db.update(statusDecisionEffects).set({ deliveryState: "pending" })
+        .where(eq(statusDecisionEffects.decisionId, seeded.decision.id));
+      if (held === "ownership") await db.update(heartbeatRuns).set({ status: "running", errorCode: "native_execution_ownership_unverified", nativePhase: "terminal_failure" })
+        .where(eq(heartbeatRuns.id, seeded.runId));
+      expect(await work.load(scope)).toEqual([]);
+      expect(await work.check(pending)).toBeNull();
+      expect((await issueService(db).getById(seeded.issueId))!.status).toBe("in_review");
+    });
+
+    it("keeps a newly saved near-term deadline after a competing commit", async () => {
+      const seeded = await seedAutomaticReview();
+      await dismissAutomaticCompletionReviews(db, seeded.issueId);
+      const work = nativeStatusReassessmentWork(db), scope = selectedScope(seeded);
+      const [pending] = await work.load(scope);
+      const future = new Date(Date.now() + 5000);
+      const transaction = db.transaction.bind(db);
+      const intercept = vi.spyOn(db, "transaction").mockImplementationOnce((async (callback, options) => {
+        await db.update(nativeRunFinalizations).set({ nextAttemptAt: future }).where(eq(nativeRunFinalizations.runId, seeded.runId));
+        return transaction(callback, options);
+      }) as typeof db.transaction);
+      try { expect(await work.check(pending)).toEqual({ ...pending, dueAt: future.getTime() }); }
+      finally { intercept.mockRestore(); }
+      expect((await issueService(db).getById(seeded.issueId))!.status).toBe("in_review");
+    });
+
+    it("does not query after discovery was cancelled", async () => {
+      const controller = new AbortController(); controller.abort();
+      const select = vi.spyOn(db, "select");
+      try {
+        await expect(nativeStatusReassessmentWork(db).load(undefined, controller.signal)).rejects.toThrow("discovery stopped");
+        expect(select).not.toHaveBeenCalled();
+      } finally { select.mockRestore(); }
+    });
+  });
 
   it("retires a proven automatic review and applies the current successful completion exactly once", async () => {
     const seeded = await seedAutomaticReview();

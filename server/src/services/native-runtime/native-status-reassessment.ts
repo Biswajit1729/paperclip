@@ -18,7 +18,7 @@ export type NativeStatusReassessmentSource = {
   contextSnapshot: Record<string, unknown> | null;
 };
 
-type Outcome = { kind: "unchanged" | "superseded" | "deferred" } | {
+type Outcome = { kind: "unchanged" | "superseded" } | { kind: "deferred"; retry?: boolean } | {
   kind: "committed";
   result: { runId: string; phase: "committed"; reconciliationAction: string | null;
     decisionId: string; reconciliationDecision: NativeStatusDecision };
@@ -215,7 +215,8 @@ export async function reassessNativeStatusFromSource(
           : undefined,
       });
     } catch (error) {
-      if (error instanceof NativeStatusRaceError) return { kind: "deferred" };
+      if (error instanceof NativeStatusRaceError) return options.onlyWhenDue
+        ? { kind: "deferred", retry: true } : { kind: "deferred" };
       throw error;
     }
     return { kind: "committed", result: {

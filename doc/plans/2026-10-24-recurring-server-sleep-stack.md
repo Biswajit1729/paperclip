@@ -2470,3 +2470,14 @@ opt-in at the existing committer transaction; no outer transaction or early
 publication is added. Worker discovery, producer/lifecycle/cost evidence and
 periodic removal remain outstanding. No new PR or merge is claimed; all original
 remaining duties and older stack gates remain open.
+
+Slice 50 scoped-worker checkpoint: discovery/check/register now use the shared
+scheduler, with distinct dormant and retryable outcomes and exact saved deadlines.
+A real retirement missed wake and a near-term deadline delay were reproduced and
+fixed. Final local verification passes 116 status/worker cases plus 187 governed
+response consumer cases; server types pass. Driver SQL capture proves quiet after
+settlement and during drain for the tested path. Initial history cost measurements
+and their synthetic-fixture limits are recorded in the owner audit. The worker is
+not registered in startup and periodic reassessment remains. Producer coverage,
+concurrent authority audit, selected-current/backlog cost and full acceptance are
+still pending; no slice 50 PR or merge, and the full original scope stays open.

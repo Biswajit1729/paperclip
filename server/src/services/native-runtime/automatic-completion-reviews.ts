@@ -1,3 +1,4 @@
+import { notifyNativeStatusReassessment } from "../native-status-reassessment-notifications.js";
 import type { AutomaticCompletionReviewScope } from "../automatic-completion-review-notifications.js";
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
@@ -138,6 +139,7 @@ async function dismissCandidates(db: Db, candidates: Awaited<ReturnType<typeof f
           .for("update");
         if (!issue) return;
         await notifyChatRunMilestones(tx, interaction);
+        await notifyNativeStatusReassessment(tx, { companyId: issue.companyId, issueId: issue.id, runId: decision.runId });
         const now = new Date();
         const [retired] = await tx
           .update(issueThreadInteractions)

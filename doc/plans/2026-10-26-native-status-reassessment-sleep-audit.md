@@ -149,3 +149,63 @@ that state is released. Logs: /tmp/sleep50-guard-before.log,
 This is not worker acceptance. Candidate selection, dormant-versus-retry outcome
 handling, producer coverage, lifecycle/cost tests and periodic removal remain.
 No slice 50 PR has been published and no additional polling has been removed.
+
+## Scoped worker and first producer
+
+A local, not-yet-registered worker now discovers the three existing activation
+conditions with company/task/run/agent scopes and 100-row keyset pages. Candidate
+SQL excludes superseded decisions, held native ownership, unknown finalization
+leases and old pending effects. It is discovery, not mutation authority: check
+reloads the source and the committer still applies the locked guard. Future retry
+and live lease deadlines retain their maximum. A commit race requests a retry;
+unchanged evidence or a dormant review prerequisite does not keep recurring work
+scheduled. The shared scoped-deadline helper owns coalescing, fairness, admission
+and retry bookkeeping. No new queue table is added.
+
+Nine initial discovery/owner tests pass for retired reviews, changed evidence,
+authoritative task changes, future retries/leases, insufficient evidence,
+ownership exclusions and pre-aborted discovery. A tenth regression exposed a
+newly saved five-second deadline being pushed out to generic 30-second backoff.
+The worker now returns that saved future deadline exactly; backoff applies only
+when the source is still immediately eligible after a commit race. The complete
+113-case status corpus and server types pass. Evidence:
+/tmp/sleep50-worker-first.log, /tmp/sleep50-deadline-before.log,
+/tmp/sleep50-worker-after.log and /tmp/sleep50-worker-after-types.log.
+
+An isolated lifecycle test reproduced a real missed wake: after the worker went
+quiet, automatic review retirement left the task in review. Retirement now
+signals the exact task/run inside its existing transaction, before changing the
+card. The common native-finalization signal also includes reassessment, retaining
+its supplied scope. All three lifecycle tests pass: real retirement after idle,
+first retirement during drain followed by resume, and a saved future retry across
+shutdown/restart without early dispatch. Driver-level SQL capture verifies no SQL
+across two former polling minutes after completion or while drain is paused.
+The existing governed-response suite passes all 187 cases after the shared
+notification change. Logs: /tmp/sleep50-lifecycle-before.log,
+/tmp/sleep50-lifecycle-after.log, /tmp/sleep50-lifecycle-types.log and
+/tmp/sleep50-worker-responses.log.
+
+Initial read-only query measurement reused slice 49's 10,000 cloned history rows.
+Those copies share a task and their decisions are superseded for reassessment;
+this is not proof of 10,000 independently selected current assessments or an
+outstanding reassessment backlog. Startup returned 62 candidates from other
+retained history in one query (305 ms cold wall time; warm EXPLAIN execution about
+47 ms). Company/task scopes returned none in 34/20 ms, exact run in 2.6 ms.
+Plans and logs: /tmp/sleep50-query-{startup,company,issue,run}.plan and
+/tmp/sleep50-query-plan.log. Selected-current history, backlog cost and cancellation
+between pages still need measurement before enabling the worker.
+
+Remaining work is substantial: work-product and alternate writers, task changes,
+classifier inputs while a retired review is dormant, current-contract/workspace/
+governance and ownership transitions, further transaction/lifecycle cases,
+startup registration and periodic removal. Existing retirement prerequisite reads
+precede the committer; audit their serialization with producer owners before
+claiming concurrent authority coverage. In particular, completion-contract
+creation uses its own advisory lock rather than the status committer's issue
+lock. This checkpoint is not a claim that every business-fact race is covered.
+The existing periodic reassessment path remains active and slice 50 has no PR.
+
+Final current-source local rerun passes 116 tests across the status corpus and
+isolated worker lifecycle files (/tmp/sleep50-final-local.log). Together with the
+187 governed-response cases this is 303 distinct passing cases, not whole-workspace
+or remote PR acceptance. The last server typecheck also passes.
