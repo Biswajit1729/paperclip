@@ -1,3 +1,5 @@
+import { nativeResponsePresentationWork } from "./native-response-presentation-work.js";
+import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { asc, eq, sql } from "drizzle-orm";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
@@ -61,6 +63,8 @@ import {
   subscribeCompanyLiveEvents,
 } from "../live-events.js";
 
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_CONTROL_PLANE_TEST_DATABASE_URL");
+
 describe("PaperclipControlPlanePort conformance", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   let db: ReturnType<typeof createDb>;
@@ -83,8 +87,11 @@ describe("PaperclipControlPlanePort conformance", () => {
   const governanceRunnerId = "00000000-0000-4000-8000-000000000021";
 
   beforeAll(async () => {
-    temporary = await startEmbeddedPostgresTestDatabase("paperclip-native-port-");
-    db = createDb(temporary.connectionString);
+    if (external) db = createDb(external);
+    else {
+      temporary = await startEmbeddedPostgresTestDatabase("paperclip-native-port-");
+      db = createDb(temporary.connectionString);
+    }
     const identity = CONTROL_PLANE_CONFORMANCE_OPEN.identity;
     await db.insert(companies).values({ id: identity.companyId, name: "Phase 6", issuePrefix: "P6C" });
     await db.insert(agents).values({
@@ -609,7 +616,7 @@ describe("PaperclipControlPlanePort conformance", () => {
       completionContractSha256: localContractSha,
       contextSnapshot: { issueId },
     });
-    const observerDb = createDb(temporary!.connectionString);
+    const observerDb = createDb(external ?? temporary!.connectionString);
     const observed: Array<Record<string, unknown>> = [];
     const committedCallbacks: string[] = [];
     let visibilityCheck: Promise<Array<{ eventType: string }>> | null = null;
@@ -1054,7 +1061,10 @@ describe("PaperclipControlPlanePort conformance", () => {
       .where(eq(heartbeatRuns.id, taskRunId));
     expect(await repair()).toBe(false);
     await db.update(heartbeatRuns).set({ contextSnapshot: {} }).where(eq(heartbeatRuns.id, taskRunId));
-    expect(await repair()).toBe(true);
+    const work = nativeResponsePresentationWork(db);
+    const [entry] = await work.load({ companyId: identity.companyId, runId: taskRunId });
+    expect(entry?.id).toBe(taskRunId);
+    expect(await work.check(entry)).toBeNull();
     expect(await repair()).toBe(false);
     expect(await db.select({ body: issueComments.body }).from(issueComments)
       .where(eq(issueComments.createdByRunId, taskRunId)).orderBy(asc(issueComments.createdAt)))

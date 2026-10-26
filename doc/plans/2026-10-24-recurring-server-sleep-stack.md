@@ -2327,3 +2327,15 @@ full local/remote acceptance, and PR publication are still required. Master was
 refreshed to `7703220d38`; the complete stack has not yet been reconciled with it.
 No merge, complete migration, whole-instance sleep, or full-goal completion is
 claimed.
+
+## Slice 48 producer and lifecycle checkpoint
+
+Response recovery now shares the finalization notification boundary, receives
+run-scoped late evidence, and wakes when a paused agent resumes or retry admission
+settles. The resume gap was reproduced before fixing it at lifecycle's transaction
+boundary. The existing lifecycle suite, both response variants' supporting suites,
+and the combined acceptance selection cover 175 distinct passing cases across
+runs; server types pass. A real source-row lock verifies retry across drain.
+Earlier harness/test failures and the 10,000-unpresented-row discovery measurements
+are preserved in the response audit. No startup wiring, periodic removal, PR
+publication, remote acceptance, or whole-instance sleep is claimed yet.

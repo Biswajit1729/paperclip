@@ -1,3 +1,5 @@
+import { isAgentStatusInvokable } from "@paperclipai/shared";
+import { notifyNativeResponsePresentation } from "./native-response-presentation-notifications.js";
 import { logger } from "../middleware/logger.js";
 import type { Db } from "@paperclipai/db";
 import * as lifecycle from "../modules/agent-lifecycle/index.js";
@@ -19,6 +21,11 @@ export type { LifecycleDriver, LifecycleAgent } from "../modules/agent-lifecycle
 export function createAgentLifecycleEffects(_hooks: BudgetServiceHooks = {}): lifecycle.LifecycleEffects {
   return {
     notifyWork: tx => notifyDeliveryWork(tx, DELIVERY_QUEUES.agentLifecycle),
+    async beforeStatusChange(tx, companyId, agentId, before, after) {
+      if (!isAgentStatusInvokable(before) && isAgentStatusInvokable(after)) {
+        await notifyNativeResponsePresentation(tx, { companyId, agentId });
+      }
+    },
     reportFailure(context, error) {
       const code = lifecycle.lifecycleFailureCode(error);
       logger.warn({ ...context, failureCode: code ?? "unclassified" }, "Agent lifecycle operation failed");

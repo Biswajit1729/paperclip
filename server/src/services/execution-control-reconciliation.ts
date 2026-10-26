@@ -1,4 +1,4 @@
-import { notifyNativePendingEffects } from "./native-pending-effect-notifications.js";
+import { notifyNativeFinalizationWork } from "./native-finalization-notifications.js";
 import { notifyUnsafeWorkspaceExportRunChange } from "./unsafe-workspace-export-notifications.js";
 import { notifyCancelledWorkspacePreservation } from "./cancelled-workspace-preservation-notifications.js";
 import { notifyInstructionCollection } from "./instruction-collection-notifications.js";
@@ -146,7 +146,7 @@ export async function reconcileAbandonedExecutionControl(
           }
           // A persisted result belongs to the existing finalizer, not a replacement provider.
           if (coordinator?.resultId) {
-            await notifyNativePendingEffects(tx, { companyId: run.companyId, runId: run.id });
+            await notifyNativeFinalizationWork(tx, { companyId: run.companyId, runId: run.id });
             await tx
               .update(nativeRunFinalizations)
               .set({

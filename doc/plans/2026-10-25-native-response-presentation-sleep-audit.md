@@ -230,3 +230,84 @@ cases in `/tmp/sleep48-worker-tests-v4.log`; the final expanded result is
 No slice 48 PR, full workspace acceptance, remote CI/review, or provider sleep
 qualification is claimed by these local results. The earlier stack gates and
 remaining recurring-server duties are unchanged.
+
+## Producer integration and lifecycle evidence
+
+The existing pending-effect notification boundary is now named
+`notifyNativeFinalizationWork` and wakes both consumers. Its existing coordinator
+claim/retry, effect settlement, persisted-attention replay, retained-session release,
+and recovery callers retain transaction ownership. No new wrappers are threaded
+through those callers. Response discovery now accepts exact run and agent scopes.
+
+Both journal writers notify for accepted-result evidence and normalized completed
+final assistant messages, after source/deduplication checks and before persistence.
+Deltas, tool completions, and analysis messages do not activate response recovery.
+The port's late accepted-result journal test and the internal final-message test
+exercise these existing writers. Monitor continuation recovery is also exercised
+through the worker, without another accepted result or provider execution.
+
+Agent availability was a real missing producer: the recovery owner rejects a
+paused agent, but resuming that agent did not invalidate dormant responses. A
+real resume regression failed before the fix. Lifecycle now exposes a narrow
+`beforeStatusChange` integration callback, invoked inside its existing transaction
+before the compatibility status write. The service supplies response policy only
+for a transition from non-invokable to invokable, scoped to that agent. Lifecycle
+still owns status transitions and the transaction; its existing resource-event
+callback retains its semantics. With no response worker registered, this adds only
+the existing notification protocol, not an independent worker or provider call.
+The complete lifecycle suite exercises existing consumers of the new contract.
+
+Failed-chat retry admission also notifies response recovery when its source action
+becomes processed. This can establish the ancestry proof after a very fast child
+run has already finished. Five real admission scenarios verify that the response
+consumer observes the committed action and the exact issue scope: commit, retry,
+startup, stale claim, and rollback. An assignment-reactivation experiment instead
+hit the existing prohibition on changing a channel-bound task's agent; that
+unsupported fixture was removed without relaxing the guard.
+
+Validation across these runs covers 175 distinct cases: 59 response/authority and
+retry-admission cases, 58 lifecycle cases, 21 monitor-continuation cases, and 37
+control-plane-port cases. Server typechecking passes. These are selected suites,
+not a claim that the entire repository suite or remote PR checks passed.
+
+- `/tmp/sleep48-producers-rerun.log`: port 37/37, continuation 20/20, server types.
+- `/tmp/sleep48-producer-acceptance.log`: lifecycle 58/58, expanded continuation
+  21/21, response/authority 53 selected, server types.
+- `/tmp/sleep48-acceptance-v5.log`: combined response/authority/admission 59 passed;
+  1,546 unrelated cases not selected. Types in
+  `/tmp/sleep48-acceptance-typecheck-v5.log`.
+- Real action-row contention now verifies retry retention through drain, zero
+  passive SQL while paused, and eventual single publication after resume.
+
+Failures remain recorded. The first external-port run had 36 passes and one
+observer connection using the absent embedded database; the observer now uses the
+validated external URL. The resume regression and invalid reassignment experiment
+are in `/tmp/sleep48-eligibility-before.log`. A test-only observer initially omitted
+its required retry interval and produced finite-deadline warnings; corrected in
+`/tmp/sleep48-retry-producer-v2.log`. The combined v4 run exposed a global fault
+injection targeting another retained fixture (13 transactions, not one). The v5
+run uses an actual lock on the tested response's source instead of assuming global
+candidate order; all 59 cases pass with that stronger fault boundary.
+
+## Unpresented-backlog measurement
+
+A disposable clone of the earlier plan fixture has 10,008 structurally eligible,
+unpresented candidates. The actual worker loader took 2,980 ms and 101 queries for
+global reconstruction; 10,001 candidates in one company took 2,828 ms; the exact
+run took 1.73 ms and one query. Agent reconstruction for that company's 10,001
+candidates took 2,826 ms. Serialized entries occupy about 2.05 MB. The drain gate
+stopped discovery after two pages. Evidence:
+`/tmp/sleep48-unpresented-backlog.mts` and `.log`.
+
+This measures discovery, not authorization or publication throughput: the cloned
+rows do not establish valid independent publication authority. Each SQL page is
+bounded to 100 rows, but total reconstruction memory/time still scales with the
+unpresented backlog. Ordinary finalization and journal notifications are run-scoped;
+agent resume is agent-scoped; actual authority/configuration changes may reconstruct
+a larger scope. Health-only configuration signals do not invalidate this worker.
+Do not describe total reconstruction as constant-cost or claim fleet qualification.
+
+Startup/shutdown integration, removal of this duty's periodic call, final producer
+coverage review, full PR verification, and publication remain outstanding. The old
+backstop is still present. Master was refreshed to `6bdcb70244`; the full stack
+still needs reconciliation and its earlier failing/review gates remain open.

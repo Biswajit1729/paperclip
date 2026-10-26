@@ -1,3 +1,4 @@
+import { isNativeResponseEvidence } from "../services/native-response-presentation-notifications.js";
 import { describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
 import { authorizeCommittedChatResponse, onCommittedChatResponseAuthorityRegistered, registerCommittedChatResponseAuthority } from "../services/durable-chat-wakeup.js";
@@ -37,5 +38,18 @@ describe("committed response authority lifecycle", () => {
       expect(first).not.toHaveBeenCalled();
       expect(second).toHaveBeenCalledExactlyOnceWith(db, input);
     } finally { removeSecond(); }
+  });
+});
+
+
+describe("accepted response evidence selection", () => {
+  it.each([
+    { type: "item.delta", kind: "agentMessage", channel: "final", expected: false },
+    { type: "item.completed", kind: "agentMessage", channel: "analysis", expected: false },
+    { type: "item.completed", kind: "commandExecution", channel: "final", expected: false },
+    { type: "item.completed", kind: "agentMessage", channel: "final", expected: true },
+    { type: "run.result.accepted", kind: "agentMessage", channel: "final", expected: true },
+  ])("signals only response evidence: $type/$kind/$channel", ({ type, kind, channel, expected }) => {
+    expect(isNativeResponseEvidence(type, { payload: { kind, channel, text: "Saved evidence" } })).toBe(expected);
   });
 });

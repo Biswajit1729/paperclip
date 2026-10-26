@@ -1,4 +1,4 @@
-import { notifyNativePendingEffects } from "../native-pending-effect-notifications.js";
+import { notifyNativeFinalizationWork } from "../native-finalization-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "../unsafe-workspace-export-notifications.js";
 import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-preservation-notifications.js";
 import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
@@ -3814,7 +3814,7 @@ export async function reconcileRetainedNativeSessionCleanup(
         renameSync(owned.root, archive);
       }
       renameSync(copy, owned.root);
-      await notifyNativePendingEffects(tx, { companyId: owned.run.companyId, runId: owned.run.id });
+      await notifyNativeFinalizationWork(tx, { companyId: owned.run.companyId, runId: owned.run.id });
       await tx
         .update(nativeRunFinalizations)
         .set({
@@ -3872,7 +3872,7 @@ export async function reconcileRetainedNativeSessionCleanup(
         .limit(1)
         .then((rows) => rows[0]);
       if (!current || current.leaseOwner !== leaseOwner) return;
-      await notifyNativePendingEffects(tx, { companyId: owned.run.companyId, runId: owned.run.id });
+      await notifyNativeFinalizationWork(tx, { companyId: owned.run.companyId, runId: owned.run.id });
       await tx
         .update(nativeRunFinalizations)
         .set({
@@ -9477,7 +9477,7 @@ async function executePaperclipNativeSessionWithinScope(
           )
           .for("update");
         await notifyExecutionRunWork(tx);
-        await notifyNativePendingEffects(tx, input.execution.binding);
+        await notifyNativeFinalizationWork(tx, input.execution.binding);
         const updated = await tx
           .update(nativeRunFinalizations)
           .set({
@@ -9813,7 +9813,7 @@ async function executePaperclipNativeSessionWithinScope(
   }
   const releaseNow = new Date();
   const released = await timeController("coordinator_release", () => input.db.transaction(async tx => {
-    await notifyNativePendingEffects(tx, input.execution.binding);
+    await notifyNativeFinalizationWork(tx, input.execution.binding);
     return tx.update(nativeRunFinalizations)
       .set({
         leaseOwner: null,

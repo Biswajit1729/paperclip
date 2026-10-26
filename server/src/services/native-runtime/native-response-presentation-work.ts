@@ -2,17 +2,17 @@ import { and, asc, eq, gt, inArray, isNotNull, isNull, notExists, or, sql } from
 import { heartbeatRuns, nativeRunFinalizations, nativeRunResults, statusDecisions, statusDecisionEffects, type Db } from "@paperclipai/db";
 import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
-import type { ChatRunMilestoneScope } from "../chat-run-milestone-notifications.js";
+import type { NativeResponsePresentationScope } from "../native-response-presentation-notifications.js";
 import { onCommittedChatResponseAuthorityRegistered } from "../durable-chat-wakeup.js";
 import { registerScopedDeadlineWork } from "../scoped-deadline-work.js";
 import { recoverCommittedNativeChatResponse } from "./native-run-finalizer.js";
 
-type Entry = { id: string; companyId: string; issueId: string; dueAt: number };
+type Entry = { id: string; companyId: string; issueId: string; agentId: string; dueAt: number };
 
 export function nativeResponsePresentationWork(db: Db) {
-  function candidates(scope?: ChatRunMilestoneScope, after?: string, runId?: string) {
+  function candidates(scope?: NativeResponsePresentationScope, after?: string, runId?: string) {
     return db.select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId,
-      issueId: nativeRunFinalizations.issueId, nextAttemptAt: nativeRunFinalizations.nextAttemptAt,
+      issueId: nativeRunFinalizations.issueId, agentId: heartbeatRuns.agentId, nextAttemptAt: nativeRunFinalizations.nextAttemptAt,
     }).from(nativeRunFinalizations)
       .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.id, nativeRunFinalizations.runId),
         eq(heartbeatRuns.companyId, nativeRunFinalizations.companyId), eq(heartbeatRuns.nativeIssueId, nativeRunFinalizations.issueId)))
@@ -46,15 +46,17 @@ export function nativeResponsePresentationWork(db: Db) {
           inArray(statusDecisionEffects.deliveryState, ["pending", "failed"]),
         ))),
         scope ? and(eq(heartbeatRuns.companyId, scope.companyId), scope.issueId ? eq(nativeRunFinalizations.issueId, scope.issueId) : undefined) : undefined,
+        scope?.runId ? eq(heartbeatRuns.id, scope.runId) : undefined,
+        scope?.agentId ? eq(heartbeatRuns.agentId, scope.agentId) : undefined,
         after ? gt(heartbeatRuns.id, after) : undefined, runId ? eq(heartbeatRuns.id, runId) : undefined,
       )).orderBy(asc(heartbeatRuns.id)).limit(100);
   }
-  async function load(scope?: ChatRunMilestoneScope, signal?: AbortSignal, canRun = () => true): Promise<Entry[]> {
+  async function load(scope?: NativeResponsePresentationScope, signal?: AbortSignal, canRun = () => true): Promise<Entry[]> {
     const entries: Entry[] = [];
     let after: string | undefined;
     while (canRun() && !signal?.aborted) {
       const rows = await candidates(scope, after);
-      for (const row of rows) entries.push({ id: row.id, companyId: row.companyId, issueId: row.issueId, dueAt: row.nextAttemptAt?.getTime() ?? 0 });
+      for (const row of rows) entries.push({ id: row.id, companyId: row.companyId, issueId: row.issueId, agentId: row.agentId, dueAt: row.nextAttemptAt?.getTime() ?? 0 });
       if (rows.length < 100) return entries;
       after = rows[rows.length - 1].id;
     }
@@ -76,8 +78,8 @@ export function nativeResponsePresentationWork(db: Db) {
   function register(coordinator: ReturnType<typeof createDeliveryWorkCoordinator>, canRun: () => boolean) {
     const worker = registerScopedDeadlineWork(coordinator, {
       queue: DELIVERY_QUEUES.nativeResponsePresentation,
-      decodeScope: (hint: string): ChatRunMilestoneScope | undefined => hint === "*" ? undefined : JSON.parse(hint),
-      matches: (entry: Entry, scope?: ChatRunMilestoneScope) => !scope || entry.companyId === scope.companyId && (!scope.issueId || entry.issueId === scope.issueId),
+      decodeScope: (hint: string): NativeResponsePresentationScope | undefined => hint === "*" ? undefined : JSON.parse(hint),
+      matches: (entry: Entry, scope?: NativeResponsePresentationScope) => !scope || entry.companyId === scope.companyId && (!scope.issueId || entry.issueId === scope.issueId) && (!scope.runId || entry.id === scope.runId) && (!scope.agentId || entry.agentId === scope.agentId),
       load: (scope, signal) => load(scope, signal, canRun),
       check: (entry, signal) => {
         if (!canRun()) throw new Error("Native response presentation recovery paused");

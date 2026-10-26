@@ -1,3 +1,4 @@
+import { resolveExternalTestDatabaseUrl } from "../../../__tests__/helpers/external-test-database.js";
 import { createAgentLifecycle as createLifecycleCommands } from "../index.js";
 import { createAgentLifecycleEffects } from "../../../services/agent-lifecycle.js";
 import { deleteCompany } from "../../../services/company-deletion.js";
@@ -28,13 +29,20 @@ import { budgetService } from "../../../services/budgets.js";
 
 const createLifecycleStore = (db: Db) => createStore(db, createAgentLifecycleEffects());
 
-const support = await getEmbeddedPostgresTestSupport();
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_AGENT_LIFECYCLE_TEST_DATABASE_URL");
+const support = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("agent lifecycle commands", () => {
-  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   let db: Db;
   let companyId: string;
   const workers: ReturnType<typeof configureAgentLifecycle>[] = [];
-  beforeAll(async () => { database = await startEmbeddedPostgresTestDatabase("paperclip-agent-lifecycle-"); db = createDb(database.connectionString); }, 90_000);
+  beforeAll(async () => {
+    if (external) db = createDb(external);
+    else {
+      database = await startEmbeddedPostgresTestDatabase("paperclip-agent-lifecycle-");
+      db = createDb(database.connectionString);
+    }
+  }, 90_000);
   afterAll(async () => { for (const worker of workers) await worker.stop(); await database?.cleanup(); });
   beforeEach(async () => {
     for (const work of workers) await work.stop();

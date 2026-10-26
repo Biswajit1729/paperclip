@@ -1,4 +1,4 @@
-import { notifyNativePendingEffects } from "../native-pending-effect-notifications.js";
+import { notifyNativeFinalizationWork } from "../native-finalization-notifications.js";
 import { notifyEnvironmentCleanup } from "../environment-cleanup-notifications.js";
 import { randomUUID } from "node:crypto";
 import type { Environment, EnvironmentLease } from "@paperclipai/shared";
@@ -135,7 +135,7 @@ export async function retryNativeWorkspaceExport(input: {
         const now = new Date();
         const retry = { ...receipt, requestId: randomUUID(), actorId: input.actorId, repairNote: input.repairNote, requestedAt: now.toISOString(),
           stoppedProvider: initial.lease.metadata?.remoteExecutionTermination };
-        await notifyNativePendingEffects(tx, { companyId: current.run.companyId, runId: current.run.id });
+        await notifyNativeFinalizationWork(tx, { companyId: current.run.companyId, runId: current.run.id });
         await tx.update(nativeRunFinalizations).set({ phase: "result_accepted", failureCode: null, nextAttemptAt: null,
           failureDetail: { ...current.coordinator.failureDetail, workspaceFinalizeAttempt: 0, workspaceExportRetry: retry }, updatedAt: now }).where(eq(nativeRunFinalizations.runId, current.run.id));
         await tx.update(heartbeatRuns).set({ status: "running", finishedAt: null, error: null, errorCode: null,

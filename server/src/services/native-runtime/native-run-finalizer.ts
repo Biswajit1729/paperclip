@@ -1,4 +1,4 @@
-import { notifyNativePendingEffects } from "../native-pending-effect-notifications.js";
+import { notifyNativeFinalizationWork } from "../native-finalization-notifications.js";
 import { notifyUnsafeWorkspaceExportRunChange } from "../unsafe-workspace-export-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "../unsafe-workspace-export-notifications.js";
 import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-preservation-notifications.js";
@@ -214,7 +214,7 @@ async function claimCoordinator(input: {
       coordinator.leaseOwner !== leaseOwner
     )
       throw new Error("native_finalization_lease_busy");
-    if (coordinator.decisionId) await notifyNativePendingEffects(tx, coordinator);
+    if (coordinator.decisionId) await notifyNativeFinalizationWork(tx, coordinator);
     const [updated] = await tx
       .update(nativeRunFinalizations)
       .set({
@@ -382,7 +382,7 @@ async function recordRetryableFailure(input: {
             ? "native_workspace_sync_out_retry_exhausted"
             : "native_finalization_retry_exhausted"
           : input.failureCode;
-    await notifyNativePendingEffects(tx, { companyId: input.run.companyId, runId: input.run.id });
+    await notifyNativeFinalizationWork(tx, { companyId: input.run.companyId, runId: input.run.id });
     if (phase === "terminal_failure") await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, input.run.companyId);
     if (phase === "terminal_failure" && failureCode === "native_workspace_sync_out_unsafe_archive") {
       await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: input.run.companyId, issueId: input.coordinator.issueId });

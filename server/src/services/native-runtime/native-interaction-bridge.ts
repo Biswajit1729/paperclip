@@ -1,4 +1,4 @@
-import { notifyNativePendingEffects } from "../native-pending-effect-notifications.js";
+import { notifyNativeFinalizationWork } from "../native-finalization-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "../unsafe-workspace-export-notifications.js";
 import type { Db } from "@paperclipai/db";
 import type { NativeInteractionResponseEnvelope } from "../../vendor/paperclip-runner/index.js";
@@ -633,7 +633,7 @@ export async function routePersistedNativeResultAttention(input: {
         const delegation = effects.find((effect) => effect.kind === "create_delegated_issue");
         const finalizationError = effects.find((effect) => effect.kind === "record_finalization_error");
         await input.db.transaction(async tx => {
-          await notifyNativePendingEffects(tx, { companyId: binding.companyId, runId: input.runId });
+          await notifyNativeFinalizationWork(tx, { companyId: binding.companyId, runId: input.runId });
           await tx.update(nativeRunFinalizations).set({
             phase: finalizationError ? "retryable_failure" : "committed",
             assessmentId: existingAssessment.id,
