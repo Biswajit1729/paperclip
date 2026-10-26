@@ -123,7 +123,7 @@ function createMuseBroker(db:Db, publicOrigin?:string) {
     await tx.update(mcpOauthTokens).set({usedAt:new Date(),expiresAt:new Date()}).where(eq(mcpOauthTokens.grantId,b.grantId));
   }
   async function revokeBinding(tx:ExternalAdmissionTransaction,b:typeof bindings.$inferSelect,operatorId:string,reason:string,actorType:"user"|"system"="user") {
-    await notifyDeliveryWork(tx, DELIVERY_QUEUES.museMaintenance);
+    await notifyDeliveryWork(tx, DELIVERY_QUEUES.museMaintenance, "*");
     const runs=await fence(tx,b,reason);
     await tx.update(bindings).set({status:"revoked",revokedAt:new Date(),ticketHash:null,challengeHash:null,cleanupExpiresAt:new Date(Date.now()+MUSE_CLEANUP_TTL_MS),deadlineEnforcedAt:b.deadlineEnforcedAt??(b.qualificationExpiresAt&&b.qualificationExpiresAt<=new Date()?new Date():null),revision:b.revision+1,updatedAt:new Date()}).where(eq(bindings.id,b.id));
     await tx.update(credentials).set({revokedAt:new Date()}).where(and(eq(credentials.bindingId,b.id),inArray(credentials.kind,["access","refresh","signal"])));
@@ -181,7 +181,7 @@ function createMuseBroker(db:Db, publicOrigin?:string) {
           await tx.update(credentials).set({expiresAt:new Date(Date.now()+MUSE_CLEANUP_TTL_MS)}).where(and(eq(credentials.bindingId,old.id),inArray(credentials.kind,["cleanup","detector_cleanup"]),isNull(credentials.revokedAt)));
         } else if(input.replaceBindingId)throw conflict("Invitation changed. Refresh before replacing its ticket.");
         const [latest]=await tx.select({generation:bindings.generation}).from(bindings).where(and(eq(bindings.companyId,input.companyId),eq(bindings.agentId,input.agentId))).orderBy(desc(bindings.generation)).limit(1);
-        await notifyDeliveryWork(tx, DELIVERY_QUEUES.museMaintenance);
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.museMaintenance, "*");
         const [created]=await tx.insert(bindings).values({id:bindingId,companyId:input.companyId,agentId:input.agentId,operatorId:input.operatorId,generation:(latest?.generation??0)+1,ticketHash:museCredentialHash(ticket),ticketExpiresAt:new Date(Date.now()+MUSE_TICKET_TTL_MS)}).returning();
         await logActivity(tx as unknown as Db,{companyId:input.companyId,actorType:"user",actorId:input.operatorId,action:"muse.pairing_created",entityType:"agent",entityId:input.agentId,details:{bindingId:created!.id,generation:created!.generation}});
         await updateAgentConfigurationInTransaction(tx as unknown as Db,agent.id,{adapterConfig:{...agent.adapterConfig,museBindingId:created!.id}},{recordRevision:{createdByUserId:input.operatorId,source:"muse-pairing"}});
@@ -289,14 +289,15 @@ function createMuseBroker(db:Db, publicOrigin?:string) {
       for(const publication of publications){try{publishActivity(publication);}catch{}}
       return result;
     },
-    async reconcileTerminalAssignments(companyId:string,agentId:string,bindingId:string) {
+    async reconcileTerminalAssignments(companyId:string,agentId:string,bindingId:string,options?:{limit:number}) {
       await db.transaction(tx=>withExternalAdmissionGuard(tx,companyId,agentId,async()=>{
         const [b]=await tx.select().from(bindings).where(and(eq(bindings.id,bindingId),eq(bindings.companyId,companyId),eq(bindings.agentId,agentId))).for("update");if(!b)return;
-        const terminal=await tx.select({a:assignments,run:heartbeatRuns}).from(assignments)
+        const candidates=tx.select({a:assignments,run:heartbeatRuns}).from(assignments)
           .innerJoin(heartbeatRuns,and(eq(heartbeatRuns.id,assignments.runId),eq(heartbeatRuns.companyId,assignments.companyId),eq(heartbeatRuns.agentId,assignments.agentId)))
           .where(and(eq(assignments.bindingId,b.id),eq(assignments.bindingGeneration,b.generation),
             eq(assignments.companyId,b.companyId),eq(assignments.agentId,b.agentId),pendingMuseTerminalAssignmentCondition()))
-          .orderBy(asc(assignments.id)).limit(100);
+          .orderBy(asc(assignments.id));
+        const terminal = await (options ? candidates.limit(options.limit) : candidates);
         for(const {a,run}of terminal) {
           if(a.status==="settled"&&a.acceptedResultAt) {
             if(a.finalizedAt?.getTime()!==run.finishedAt?.getTime())
@@ -322,7 +323,7 @@ function createMuseBroker(db:Db, publicOrigin?:string) {
         if(b.qualificationId)throw conflict("Another qualification already exists.");
         await assertMuseCurrentAuthority(tx,b);
         const startedAt=new Date(input.expiresAt.getTime()-24*60*60_000);
-        await notifyDeliveryWork(tx, DELIVERY_QUEUES.museMaintenance);
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.museMaintenance, "*");
         await tx.update(bindings).set({qualificationId:input.qualificationId,qualificationStartedAt:startedAt,qualificationExpiresAt:input.expiresAt,revision:b.revision+1,updatedAt:new Date()}).where(eq(bindings.id,b.id));
         await logActivity(tx as unknown as Db,{companyId:input.companyId,actorType:"user",actorId:input.operatorId,agentId:input.agentId,action:"muse.qualification_started",entityType:"agent",entityId:input.agentId,details:{bindingId:b.id,generation:b.generation,revision:b.revision+1,authorizingUserId:b.operatorId,qualificationId:input.qualificationId,startedAt:startedAt.toISOString(),expiresAt:input.expiresAt.toISOString()}},publications);
         return {qualificationId:input.qualificationId,startedAt:startedAt.toISOString(),expiresAt:input.expiresAt.toISOString(),revision:b.revision+1};

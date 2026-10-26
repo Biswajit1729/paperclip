@@ -8,7 +8,11 @@ export type ExternalAgentSettlementScope = { companyId: string; bindingId?: stri
 /** Current external settlement consumer. Callers supply domain identities, never
  * provider profiles or current agent configuration; old bindings still own work. */
 export function notifyExternalAgentSettlement(tx: object, scope?: ExternalAgentSettlementScope) {
-  return notifyDeliveryWork(tx, DELIVERY_QUEUES.museMaintenance, scope ? JSON.stringify(scope) : "*");
+  // Structural callers can carry other fields, including a database handle.
+  // Only domain identities belong in the transaction hint.
+  return notifyDeliveryWork(tx, DELIVERY_QUEUES.museMaintenance, scope ? JSON.stringify({
+    companyId: scope.companyId, bindingId: scope.bindingId, runId: scope.runId, issueId: scope.issueId,
+  }) : "*");
 }
 
 /** Used with the assignment/run join, including under the binding lock. A held

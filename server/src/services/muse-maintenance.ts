@@ -75,7 +75,7 @@ export function startMuseMaintenance(
                   }
                 }
                 if (settlementAllowed) {
-                  await broker.reconcileTerminalAssignments(b.companyId, b.agentId, b.id);
+                  await broker.reconcileTerminalAssignments(b.companyId, b.agentId, b.id, { limit: 100 });
                   inspected.add(b.id);
                 }
               } catch {
@@ -96,7 +96,7 @@ export function startMuseMaintenance(
               for (const binding of pending) {
                 if (signal.aborted) throw new Error("Muse settlement stopped");
                 if (inspected.has(binding.id)) continue;
-                try { await broker.reconcileTerminalAssignments(binding.companyId, binding.agentId, binding.id); }
+                try { await broker.reconcileTerminalAssignments(binding.companyId, binding.agentId, binding.id, { limit: 100 }); }
                 catch (error) { failed = true; logger.warn({ err: error, bindingId: binding.id }, "Muse settlement failed; will retry."); }
               }
               if (pending.length < 100) break;

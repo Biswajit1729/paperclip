@@ -195,7 +195,7 @@ describeDatabase("Muse commit and deadline maintenance", () => {
     expect(calls).toEqual([]);
     enabled = true;
     await vi.advanceTimersByTimeAsync(5000); await settle();
-    expect(effects.reconcileTerminalAssignments).toHaveBeenCalledWith(binding.companyId, binding.agentId, binding.id);
+    expect(effects.reconcileTerminalAssignments).toHaveBeenCalledWith(binding.companyId, binding.agentId, binding.id, { limit: 100 });
     expect(calls.filter(c => c === "update")).toHaveLength(1);
   });
   it("pauses deadline maintenance during drain and catches up after release", async () => {

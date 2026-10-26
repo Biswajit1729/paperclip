@@ -1,3 +1,4 @@
+import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
 import { pendingNativeRunProjectionCondition } from "./native-run-projection.js";
 import { nativeStatusReassessmentSourceIsSuperseded, reassessNativeStatusFromSource } from "./native-status-reassessment.js";
 import { resolveNativeReconciliationStatus } from "./native-reconciliation-status.js";
@@ -255,6 +256,7 @@ export async function claimNativeSessionResumptions(input: {
           nextAttemptAt: null,
           updatedAt: now,
         }).where(eq(nativeRunFinalizations.runId, row.run.id));
+        await notifyExternalAgentSettlement(tx, { companyId: row.run.companyId, runId: row.run.id });
         await notifyInstructionCollection(tx, { companyId: row.run.companyId, runId: row.run.id });
         await notifyCancelledWorkspacePreservation(tx, { companyId: row.run.companyId, runId: row.run.id });
         await notifyUnsafeWorkspaceExportRunChange(tx, row.run);
@@ -387,6 +389,7 @@ type NativeReconciliationOptions = {
   skipNativeResultCommit?: boolean;
   skipNativeRunProjection?: boolean;
   skipExternalConversationSettlement?: boolean;
+  skipExternalAgentSettlement?: boolean;
   skipNativeRecoveryNotices?: boolean;
   pluginWorkerManager?: WorkspaceWorkers;
   environmentRuntime?: EnvironmentRuntimeService;
@@ -686,6 +689,7 @@ async function reconcileNativeFinalizationsPass(
           skipNativeReviewResponse: options.skipNativeReviewResponse,
         skipCommittedRunProjection: options.skipNativeRunProjection,
         skipExternalConversationSettlement: options.skipExternalConversationSettlement,
+        skipExternalAgentSettlement: options.skipExternalAgentSettlement,
         skipNativeRecoveryNotices: options.skipNativeRecoveryNotices,
           preserveProviderAttempt: Boolean(
             readNativeWorkspaceSyncReference(
@@ -750,6 +754,7 @@ async function reconcileNativeFinalizationsPass(
         skipNativeReviewResponse: options.skipNativeReviewResponse,
         skipCommittedRunProjection: options.skipNativeRunProjection,
         skipExternalConversationSettlement: options.skipExternalConversationSettlement,
+        skipExternalAgentSettlement: options.skipExternalAgentSettlement,
         skipNativeRecoveryNotices: options.skipNativeRecoveryNotices,
         preserveProviderAttempt: Boolean(
           readNativeWorkspaceSyncReference(
