@@ -13,9 +13,18 @@ approval can owe execution even when no agent run exists. Recovery uses the save
 origin and current authorization/target checks; the scheduler sees only whether
 another attempt is needed.
 
-Recovery pages approved requests in ID order using a partial index. It does not
+Startup discovers companies with saved approved requests. Committed review
+signals carry the affected company ID; subsequent discovery and recovery reads
+filter by that company. The shared scoped worker coalesces changes and dispatches
+one company per pass with a one-second minimum spacing. A company writing reviews
+does not scan or lock another company's approved backlog.
+
+Recovery pages that company's approved requests in ID order using a partial index. It does not
 let a full batch of unavailable approvals starve later work. A failed read or
-unresolved executable approval retains a 30-second retry. Once a pass leaves no
+unresolved executable approval retains a 30-second retry. New writes preserve
+that company's retry deadline, while other companies can run independently.
+A company pass still drains all its pages; this change does not cap provider
+calls within that pass or alter the provider's existing execution timeout. Once a pass leaves no
 such obligation, there is no recurring approved-recovery query. An empty system,
 configured idle tools, completed history, and deliberately inert approvals are
 quiet after reconciliation.
@@ -29,7 +38,7 @@ queue invalidation, and the gateway's approval claims and managed-argument
 invalidation. The notification is awaited before SQL in the existing transaction;
 caller-owned outer transactions retain commit/rollback ownership.
 
-A pending-only change can cause one empty approved-recovery pass. It does not
+A pending-only change can cause one empty company-scoped discovery read. It does not
 create a periodic scan. No per-route recovery bookkeeping or database listener
 is added. Signals use the existing database owner's single-active-writer model.
 Independent SQL writers or another process need a separate notification contract.
@@ -57,7 +66,8 @@ replay an uncertain provider call.
 
 The shared deadline worker coalesces notifications, preserves changes during a
 pass, and retains skipped work across idle drain/resume. Startup reconstructs
-saved approvals. Shutdown stops its coordinator registration. With heartbeat
+saved approvals. Company deletion invalidates cached recovery and retries through
+the same transactional notification boundary. Shutdown stops its coordinator registration. With heartbeat
 scheduling disabled, startup keeps the existing one-off recovery behavior.
 
 Pending expiry is owned by the preceding slice. Interrupted execution and
@@ -94,3 +104,14 @@ request to be executed and verifies exactly one provider call before asking for
 a new approval. Its full 469-test suite passes. The initial local command skipped
 its database cases; the suite now honors its supplied disposable database through
 the standard test-database guard independently of embedded Postgres support.
+
+Company-scoping regression: a real signed/reviewed action in company A previously
+caused an unfiltered approved-request SELECT over company B's inert legacy action.
+The captured-SQL test fails before this repair and passes with scoped reads. Added
+lifecycle cases check retry preservation across committed writes, independent
+company progress, and disarming after the real company-deletion producer. These
+checks supplement the earlier execution, transaction, and paging evidence above.
+
+After company scoping, the complete gateway-service and startup selection passes
+149 tests against a disposable PostgreSQL database, and server typecheck passes.
+Stack integration, workspace checks, and fresh remote CI remain separate gates.
