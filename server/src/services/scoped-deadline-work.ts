@@ -11,6 +11,7 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
   options: {
     queue: DeliveryQueue;
     batchSize?: number;
+    minimumPassIntervalMs?: number;
     decodeScope(hint: string): Scope | undefined;
     matches(entry: Entry, scope?: Scope): boolean;
     load(scope?: Scope, signal?: AbortSignal): Promise<Entry[]>;
@@ -47,7 +48,7 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
     onSettled: hints => { for (const hint of hints ?? ["*"]) dirty.add(hint); },
     run: async signal => {
       if (!canRun() || Date.now() < earliest) return;
-      earliest = Date.now() + 1000;
+      earliest = Date.now() + (options.minimumPassIntervalMs ?? 1000);
       const errors: unknown[] = [];
       const requested = (dirty.has("*") ? ["*"] : [...dirty]).filter(hint => (scopeFailures.get(hint)?.retryAt ?? 0) <= Date.now());
       const covered = requested.includes("*") ? [...dirty] : requested;
@@ -89,6 +90,7 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
     // idle hold during drain. The coordinator still fences unresolved XIDs.
     hasPending: async () => canRun() && dirty.size > 0,
     nextRunAt: next,
+    nextRunAtOnError: next,
   });
   return { ...worker, invalidate(hint = "*") {
     dirty.add(hint);
