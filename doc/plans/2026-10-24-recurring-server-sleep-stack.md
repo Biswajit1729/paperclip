@@ -2799,3 +2799,23 @@ recovery. Publication and final local/remote gates remain pending.
 Master refreshed to `49bd7a4ba6`; subsequent finalization changes must be reconciled
 through the stack before final acceptance. All earlier gate failures, suppression
 audits and remaining inventory duties stay open. Nothing was merged.
+
+## Slice 53 accepted; slice 54 projection repair
+
+Slice 53 [#17748](https://github.com/paperclipai/paperclip/pull/17748) is verified at
+`1fc2e8c5b61173203abbd50b1b03346abc629218`: all 53 remote checks/status entries
+passed, Greptile 5/5 and zero unresolved threads. Local evidence includes 250
+passing tests, workspace typechecking and build. The embedded-cluster executor
+command was interrupted after PostgreSQL semaphore exhaustion; that run is not
+counted as passing. The full local test command was not claimed. The PR remains
+draft/open and unmerged.
+
+Slice 54, `codex/sleep-54-native-run-projection`, moves the existing committed run
+projection predicate and write into their owner and drives repair from scoped
+committed changes. [Its audit](2026-10-26-native-run-projection-sleep-audit.md)
+records the reproduced duplicate-event/stale-time/cleanup-ordering races, 400
+passing local cases, producer coverage and the retained post-commit/resource
+obligations. Workspace typechecking passes; the full local suite remains limited
+by embedded PostgreSQL startup capacity. Final local
+and remote acceptance is pending. Master refreshed to `ad861a7f94`; stack integration,
+prior failed gates, suppression audits and all remaining duties stay in scope.

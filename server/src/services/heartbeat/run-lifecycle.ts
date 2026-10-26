@@ -1,3 +1,4 @@
+import { notifyNativeRunProjection } from "../native-run-projection-notifications.js";
 import { notifyRetainedNativeSessionCleanup } from "../retained-native-session-cleanup-notifications.js";
 import { notifyUnsafeWorkspaceExportRunChange } from "../unsafe-workspace-export-notifications.js";
 import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-preservation-notifications.js";
@@ -1017,13 +1018,14 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
     return recordHeartbeatRunRuntimeProgress(currentRun, update, issueId);
   }
 
-  async function writeRunStatus<T>(status: string, previous: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "status" | "nativeIssueId" | "issueId" | "contextSnapshot"> | null,
+  async function writeRunStatus<T>(status: string, previous: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "status" | "runtimeMode" | "nativeIssueId" | "issueId" | "contextSnapshot"> | null,
     write: (tx: Db) => Promise<T>) {
     const companyId = previous?.companyId;
     // Register on the outer transaction before the terminal write. An unknown
     // commit cannot strand newly-actionable accounting after the live event.
     return db.transaction(async transaction => {
       const tx = transaction as unknown as Db;
+      if (previous?.runtimeMode === "native") await notifyNativeRunProjection(tx, { companyId: previous.companyId, runId: previous.id });
       if (previous && previous.status !== status) await notifyUnsafeWorkspaceExportRunChange(tx, previous);
       if (previous && (previous.status === "scheduled_retry" || status === "scheduled_retry"))
         await notifyScheduledRetryCancellation(tx, { companyId: previous.companyId, runId: previous.id });

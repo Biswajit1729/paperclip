@@ -1,3 +1,4 @@
+import { notifyNativeRunProjection } from "./native-run-projection-notifications.js";
 import { notifyNativeResultCommit } from "./native-result-commit-notifications.js";
 import { notifyNativeWorkspaceFinalization } from "./native-workspace-finalization-notifications.js";
 import { notifyRetainedNativeSessionCleanup } from "./retained-native-session-cleanup-notifications.js";
@@ -9,6 +10,7 @@ import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notificatio
 export type NativeFinalizationWorkScope = { companyId: string; runId?: string; issueId?: string };
 
 export async function notifyNativeFinalizationWork(transaction: object, scope: NativeFinalizationWorkScope) {
+  await notifyNativeRunProjection(transaction, scope);
   await notifyNativeResultCommit(transaction, scope);
   await notifyNativeWorkspaceFinalization(transaction, scope);
   await notifyRetainedNativeSessionCleanup(transaction, scope);

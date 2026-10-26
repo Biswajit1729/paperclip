@@ -1,3 +1,4 @@
+import { nativeRunProjectionWork } from "./native-runtime/native-run-projection-work.js";
 import { nativeResultCommitWork } from "./native-runtime/native-result-commit-work.js";
 import { nativeStatusReassessmentWork } from "./native-runtime/native-status-reassessment-work.js";
 import { registerNativeReviewResponseWork } from "./native-runtime/native-review-response-work.js";
@@ -4073,6 +4074,14 @@ export function heartbeatService(
     triggerIssueMonitor,
 
     reportRunActivity: clearDetachedRunWarning,
+    registerNativeRunProjectionWork: (
+      coordinator: Parameters<ReturnType<typeof nativeRunProjectionWork>["register"]>[0], canRun: () => boolean,
+    ) => nativeRunProjectionWork(db).register(coordinator,
+      () => canRun() && readTaskDrain(new Date()) === null,
+      async () => {
+        const state = await getSchedulingSuppression(true);
+        return !state.suppressed || state.reason === "task_drain";
+      }),
     registerNativeResultCommitWork: (
       coordinator: Parameters<ReturnType<typeof nativeResultCommitWork>["register"]>[0], canRun: () => boolean,
     ) => nativeResultCommitWork(db).register(coordinator,
