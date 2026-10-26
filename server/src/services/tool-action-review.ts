@@ -143,7 +143,7 @@ export async function commitToolActionReview(
     }
     const now = new Date();
     if (interaction && issue) await notifyChatRunMilestones(tx, interaction);
-    await notifyToolReviewChange(tx);
+    await notifyToolReviewChange(tx, current.companyId);
     const [updated] = await tx
       .update(toolActionRequests)
       .set({
