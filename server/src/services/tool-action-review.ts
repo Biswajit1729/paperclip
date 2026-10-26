@@ -141,7 +141,7 @@ export async function commitToolActionReview(
         throw conflict("This review has already been resolved");
     }
     const now = new Date();
-    await notifyToolReviewChange(tx);
+    await notifyToolReviewChange(tx, current.companyId);
     const [updated] = await tx
       .update(toolActionRequests)
       .set({
