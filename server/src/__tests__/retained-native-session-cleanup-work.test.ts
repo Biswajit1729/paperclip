@@ -1,10 +1,16 @@
 import { notifyNativeFinalizationWork } from "../services/native-finalization-notifications.js";
 import { randomUUID } from "node:crypto";
+import os from "node:os";
+import { PROCESS_IDENTITY_RECORDED, releaseSettledNativeRunProcess } from "../services/native-local-process-stop.js";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { agents, companies, completionContracts, createDb, heartbeatRuns, issues, nativeRunFinalizations,
+import { agents, companies, completionContracts, createDb, environmentLeases, heartbeatRunEvents, heartbeatRuns, issues, nativeRunFinalizations,
   nativeRunResults, statusDecisions, workAssessments, type Db } from "@paperclipai/db";
+import { settleAbsentSandbox, settleStopOnlyCleanup } from "../services/sandbox-stop-and-retain.js";
+import { settleNativeWorkspaceExportResume } from "../services/native-runtime/native-workspace-export-resume.js";
+import type { SandboxAbsenceProof } from "../services/sandbox-absence-proof.js";
+import { environmentService } from "../services/environments.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 import { notifyRetainedNativeSessionCleanup, releaseRetainedNativeSessionCleanup } from "../services/retained-native-session-cleanup-notifications.js";
@@ -221,6 +227,154 @@ describe("retained native cleanup scheduled lifecycle", () => {
       await quiet();
     },
   );
+
+  it.each(["single", "run"] as const)("reactivates after the real %s lease release commits, but not rollback", async method => {
+    const runId = await candidate();
+    const [lease] = await db.insert(environmentLeases).values({ companyId, heartbeatRunId: runId,
+      status: "active", provider: "local" }).returning();
+    cleanup.mockImplementation(async input => {
+      const [current] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, lease!.id));
+      return current!.status === "active"
+        ? { runId: input.runId, status: "deferred", waitFor: "environment_release" }
+        : settle(input);
+    });
+    const release = async (writer: Db) => {
+      const service = environmentService(writer);
+      if (method === "single") await service.releaseLease(lease!.id);
+      else await service.releaseLeasesForRun(runId);
+    };
+    await start(); await flush(); await quiet();
+    expect(cleanup).toHaveBeenCalledTimes(1);
+    await expect(db.transaction(async tx => {
+      await release(tx as unknown as Db);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(cleanup).toHaveBeenCalledTimes(1);
+      throw new Error("rollback lease release");
+    })).rejects.toThrow("rollback lease release");
+    await flush(); await quiet();
+    const afterRollback = cleanup.mock.calls.length;
+    await db.transaction(async tx => {
+      await release(tx as unknown as Db);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(cleanup).toHaveBeenCalledTimes(afterRollback);
+    });
+    await flush();
+    expect(cleanup).toHaveBeenCalledTimes(afterRollback + 1);
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId)))[0]!.recoveryHistory)
+      .toEqual([{ kind: "native_cleanup_maintenance", phase: "settled" }]);
+    await quiet();
+  });
+
+  it("keeps pending cleanup quiet through metadata updates and stale release attempts", async () => {
+    const runId = await candidate(), attemptId = randomUUID();
+    const [lease] = await db.insert(environmentLeases).values({ companyId, heartbeatRunId: runId,
+      status: "pending_cleanup", provider: "local", metadata: { pendingCleanupAttemptId: attemptId } }).returning();
+    cleanup.mockResolvedValueOnce({ runId, status: "deferred", waitFor: "environment_release" });
+    await start(); await flush();
+    const service = environmentService(db);
+    await service.updateLeaseMetadata(lease!.id, { pendingCleanupAttemptId: attemptId, pendingCleanupInFlight: true });
+    await service.releaseLease(lease!.id, "pending_cleanup", { expectedPendingCleanupAttemptId: attemptId, cleanupStatus: "failed" });
+    expect(await service.releaseLease(lease!.id, "released", { expectedPendingCleanupAttemptId: randomUUID(), cleanupStatus: "success" })).toBeNull();
+    await flush(); await quiet();
+    expect(cleanup).toHaveBeenCalledTimes(1);
+    expect(await service.releaseLease(lease!.id, "released", { expectedPendingCleanupAttemptId: attemptId, cleanupStatus: "success" })).not.toBeNull();
+    await flush();
+    expect(cleanup).toHaveBeenCalledTimes(2);
+    await quiet();
+  });
+
+  it.each(["stop-only", "export-resume", "absent"] as const)("reactivates after real %s settlement with outer transaction ownership", async method => {
+    const ownerToken = randomUUID();
+    const runId = await candidate({ run: { runnerProfileJson: { nativeWorkspaceFinalizationOwner: { token: ownerToken } } } });
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    const leaseId = randomUUID(), providerLeaseId = randomUUID(), attemptId = randomUUID(), pluginId = randomUUID();
+    const binding = { companyId, runId, leaseId, provider: "daytona" as const, providerLeaseId };
+    const marker = { ...binding, requestId: attemptId, pluginId,
+      schema: method === "export-resume" ? "paperclip.workspace-export-resume.v2" : "paperclip.sandbox-stop-and-retain.v1",
+      resultId: randomUUID() };
+    const [lease] = await db.insert(environmentLeases).values({ id: leaseId, companyId, heartbeatRunId: runId,
+      issueId: run!.nativeIssueId, provider: "daytona", providerLeaseId, status: "pending_cleanup", cleanupStatus: "failed",
+      metadata: { pluginId, pendingCleanupAttemptId: attemptId,
+        [method === "export-resume" ? "nativeWorkspaceExportResume" : "sandboxStopAndRetain"]: marker } }).returning();
+    const proof: SandboxAbsenceProof = { ...binding, issueId: run!.nativeIssueId!, ownerToken, v: 1,
+      iss: "paperclip-cloud", aud: "paperclip-sandbox-absence/v1", sub: "fixture", absent: true,
+      iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 60 };
+    cleanup.mockImplementation(async input => {
+      const [current] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, leaseId));
+      return current!.status === "pending_cleanup"
+        ? { runId: input.runId, status: "deferred", waitFor: "environment_release" }
+        : settle(input);
+    });
+    const release = async (writer: Db) => {
+      const options = { attemptId, receipt: { providerLeaseId, state: "stopped" } };
+      if (method === "absent") expect(await settleAbsentSandbox(writer, lease!, { proof, receipt: "verified-upstream" })).toBe(true);
+      else if (method === "export-resume") expect(await settleNativeWorkspaceExportResume(writer, lease!, options)).not.toBeNull();
+      else expect(await settleStopOnlyCleanup(writer, lease!, options)).not.toBeNull();
+    };
+    await start(); await flush(); await quiet();
+    expect(cleanup).toHaveBeenCalledTimes(1);
+    await expect(db.transaction(async tx => {
+      await release(tx as unknown as Db);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(cleanup).toHaveBeenCalledTimes(1);
+      throw new Error("rollback settlement");
+    })).rejects.toThrow("rollback settlement");
+    await flush(); await quiet();
+    const afterRollback = cleanup.mock.calls.length;
+    await db.transaction(async tx => {
+      await release(tx as unknown as Db);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(cleanup).toHaveBeenCalledTimes(afterRollback);
+    });
+    await flush();
+    expect(cleanup).toHaveBeenCalledTimes(afterRollback + 1);
+    await quiet();
+  });
+
+  it("reactivates immediately after verified process release commits without waiting for its probe", async () => {
+    const pid = 2_000_000_000, startedAt = new Date();
+    const runId = await candidate({ run: { status: "failed", processPid: pid, processGroupId: pid,
+      processStartedAt: startedAt, runnerProfileJson: { sessionCheckpoint: {} } } });
+    await db.insert(heartbeatRunEvents).values({ companyId, runId, agentId, seq: 0,
+      eventType: PROCESS_IDENTITY_RECORDED, payload: { targetKind: "local", hostname: os.hostname(),
+        processPid: pid, processGroupId: pid, processStartedAt: startedAt.toISOString() } });
+    await db.update(heartbeatRuns).set({ nextEventSeq: 1 }).where(eq(heartbeatRuns.id, runId));
+    const originalKill = process.kill.bind(process);
+    vi.spyOn(process, "kill").mockImplementation((id, signal) => {
+      if ((id === pid || id === -pid) && signal === 0) throw Object.assign(new Error("gone"), { code: "ESRCH" });
+      return originalKill(id, signal);
+    });
+    cleanup.mockImplementation(async input => {
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, input.runId));
+      return run!.processPid !== null
+        ? { runId: input.runId, status: "deferred", waitFor: "process_exit" }
+        : settle(input);
+    });
+    await start();
+    expect(cleanup).toHaveBeenCalledTimes(1);
+    expect(coordinator!.nextWakeAt()).not.toBeNull();
+    await expect(db.transaction(async tx => {
+      expect(await releaseSettledNativeRunProcess(tx as unknown as Db, runId)).toBe("released");
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(cleanup).toHaveBeenCalledTimes(1);
+      throw new Error("rollback process release");
+    })).rejects.toThrow("rollback process release");
+    await vi.waitFor(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(cleanup).toHaveBeenCalledTimes(2);
+      expect(idleWorkSnapshot().active).toBe(0);
+    });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0]!.processPid).toBe(pid);
+    const afterRollback = cleanup.mock.calls.length;
+    await db.transaction(async tx => {
+      expect(await releaseSettledNativeRunProcess(tx as unknown as Db, runId)).toBe("released");
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(cleanup).toHaveBeenCalledTimes(afterRollback);
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+    await vi.waitFor(() => expect(cleanup).toHaveBeenCalledTimes(afterRollback + 1));
+    await flush(); await quiet();
+  });
 
   it("reconstructs a lease deadline across restart and does no SQL before it", async () => {
     const leaseExpiresAt = new Date(Date.now() + 60_000);

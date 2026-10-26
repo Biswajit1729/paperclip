@@ -250,3 +250,64 @@ quiet. It is not the outstanding large-history/candidate cost qualification.
 Remaining work includes every actual producer/release path, operational ownership
 through retained callbacks, startup integration, periodic removal, full PR checks
 and the rest of the recurring-server stack. No new PR or merge is claimed.
+
+
+## Durable owner release checkpoint
+
+The environment service owns lease release and its existing transaction wrapper.
+It now signals the affected run before single/run-wide release commits. Metadata
+updates and still-pending cleanup do not activate retained-session cleanup. The
+run-wide API resolves company scope from its authoritative run rather than an
+unscoped notification. It has no production call sites in the inspected checkout;
+its public service behavior remains covered.
+
+Three direct settlement owners also bypass ordinary lease release: stop-only
+cleanup, workspace-export-resume settlement, and confirmed sandbox absence. Each
+now registers the same scoped intent before the status write. The first two reuse
+their transaction; absence settlement uses a short transaction that composes with
+a caller-owned transaction. No provider I/O enters those transactions. Existing
+receipt validation, ownership and compare-and-set predicates are unchanged.
+Verified settled-process release signals before clearing its mutable identity.
+
+The environment writer audit found no production raw-SQL lease updates/deletes
+or direct lease deletes in server/src. Other direct writers either retain/add
+active or pending-cleanup ownership, change metadata/lease policy, or retire an
+already nonblocking lease. In particular, environment-task-runtime completion
+only changes retained -> released; retained is already excluded by this cleanup's
+active/pending-cleanup predicate. Reusable replacement also starts from released
+or retained. These transitions do not unblock this worker. This inventory does
+not finish the separate run/finalization writer or local-owner audit.
+
+Evidence:
+
+- `/tmp/sleep51-env-before.log` / `.status` (1): both real single and run-wide
+  release fail to reactivate cleanup. `/tmp/sleep51-env-after.log` / `.status`
+  (0): all 21 lifecycle cases pass after repair.
+- `/tmp/sleep51-process-before.log` / `.status` (1): verified process release
+  fails to reactivate before the existing process probe. The process stop check
+  is controlled in this integration test; database, receipt writer and service
+  transactions are real.
+- `/tmp/sleep51-release-after.log` / `.status` (1): the initial process rollback
+  test failed to await the coordinator's rollback reconciliation before opening
+  the next transaction, then contaminated the following deadline assertion.
+  The corrected barrier waits for that reconciliation and verifies the persisted
+  original PID. `/tmp/sleep51-release-final.log` / `.status` (0): 23 cases pass.
+- `/tmp/sleep51-settlement-before.log` / `.status` (1): all three direct settlement
+  producers reproduce the missing wake after commit. The absence test supplies
+  already verified typed proof at the settlement boundary; it does not claim
+  Cloud receipt signature/provider qualification.
+- `/tmp/sleep51-settlement-after.log` / `.status` (0): all 26 lifecycle cases pass.
+  These prove outer rollback, no delivery before outer commit, release activation,
+  successful settlement and subsequent SQL quiet. Failed cleanup, metadata-only
+  updates and stale attempt IDs do not prematurely release the wait.
+- `/tmp/sleep51-env-consumer.log` / `.status` (0): all 51 existing environment
+  service cases pass on a fresh isolated database.
+- `/tmp/sleep51-settlement-consumers.log` / `.status` (0): all 131 existing legacy
+  restore/native failed-workspace recovery cases pass.
+- `/tmp/sleep51-settlement-types.log` / `.status` (0): server typecheck passes.
+
+This checkpoint covers 208 selected cases. Actual process exit and physical
+cleanup safety tests from previous checkpoints remain distinct evidence. Session
+owner release, maintenance completion, full run/finalization producer coverage,
+physical callback ownership, startup wiring, large-history cost, periodic removal,
+publication and full PR acceptance are still open. No polling removal is claimed.

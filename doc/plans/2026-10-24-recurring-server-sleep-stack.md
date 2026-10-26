@@ -2643,3 +2643,15 @@ Actual local/environment/process/maintenance producer coverage, physical callbac
 drain ownership, large-history costs, startup wiring, periodic removal, publication
 and remote acceptance remain open. Periodic cleanup is still enabled; no new PR
 or merge is claimed and the full original stack scope stays active.
+
+
+Slice 51 durable release checkpoint: six real-producer missed wakes were
+reproduced and repaired: single/run-wide lease release, settled process release,
+stop-only cleanup, export-resume settlement and confirmed sandbox absence.
+Notifications remain run/company-scoped and tied to outer transaction ownership.
+All 208 selected worker/environment/workspace consumer cases and server types pass.
+The owner audit retains the asynchronous rollback-test failure and correction,
+and distinguishes controlled stop evidence from actual physical/provider proof.
+Local session and maintenance releases, remaining finalization producers, callback
+ownership, startup wiring, cost proof, periodic removal and PR gates remain open.
+Periodic cleanup remains enabled. No PR or merge; all original scope stays open.
