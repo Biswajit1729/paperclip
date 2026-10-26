@@ -1,6 +1,6 @@
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
-import { dismissAutomaticCompletionReviews } from "../services/native-runtime/automatic-completion-reviews.js";
+import { dismissAutomaticCompletionReviews, registerAutomaticCompletionReviewWork } from "../services/native-runtime/automatic-completion-reviews.js";
 import * as childCompletionDelivery from "../services/native-runtime/native-child-completion-delivery.js";
 import { nativeCompletionFeedback } from "../services/native-runtime/native-completion-feedback.js";
 import { randomUUID } from "node:crypto";
@@ -2050,7 +2050,7 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
   }
 
 
-  describe("obsolete policy review scheduling", () => {
+  describe.each(["obsolete policy", "automatic completion"] as const)("%s review scheduling", kind => {
     let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
     let admitted = true;
     const errors: unknown[] = [];
@@ -2061,13 +2061,29 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     afterEach(async () => {
       await coordinator?.stop(); coordinator = undefined;
       vi.useRealTimers(); vi.restoreAllMocks();
-      await dismissObsoleteNativePolicyReviews(db);
+      if (kind === "obsolete policy") await dismissObsoleteNativePolicyReviews(db);
+      else await dismissAutomaticCompletionReviews(db);
       expect(errors).toEqual([]);
     });
+    async function seedReview(options: Parameters<typeof seedPolicyReview>[0] = {}) {
+      if (kind === "obsolete policy" || options.genuine) return seedPolicyReview(options);
+      return seedPolicyReview({ ...options, commit: async input => {
+        const [assessment] = await db.select().from(workAssessments).where(eq(workAssessments.id, input.assessmentId));
+        await db.update(completionContracts).set({ risk: "low", completionAuthority: "agent_claim_policy" })
+          .where(eq(completionContracts.id, assessment!.contractId));
+        await db.update(workAssessments).set({ assessmentJson: { ...assessment!.assessmentJson, attentionRequests: [] } })
+          .where(eq(workAssessments.id, input.assessmentId));
+        return (options.commit ?? commitNativeStatusDecision)({ ...input, decision: { ...input.decision,
+          reasonCode: "completion_claim_incomplete", effects: [{ kind: "bind_reviewer", ownerUserId: null,
+            prompt: "Review the persisted native-run evidence and confirm whether this issue may be completed." }],
+        } });
+      } });
+    }
     async function start() {
       coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => admitted, canReconcile: () => admitted,
         onError: error => errors.push(error) });
-      await registerObsoletePolicyReviewWork(db, coordinator, () => admitted).ready;
+      const register = kind === "obsolete policy" ? registerObsoletePolicyReviewWork : registerAutomaticCompletionReviewWork;
+      await register(db, coordinator, () => admitted).ready;
     }
     async function flush() {
       await vi.waitFor(async () => {
@@ -2089,9 +2105,10 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     }
 
     it("leaves genuine pending reviews and completed history quiet", async () => {
-      const genuine = await seedPolicyReview({ genuine: true });
-      const settled = await seedPolicyReview();
-      await dismissObsoleteNativePolicyReviews(db, [settled.runId]);
+      const genuine = await seedReview({ genuine: true });
+      const settled = await seedReview();
+      if (kind === "obsolete policy") await dismissObsoleteNativePolicyReviews(db, [settled.runId]);
+      else await dismissAutomaticCompletionReviews(db, settled.issueId);
       await start(); await flush();
       expect((await card(genuine.interaction.id)).status).toBe("pending");
       expect((await card(settled.interaction.id)).status).toBe("cancelled");
@@ -2100,10 +2117,10 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
 
     it("wakes from the real decision commit after becoming idle and preserves decision history", async () => {
       await start(); await flush(); await quiet();
-      const created = await seedPolicyReview();
+      const created = await seedReview();
       await flush();
       expect((await card(created.interaction.id)).status).toBe("cancelled");
-      expect((await issueService(db).getById(created.issueId))!.status).toBe("in_progress");
+      expect((await issueService(db).getById(created.issueId))!.status).toBe(kind === "obsolete policy" ? "in_progress" : "in_review");
       expect((await db.select().from(statusDecisions).where(eq(statusDecisions.id, created.decision.id)))[0]).toEqual(created.decision);
       await quiet();
     });
@@ -2112,7 +2129,7 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       await start(); await flush();
       const entered = gate(), release = gate();
       let issueId = "";
-      const creating = seedPolicyReview({ commit: async input => db.transaction(async tx => {
+      const creating = seedReview({ commit: async input => db.transaction(async tx => {
         issueId = input.issueId;
         const result = await commitNativeStatusDecision({ ...input, db: tx as unknown as typeof db });
         entered.release(); await release.promise;
@@ -2137,7 +2154,7 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
 
     it.each(["restart", "drain", "standby"] as const)("recovers committed cards after %s", async mode => {
       if (mode !== "restart") { await start(); await flush(); admitted = false; }
-      const created = await seedPolicyReview();
+      const created = await seedReview();
       if (mode === "restart") await start();
       else {
         await vi.advanceTimersByTimeAsync(1000);
@@ -2149,14 +2166,14 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     });
 
     it("retains startup discovery while admission is closed", async () => {
-      const created = await seedPolicyReview(); admitted = false;
+      const created = await seedReview(); admitted = false;
       await start(); await quiet(); expect((await card(created.interaction.id)).status).toBe("pending");
       admitted = true; await vi.advanceTimersByTimeAsync(30_000); await flush();
       expect((await card(created.interaction.id)).status).toBe("cancelled"); await quiet();
     });
 
     it("retries only a failed cleanup while another candidate settles", async () => {
-      const first = await seedPolicyReview(), second = await seedPolicyReview();
+      const first = await seedReview(), second = await seedReview();
       const write = vi.spyOn(db, "transaction").mockRejectedValueOnce(new Error("injected obsolete cleanup failure"));
       await start();
       await vi.waitFor(async () => {
@@ -2173,7 +2190,7 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     });
 
     it("does not withdraw a review edited after discovery", async () => {
-      const created = await seedPolicyReview();
+      const created = await seedReview();
       const original = db.transaction.bind(db);
       const write = vi.spyOn(db, "transaction").mockImplementationOnce(async (callback, config) => {
         await db.update(issueThreadInteractions).set({ payload: { ...created.interaction.payload, prompt: "Approve this deployment." } })
@@ -2186,7 +2203,7 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     });
 
     it("joins admitted cleanup on shutdown and reconstructs quiet state on restart", async () => {
-      const created = await seedPolicyReview(), entered = gate(), release = gate();
+      const created = await seedReview(), entered = gate(), release = gate();
       const original = db.transaction.bind(db);
       const write = vi.spyOn(db, "transaction").mockImplementationOnce((callback, config) => original(async tx => {
         entered.release(); await release.promise; return callback(tx);
@@ -2199,9 +2216,34 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       await start(); await flush(); await quiet();
     });
 
+
+    it("retains discovery after a database error and retries on resume", async () => {
+      const created = await seedReview();
+      const read = vi.spyOn(db, "select").mockImplementationOnce(() => { throw new Error("injected review discovery failure"); });
+      await start();
+      await vi.waitFor(() => expect(errors.length).toBeGreaterThan(0));
+      read.mockRestore(); expect(coordinator!.nextWakeAt()).not.toBeNull();
+      expect((await card(created.interaction.id)).status).toBe("pending");
+      errors.length = 0; admitted = false; await quiet(); admitted = true;
+      await vi.advanceTimersByTimeAsync(30_000); await flush();
+      expect((await card(created.interaction.id)).status).toBe("cancelled"); await quiet();
+    });
+
+    it("preserves a newly answered card between discovery and withdrawal", async () => {
+      const created = await seedReview();
+      const original = db.transaction.bind(db);
+      const write = vi.spyOn(db, "transaction").mockImplementationOnce(async (callback, config) => {
+        await db.update(issueThreadInteractions).set({ status: "accepted" }).where(eq(issueThreadInteractions.id, created.interaction.id));
+        return original(callback, config);
+      });
+      await start(); await flush(); write.mockRestore();
+      expect((await card(created.interaction.id)).status).toBe("accepted");
+      expect((await issueService(db).getById(created.issueId))!.status).toBe("in_review"); await quiet();
+    });
+
     it("drains more than one reconstruction page without replaying settled reviews", async () => {
       const created = [];
-      for (let index = 0; index < 103; index++) created.push(await seedPolicyReview());
+      for (let index = 0; index < 103; index++) created.push(await seedReview());
       await start(); await flush();
       for (const value of created) expect((await card(value.interaction.id)).status).toBe("cancelled");
       await quiet();

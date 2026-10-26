@@ -1,0 +1,112 @@
+# Automatic completion-review retirement
+
+Date: 2026-10-25. Parent: obsolete policy reviews #17679 at
+`e671c66bba6e9a42aa570826e6f3420dba199399`.
+
+## One reason and its owner
+
+The native finalization pass calls `dismissAutomaticCompletionReviews` globally,
+or per issue when run-scoped. `finalizeNativeRun` also calls it for the active
+issue before resolving status. This slice preserves that direct call and its
+ordering and migrates only periodic discovery to a dedicated deadline worker.
+The service in `native-runtime/automatic-completion-reviews.ts` retains the
+historical predicate, withdrawal, chat publication, and audit ownership.
+
+This duty is separate from obsolete policy reviews and subsequent reassessment.
+A retired card's existing cancelled result reason is the durable trigger that
+`decisionHasRetiredAutomaticReview` checks. Retirement is not finalization
+completion. Reassessment and workspace barriers remain with their owners.
+
+## Exact obligation and producers
+
+The existing candidate query identifies:
+
+- A pending system confirmation with no user or agent creator.
+- An applied in-review decision with completion_claim_incomplete,
+  completion_claim_conflict, or external_verification_required.
+- Matching effect target, company, issue, source run and assessment.
+- A low-risk agent_claim_policy contract with no assessment attention requests.
+- The exact native-review idempotency key, native_completion_review target,
+  decision revision, and historical prompt first line.
+
+Current arbitration no longer creates completion-claim reviews by default.
+Explicit attention uses actionable_attention_pending and keyed requests, which
+this query excludes. The typed committer still supports historical input; it
+registers the new company/issue notification before its decision/effect writes
+inside its existing transaction. The notification serializes only those IDs.
+Outer commit, rollback, and uncertain writes use the existing shared protocol.
+
+The production inserter of decisions and status effects is
+`commitNativeStatusDecision`. No production updates of completion contracts or
+work assessments were found; these records are immutable inputs. Existing
+decision updates adjust lineage or applicationState within the committer.
+Interaction response, dismissal, expiry, summary, and connection-intent updates
+do not create this historical decision/effect lineage or reopen answered native
+reviews. A generic authored card also fails the system-card predicate.
+Startup covers historical rows. Independent SQL writers or concurrent older
+controllers require explicit integration; process-local signals do not cover them.
+
+## Worker and invariants
+
+The existing scoped deadline helper reconstructs 100-row keyset pages, stores
+interaction/company/issue IDs and deadlines, and processes fair batches of
+20. Normal commit hints inspect only their company/issue. Settled history leaves
+no recurring SQL or deadline. No table, migration, separate timer, or provider
+branch is added.
+
+Discovery now has a raw internal path that propagates SQL errors. The public
+manual lookup retains its logging/empty-list compatibility. The worker must not
+mistake a failed lookup for successful reconstruction and discard a dirty scope.
+The shared helper retains failed discovery with backoff.
+
+Each attempt rereads the exact candidate. Withdrawal retains the existing
+coordinator/issue locks and additionally matches the selected kind, source run,
+idempotency key, system author fields and payload in its conditional update.
+A changed or answered card is not withdrawn from stale discovery. The existing
+durable withdrawal reason, terminal chat publication and activity remain in the
+same transaction. A failed withdrawal leaves a matching card pending and retains
+its 30-second retry; another candidate can still settle. A removed or completed
+obligation disarms. No age or retry-count cutoff discards a card.
+
+The worker shares admission, drain and standby gates. Startup while paused and
+writes during pause retain a request without passive database reads. Shutdown
+joins admitted transactions and removes registration. Only periodic orphan
+reaping passes the new skip flag through the finalization options. Startup,
+manual reconciliation and the direct active finalizer call remain compatible.
+
+## Evidence and limits
+
+The previous slice's owner/consumer corpus is the pre-change baseline. The
+first server typecheck and the typecheck with lifecycle additions passed.
+The complete owner/startup/timing selection passed all 135 tests without skips:
+72 status-authority corpus cases, 60 startup cases and three timing cases.
+The corpus includes its existing 53-fixture native/legacy matrix test.
+
+Both review owners run the same lifecycle contract against real PostgreSQL:
+genuine/settled quiet, real committer activation, outer commit and rollback,
+restart, drain, standby, paused startup, isolated cleanup failure, retry after
+pause, concurrent card edits, concurrent answers, shutdown join, and 103-card
+paging. Automatic cleanup additionally uses the raw failure path. The injected
+discovery failure leaves a pending deadline and repairs after resume. Existing
+manual tests preserve explicit attention, stronger authority, later task edits,
+newer contracts, workspace failure and unread child-completion obligations.
+
+A rolled-back fixture added 10,000 completed interactions on the same issue and
+restored one pending automatic review. The scoped lookup used existing indexes,
+returned one candidate, and took 0.080 ms locally. SQL and plan are retained in
+`/tmp/sleep45-query-plan.sql` and `.log`. This supports the access path, not a
+production latency promise. Global startup reconstruction still scales with
+historical data and joins.
+
+Affected consumer suites, final workspace checks and exact-head remote gates
+remain required until their results are recorded. The host uses fresh disposable
+PostgreSQL 17 test databases because its embedded harness is unavailable.
+
+Other finalization duties, earlier stack CI/review findings and final master
+reconciliation remain in scope. This slice makes no claim about Cloud alarm
+coverage, host/database suspension, or measured fleet savings.
+
+Final affected-consumer verification passed all 235 tests without skips; together
+with the owner/startup/timing selection, 370 local tests passed. Workspace
+typecheck and build passed. The two initial typechecks and final checks all
+passed; no failed selection was discarded. Remote gates are pending.

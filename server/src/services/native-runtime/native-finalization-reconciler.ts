@@ -632,6 +632,7 @@ export async function claimNativeSessionResumptions(input: {
 
 type NativeReconciliationOptions = {
   skipObsoletePolicyReviews?: boolean;
+  skipAutomaticCompletionReviews?: boolean;
   pluginWorkerManager?: WorkspaceWorkers;
   environmentRuntime?: EnvironmentRuntimeService;
   onWorkspaceSettled?: (input: {
@@ -724,13 +725,15 @@ async function reconcileNativeFinalizationsPass(
       logger.warn({ err }, "Obsolete native policy review lookup failed; continuing native reconciliation");
     });
   }
-  timing.phase("automatic_completion_reviews");
-  if (runIds?.length) {
-    const scopes = await db.select({ issueId: nativeRunFinalizations.issueId }).from(nativeRunFinalizations)
-      .where(inArray(nativeRunFinalizations.runId, runIds));
-    for (const scope of scopes) await dismissAutomaticCompletionReviews(db, scope.issueId);
-  } else {
-    await dismissAutomaticCompletionReviews(db);
+  if (!options.skipAutomaticCompletionReviews) {
+    timing.phase("automatic_completion_reviews");
+    if (runIds?.length) {
+      const scopes = await db.select({ issueId: nativeRunFinalizations.issueId }).from(nativeRunFinalizations)
+        .where(inArray(nativeRunFinalizations.runId, runIds));
+      for (const scope of scopes) await dismissAutomaticCompletionReviews(db, scope.issueId);
+    } else {
+      await dismissAutomaticCompletionReviews(db);
+    }
   }
   timing.phase("candidate_scan");
   const now = new Date();
