@@ -122,7 +122,7 @@ export function startMuseMaintenance(
     },
     // Retain the exact hints across drain without passive database reads.
     hasPending: async () => false,
-    nextRunAt: () => requested.size ? Date.now() + 5_000 : nextDeadline,
+    nextRunAt: () => requested.size ? Math.min(Date.now() + 5_000, nextDeadline ?? Infinity) : nextDeadline,
   });
   receiver.start();
   return Object.assign(() => receiver.stop(), { ready: worker.ready });
