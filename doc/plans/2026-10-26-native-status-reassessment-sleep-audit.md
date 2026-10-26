@@ -209,3 +209,52 @@ Final current-source local rerun passes 116 tests across the status corpus and
 isolated worker lifecycle files (/tmp/sleep50-final-local.log). Together with the
 187 governed-response cases this is 303 distinct passing cases, not whole-workspace
 or remote PR acceptance. The last server typecheck also passes.
+
+## Work-product and task producer checkpoint
+
+Six real writer regressions failed before notifications: artifact update, create,
+primary replacement, import, attachment creation, and nested transaction commit.
+Their existing write transactions now signal task-scoped reassessment before the
+mutation. Import coalesces its scopes per task. Updates signal both old and new
+scope if their supported patch moves a product. Removal also signals its old task.
+Attachment creation signals before asset/attachment/product writes, including
+attachment evidence without a registered run. Native file handoff and attachment
+reuse call that service inside their tool-authority transaction; their subsequent
+same-transaction title/metadata edits share its outer settlement. Those fields
+are not classifier evidence, so no second recovery wrapper was added there.
+The low-trust promotion route signals inside its own atomic source/product write.
+A real HTTP promotion now also proves completion through the registered worker.
+
+Three further regressions failed for task status changes, assignment changes,
+and reasserting blocked state. The task mutation owner now signals relevant
+status/version, execution, assignment and blocker writes. The regression checks
+that the new assessment reflects the task's actual version and does not overwrite
+the board's status. The nested work-product case verifies no decision before the
+outer commit, no decision after rollback, then successful reassessment after a
+later commit. All paths return to driver-observed SQL quiet.
+
+Final owner lifecycle tests pass all 13 cases, including the real promotion route,
+and server types pass. Evidence: /tmp/sleep50-products-before.log (six failures),
+/tmp/sleep50-products-after.log (nine passes), /tmp/sleep50-tasks-before.log
+(three failures), /tmp/sleep50-tasks-after.log (12 passes), and
+/tmp/sleep50-products-final.log (13 passes) plus its final typecheck log.
+
+Affected consumers pass 79 cases across five files: work products, attachment
+routes, low-trust HTTP routes, attachment reuse, and runner task attachments.
+The first combined run passed 53 but failed two suites during embedded PostgreSQL
+bootstrap, leaving 26 cases unrun. Those suites now accept validated dedicated
+external test database URLs and explicitly close their clients. Their 26 cases
+then pass on separate PostgreSQL databases. Low-trust route tests use their own
+dedicated database because teardown deletes shared tables. Preserve the initial
+failure in /tmp/sleep50-consumers.log and the successful rerun in
+/tmp/sleep50-attachment-consumers-after.log. This is 79 passing consumer cases
+across the two runs, not a green initial run or a whole-workspace result.
+
+Master was refreshed and remains 1fbbef45a8. The stack has not been reconciled
+onto it yet. The worker remains unregistered and periodic reassessment remains.
+Remaining producer coverage includes approval/interaction and run-event evidence,
+case handoffs, native ownership and run-status transitions, completion-contract
+changes and workspace-finalization barriers. Workspace recovery writes a separate
+workspace_finalize success receipt; snapshot-only rows are not that barrier.
+Continue the concurrent authority audit, independent-current-history/backlog cost,
+lifecycle/failure evidence, startup/periodic wiring and full PR acceptance.

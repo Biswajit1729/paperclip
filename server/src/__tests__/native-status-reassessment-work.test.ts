@@ -1,3 +1,10 @@
+import express from "express";
+import request from "supertest";
+import { LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
+import { issueRoutes } from "../routes/issues.js";
+import { errorHandler } from "../middleware/index.js";
+import { workProductService } from "../services/work-products.js";
+import { issueService } from "../services/issues.js";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -96,8 +103,91 @@ describe("native reassessment worker lifecycle", () => {
           prompt: "Review the persisted native-run evidence and confirm whether this issue may be completed." }] } });
     await db.insert(workspaceOperations).values({ companyId, heartbeatRunId: runId, issueId, phase: "workspace_finalize",
       status: "succeeded", exitCode: 0, cwd: process.cwd(), finishedAt: new Date() });
-    return { issueId, runId, decisionId: committed.decision.id };
+    return { issueId, runId, workProductId, decisionId: committed.decision.id };
   }
+
+  it.each(["update", "create", "primary replacement", "import", "attachment", "source promotion"] as const)("wakes from the real work-product %s writer", async writer => {
+    const seeded = await seedReview();
+    if (writer === "update") await db.update(issueWorkProducts).set({ reviewState: "none" }).where(eq(issueWorkProducts.id, seeded.workProductId));
+    if (writer === "create") await db.delete(issueWorkProducts).where(eq(issueWorkProducts.id, seeded.workProductId));
+    if (writer === "source promotion") await db.update(issueWorkProducts).set({ sourceTrust: {
+      preset: LOW_TRUST_REVIEW_PRESET, disposition: "quarantined", sourceIssueId: seeded.issueId,
+      sourceRunId: seeded.runId, sourceAgentId: agentId,
+    } }).where(eq(issueWorkProducts.id, seeded.workProductId));
+    await start(); await flush(); await quiet();
+    expect(await status(seeded.issueId)).toBe("in_review");
+    const products = workProductService(db);
+    if (writer === "update") await products.update(seeded.workProductId, { reviewState: "approved" });
+    if (writer === "create" || writer === "primary replacement") await products.createForIssue(seeded.issueId, companyId, {
+      ...(writer === "create" ? { id: seeded.workProductId } : {}),
+      type: "artifact", provider: "paperclip", title: "Verified artifact", status: "approved", reviewState: "approved",
+      isPrimary: writer === "primary replacement",
+    });
+    if (writer === "import") await products.createManyForImport([{ companyId, issueId: seeded.issueId, projectId: null,
+      type: "artifact", provider: "paperclip", externalId: null, title: "Imported evidence", url: null, status: "approved",
+      reviewState: "approved", isPrimary: false, healthStatus: "unknown", summary: null, metadata: null,
+      executionWorkspaceId: null, runtimeServiceId: null, createdByRunId: null, sourceTrust: null }]);
+    if (writer === "attachment") await issueService(db).createAttachment({ issueId: seeded.issueId, provider: "local_disk",
+      objectKey: randomUUID(), contentType: "text/plain", byteSize: 4, sha256: "a".repeat(64), originalFilename: "result.txt",
+      createdByAgentId: agentId, createdByRunId: seeded.runId });
+    if (writer === "source promotion") {
+      const app = express(); app.use(express.json());
+      app.use((req, _res, next) => {
+        req.actor = { type: "board", userId: "board-user", companyIds: [companyId],
+          memberships: [{ companyId, membershipRole: "operator", status: "active" }],
+          isInstanceAdmin: true, source: "local_implicit" }; next();
+      });
+      app.use("/api", issueRoutes(db, {} as any)); app.use(errorHandler);
+      const promoted = await request(app).post(`/api/issues/${seeded.issueId}/low-trust/promotions`).send({
+        sourceArtifactKind: "work_product", sourceArtifactId: seeded.workProductId,
+        title: "Reviewed artifact", summary: "Reviewed completion evidence",
+      });
+      expect(promoted.status, JSON.stringify(promoted.body)).toBe(201);
+    }
+    await flush();
+    expect(await status(seeded.issueId)).toBe("done");
+    expect(await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, seeded.issueId))).toHaveLength(2);
+    await quiet();
+  });
+
+  it("waits for an outer work-product transaction and ignores rollback", async () => {
+    const seeded = await seedReview();
+    await db.update(issueWorkProducts).set({ reviewState: "none" }).where(eq(issueWorkProducts.id, seeded.workProductId));
+    await start(); await flush(); await quiet();
+    await expect(db.transaction(async tx => {
+      await workProductService(tx as unknown as typeof db).update(seeded.workProductId, { reviewState: "approved" });
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(await status(seeded.issueId)).toBe("in_review");
+      throw new Error("rollback evidence approval");
+    })).rejects.toThrow("rollback evidence approval");
+    await flush(); await quiet();
+    expect(await status(seeded.issueId)).toBe("in_review");
+    await db.transaction(async tx => {
+      await workProductService(tx as unknown as typeof db).update(seeded.workProductId, { reviewState: "approved" });
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(await status(seeded.issueId)).toBe("in_review");
+    });
+    await flush();
+    expect(await status(seeded.issueId)).toBe("done");
+    await quiet();
+  });
+
+  it.each(["status", "blocked reassertion", "assignment"] as const)("reassesses a real task %s mutation after quiet", async mutation => {
+    const seeded = await seedReview();
+    if (mutation === "blocked reassertion") await issueService(db).update(seeded.issueId, { status: "blocked" });
+    await start(); await flush(); await quiet();
+    const before = await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, seeded.issueId));
+    await issueService(db).update(seeded.issueId, mutation === "assignment" ? { assigneeAgentId: null } : { status: "blocked" });
+    await flush();
+    const after = await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, seeded.issueId));
+    expect(after).toHaveLength(before.length + 1);
+    expect(await status(seeded.issueId)).toBe(mutation === "assignment" ? "in_review" : "blocked");
+    const [current] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, seeded.runId));
+    const [assessment] = await db.select().from(workAssessments).where(eq(workAssessments.id, current.assessmentId!));
+    const [issue] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+    expect(assessment.priorStatusVersion).toBe(issue.statusVersion);
+    await quiet();
+  });
 
   it("retains the first review-retirement wake through idle drain", async () => {
     const seeded = await seedReview();

@@ -2481,3 +2481,12 @@ and their synthetic-fixture limits are recorded in the owner audit. The worker i
 not registered in startup and periodic reassessment remains. Producer coverage,
 concurrent authority audit, selected-current/backlog cost and full acceptance are
 still pending; no slice 50 PR or merge, and the full original scope stays open.
+
+Slice 50 producer checkpoint: six real work-product/attachment transaction misses
+and three task mutation misses were reproduced and repaired. The real promotion
+HTTP route also wakes reassessment. All 13 owner lifecycle tests, 79 affected
+consumer cases across their documented runs, and server types pass. Initial
+embedded-PostgreSQL failures and the external-database test repairs are preserved
+in the owner audit. Approval/interaction/run evidence and workspace producers,
+concurrent authority, backlog cost, startup wiring and periodic removal remain.
+Master remains 1fbbef45a8; older stack gates and the full original scope stay open.
