@@ -14,6 +14,7 @@ import { nativeWorkspaceFinalizationWork } from "../services/native-runtime/nati
 import { withNativeWorkspaceFinalizationOwnership } from "../services/native-runtime/native-workspace-finalization-ownership.js";
 import { resumeNativeWorkspaceAfterOwnerStop } from "../services/native-runtime/native-workspace-owner-recovery.js";
 import * as platformProof from "../services/native-runtime/native-workspace-platform-proof.js";
+import { reconcileNativeFinalizations } from "../services/native-runtime/native-finalization-reconciler.js";
 import { PaperclipControlPlanePort } from "../services/native-runtime/paperclip-control-plane-port.js";
 import { notifyNativeFinalizationWork } from "../services/native-finalization-notifications.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
@@ -113,6 +114,20 @@ describe("workspace finalization scheduled lifecycle", () => {
     await quiet();
     worker!.stop(); await coordinator!.stop(); await start(); await flush(); await quiet();
     expect(await successful(binding.runId)).toHaveLength(1);
+  });
+  it("lets result reconciliation use a successful barrier despite a later stale failure", async () => {
+    const binding = await seed(); await complete(binding);
+    await db.insert(workspaceOperations).values({ companyId, heartbeatRunId: binding.runId, issueId: binding.issueId,
+      phase: "workspace_finalize", status: "succeeded", cwd: root });
+    await db.insert(workspaceOperations).values({ companyId, heartbeatRunId: binding.runId, issueId: binding.issueId,
+      phase: "workspace_finalize", status: "failed", cwd: root, createdAt: new Date(Date.now() + 1000) });
+    await start(); await flush(); await quiet();
+    await reconcileNativeFinalizations(db, [binding.runId], { skipNativeWorkspaceFinalization: true });
+    const [result] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, binding.runId));
+    expect(result.phase).toBe("committed");
+    expect(await successful(binding.runId)).toHaveLength(1);
+    expect(await db.select().from(workspaceOperations).where(eq(workspaceOperations.heartbeatRunId, binding.runId))).toHaveLength(3);
+    await flush(); await quiet();
   });
   it.each(["commit", "rollback"])("respects the outer transaction's %s for the real result producer", async outcome => {
     await start(); await flush();

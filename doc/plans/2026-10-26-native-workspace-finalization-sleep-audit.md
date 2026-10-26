@@ -107,3 +107,30 @@ settlement. Existing cleanup paths swallow some release errors; a workspace succ
 barrier must not be used to declare that cleanup settled. Retained workspaces, native
 status wakes, process/session recovery, scheduling, maintenance, and the older stack
 review failures remain in the main stack ledger. No stack PR is merged by this work.
+
+## Publication and follow-up verification
+
+Draft [#17734](https://github.com/paperclipai/paperclip/pull/17734) was published
+at `ad2b4bc9d87bb9c8e7cd6cba4abc122702ea7c5c`, on #17717. Workspace-wide types
+and build passed at that checkpoint. The final eight-suite command reported
+582 passing cases and 88 failures in the board-action suite. That command
+incorrectly reused one external database for three suites; the board-action
+suite's instance-wide reconciliation saw their retained fixtures. Do not count
+that combined command as a pass. The corrected follow-up gives each suite its
+own database and passes all 203 cases across four complete suites: workspace
+worker lifecycle, board actions, native result recovery, and physical workspace
+finalization. The other seven complete suites passed in the initial broad run,
+including all 408 heartbeat process-recovery and 34 recovery-module cases.
+
+Review also found a real migration regression: the workspace worker correctly
+excludes any successful barrier, but the remaining result reconciler used only
+the latest receipt. A later stale failure could then leave result projection
+waiting forever after periodic copy-back was disabled. The added regression
+failed with `workspace_finalizing` instead of `committed`. The reconciler now
+prefers a successful company/task/run-scoped receipt, matching the physical
+finalizer's existing success rule. The complete 13-case worker lifecycle suite
+passes with this repair, including the normal result-reconciliation path and no
+repeated physical copy-back.
+
+Repaired-head workspace validation, the default full test command, current-head
+CI, and Greptile acceptance remain to be recorded. The PR is not accepted or merged.

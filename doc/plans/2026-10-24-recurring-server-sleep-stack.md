@@ -2734,3 +2734,14 @@ Final full verification, publication and review are pending for slice 52. Inspec
 master is `a1f77821b9cd5c9c846fdf7a0fa5cc620ad2b6bb`; stack-base propagation is
 still outstanding. Older gates (#17490, #17572, #17576, #17580) and the rest of the
 requested recurring-server inventory remain active. No merge is authorized.
+
+Slice 52 publication: [#17734](https://github.com/paperclipai/paperclip/pull/17734)
+is draft on #17717. Workspace types/build passed. The initial broad command had
+582 passes and 88 board-action failures from incorrectly shared external test
+fixtures; it is not a pass. Separate databases then pass all 203 cases in four
+complete follow-up suites. A reproduced stale-success-barrier regression is
+fixed: result reconciliation prefers the existing successful scoped receipt even
+when a stale controller later writes failure, without repeating copy-back.
+The worker lifecycle now passes all 13 cases. Full-command disposition and
+repaired-head remote gates remain pending. No merge; all older gates and later
+recurring duties remain in scope.

@@ -615,10 +615,14 @@ async function reconcileNativeFinalizationsPass(
     const barrier = await db.select({ status: workspaceOperations.status })
       .from(workspaceOperations)
       .where(and(
+        eq(workspaceOperations.companyId, row.companyId),
+        eq(workspaceOperations.issueId, row.issueId),
         eq(workspaceOperations.heartbeatRunId, row.runId),
         eq(workspaceOperations.phase, "workspace_finalize"),
       ))
-      .orderBy(desc(workspaceOperations.createdAt))
+      // Successful copy-back is durable. A late failure from an old controller
+      // cannot make result projection depend on running physical copy-back again.
+      .orderBy(desc(sql`${workspaceOperations.status} = 'succeeded'`), desc(workspaceOperations.createdAt))
       .limit(1)
       .then((entries) => entries[0] ?? null);
     if (!barrier || barrier.status !== "succeeded") {
