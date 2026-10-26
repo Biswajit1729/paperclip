@@ -1,3 +1,4 @@
+import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-preservation-notifications.js";
 import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
 import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { boundRunIssueId } from "../run-task-binding.js";
@@ -6214,6 +6215,7 @@ export function recoveryService(
       const [candidate] = await tx.select().from(heartbeatRuns).where(eligible).for("update");
       if (!candidate) return null;
       await notifyInstructionCollection(tx, { companyId: candidate.companyId, runId: candidate.id });
+      await notifyCancelledWorkspacePreservation(tx, { companyId: candidate.companyId, runId: candidate.id });
       const boundIssueId = boundRunIssueId(candidate);
       if (boundIssueId) {
         await notifyChatRunMilestones(tx, { companyId: run.companyId, issueId: boundIssueId });

@@ -1,3 +1,4 @@
+import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-preservation-notifications.js";
 import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
 import { writeEnvironmentCleanup } from "../environment-cleanup-notifications.js";
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
@@ -7412,6 +7413,7 @@ export async function cancelNativeSession(
         const acknowledgementAuditId = activity.activity?.id ?? null;
         if (!acknowledgementAuditId)
           throw new Error("native_cancellation_ack_audit_missing");
+        await notifyCancelledWorkspacePreservation(tx, { companyId: cancellationContext.companyId, runId });
         const cancellationWrite = await tx
           .update(heartbeatRuns)
           .set({
@@ -9596,6 +9598,7 @@ async function executePaperclipNativeSessionWithinScope(
           .where(eq(heartbeatRuns.id, input.execution.binding.runId))
           .for("update");
         if (!ownershipUnverified) await notifyInstructionCollection(tx, { companyId: input.execution.binding.companyId, runId: input.execution.binding.runId });
+        if (!ownershipUnverified) await notifyCancelledWorkspacePreservation(tx, { companyId: input.execution.binding.companyId, runId: input.execution.binding.runId });
         let [updatedRun] = await tx
           .update(heartbeatRuns)
           .set({
