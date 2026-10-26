@@ -552,7 +552,7 @@ describeEmbeddedPostgres("tool gateway service", () => {
         expect(await db.select().from(toolCallEvents).where(eq(toolCallEvents.reasonCode, "approved_action_executed"))).toEqual([]);
       });
 
-      it.each(["succeeded", "failed", "denied", "timed_out", "rate_limited"] as const)("preserves a saved %s invocation while repairing the request", async status => {
+      it.each(["succeeded", "failed", "denied", "timed_out", "rate_limited", "cancelled"] as const)("preserves a saved %s invocation while repairing the request", async status => {
         const pending = await savedClaim(db, 11 * 60_000);
         const completedAt = new Date(Date.now() - 5 * 60_000);
         await db.update(toolInvocations).set({ status, completedAt, resultSummary: { summary: "Saved provider result" },
