@@ -1,4 +1,4 @@
-import { notifyNativeReviewState } from "./native-review-state-notifications.js";
+import { notifyIssueReviewState } from "./issue-review-state-notifications.js";
 import { and, asc, eq, gt, inArray, isNull, or } from "drizzle-orm";
 import { approvals, companyMemberships, connectionIntentDeliveries, issueApprovals, issueThreadInteractions, issues, type Db } from "@paperclipai/db";
 import { connectionIntentPayloadSchema } from "@paperclipai/shared";
@@ -110,7 +110,7 @@ export function satisfiedConnectionIntentService(db: Db) {
             }
             const connection = await findSatisfiedToolConnection(txDb, task, intent);
             if (!connection) return false;
-            await notifyNativeReviewState(tx, candidate);
+            await notifyIssueReviewState(tx, candidate);
             const now = new Date();
             // Retire the obsolete request without inventing a human approval.
             await tx.update(issueThreadInteractions).set({ status: "expired", resolvedAt: now, updatedAt: now,

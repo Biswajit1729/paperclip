@@ -1,5 +1,5 @@
 import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
-import { notifyNativeReviewState } from "./native-review-state-notifications.js";
+import { notifyIssueReviewState } from "./issue-review-state-notifications.js";
 import { notifyChatRunMilestones } from "./chat-run-milestone-notifications.js";
 import { notifyToolReviewChange } from "./tool-review-work-notifications.js";
 import { normalizeEscapedLineBreaks } from "@paperclipai/shared/validators/text";
@@ -1901,7 +1901,7 @@ async function expireStaleRequestConfirmationTarget(
   });
   const expireInTransaction = async (tx: Db | any) => {
     if (args.row.kind === "request_confirmation") await notifyChatRunMilestones(tx, args.row);
-    else await notifyNativeReviewState(tx, args.row);
+    else await notifyIssueReviewState(tx, args.row);
     const [updated] = await tx
       .update(issueThreadInteractions)
       .set({
@@ -2180,7 +2180,7 @@ export function issueThreadInteractionService(
     const result = await db.transaction(async (tx) => {
       await assertInteractionRunWriteAllowed(tx as unknown as Db, args.issue, args.actor);
       if (args.current.kind === "request_confirmation") await notifyChatRunMilestones(tx, args.current);
-      else await notifyNativeReviewState(tx, args.current);
+      else await notifyIssueReviewState(tx, args.current);
       await args.mutationOptions?.beforeResolveInTransaction?.(tx);
       // Policy mutations and review transitions use the same issue-row lock,
       // so the authoritative review policy and requester are stable through
@@ -2465,7 +2465,7 @@ export function issueThreadInteractionService(
     const updated = await db.transaction(async (tx) => {
       await assertInteractionRunWriteAllowed(tx as unknown as Db, args.issue, args.actor);
       if (args.current.kind === "request_confirmation") await notifyChatRunMilestones(tx, args.current);
-      else await notifyNativeReviewState(tx, args.current);
+      else await notifyIssueReviewState(tx, args.current);
       await args.mutationOptions?.beforeResolveInTransaction?.(tx);
       const issueContext = await tx
         .select({
@@ -2682,7 +2682,7 @@ export function issueThreadInteractionService(
           .where(and(eq(heartbeatRuns.id, input.sourceRunId), eq(heartbeatRuns.companyId, issue.companyId)));
         if (!sourceRun) throw unprocessable("Interaction source run is unavailable");
         const originCommentIds = await currentContinuationOrigins(tx as unknown as Db, issue.companyId, issue.id, sourceRun.context);
-        await notifyNativeReviewState(tx, { companyId: issue.companyId, issueId: issue.id });
+        await notifyIssueReviewState(tx, { companyId: issue.companyId, issueId: issue.id });
         const [row] = await tx
           .insert(issueThreadInteractions)
           .values({
@@ -2827,7 +2827,7 @@ export function issueThreadInteractionService(
             : "expired";
       const resolvedAt = now();
       const updated = await db.transaction(async (tx) => {
-        await notifyNativeReviewState(tx, current);
+        await notifyIssueReviewState(tx, current);
         const [row] = await tx
         .update(issueThreadInteractions)
         .set({
@@ -3260,7 +3260,7 @@ export function issueThreadInteractionService(
       for (const row of rows) {
         const updated = await db.transaction(async (tx) => {
           if (["ask_user_questions", "request_confirmation"].includes(row.kind)) await notifyChatRunMilestones(tx, row);
-          else await notifyNativeReviewState(tx, row);
+          else await notifyIssueReviewState(tx, row);
           if (row.kind === "request_confirmation") await notifyDeliveryWork(tx, DELIVERY_QUEUES.toolReviewProjection);
           const [resolved] = await tx
             .update(issueThreadInteractions)
@@ -3347,7 +3347,7 @@ export function issueThreadInteractionService(
       for (const { row, replacementInteractionId } of supersededRows) {
         const updated = await db.transaction(async (tx) => {
           if (["ask_user_questions", "request_confirmation"].includes(row.kind)) await notifyChatRunMilestones(tx, row);
-          else await notifyNativeReviewState(tx, row);
+          else await notifyIssueReviewState(tx, row);
           if (row.kind === "request_confirmation") await notifyDeliveryWork(tx, DELIVERY_QUEUES.toolReviewProjection);
           const [updatedRow] = await tx
             .update(issueThreadInteractions)
@@ -4037,7 +4037,7 @@ export function issueThreadInteractionService(
 
       await db.transaction(async (tx) => {
         await assertInteractionRunWriteAllowed(tx as unknown as Db, issue, actor);
-        await notifyNativeReviewState(tx, { companyId: issue.companyId, issueId: issue.id });
+        await notifyIssueReviewState(tx, { companyId: issue.companyId, issueId: issue.id });
         const resolvedAt = new Date();
         const [claimed] = await tx
           .update(issueThreadInteractions)
@@ -4274,7 +4274,7 @@ export function issueThreadInteractionService(
           complete,
           items,
         } satisfies RequestItemVerdictsResult;
-        if (complete) await notifyNativeReviewState(tx, { companyId: issue.companyId, issueId: issue.id });
+        if (complete) await notifyIssueReviewState(tx, { companyId: issue.companyId, issueId: issue.id });
         else await notifyNativeStatusReassessment(tx, { companyId: issue.companyId, issueId: issue.id });
         const [updated] = await tx
           .update(issueThreadInteractions)
@@ -4337,7 +4337,7 @@ export function issueThreadInteractionService(
 
       const [updated] = await db.transaction(async (tx) => {
         await assertInteractionRunWriteAllowed(tx as unknown as Db, issue, actor);
-        await notifyNativeReviewState(tx, { companyId: issue.companyId, issueId: issue.id });
+        await notifyIssueReviewState(tx, { companyId: issue.companyId, issueId: issue.id });
         return tx.update(issueThreadInteractions)
         .set({
           status: "rejected",
@@ -4425,7 +4425,7 @@ export function issueThreadInteractionService(
       for (const row of superseded) {
         const updated = await db.transaction(async (tx) => {
           if (["ask_user_questions", "request_confirmation"].includes(row.kind)) await notifyChatRunMilestones(tx, row);
-          else await notifyNativeReviewState(tx, row);
+          else await notifyIssueReviewState(tx, row);
           if (row.kind === "connection_intent") {
             await tx
               .delete(toolOauthStates)
@@ -4602,7 +4602,7 @@ export function issueThreadInteractionService(
           if (!sampleConfirmationRow) continue;
           const updatedInteractions = await db.transaction(async (tx) => {
             if (commentRows.some(row => row.kind === "request_confirmation")) await notifyChatRunMilestones(tx, sampleConfirmationRow);
-            else await notifyNativeReviewState(tx, sampleConfirmationRow);
+            else await notifyIssueReviewState(tx, sampleConfirmationRow);
             await notifyDeliveryWork(tx, DELIVERY_QUEUES.toolReviewProjection);
             const updatedRows = await tx
               .update(issueThreadInteractions)
@@ -4638,7 +4638,7 @@ export function issueThreadInteractionService(
 
         for (const row of itemVerdictRows) {
           const [updated] = await db.transaction(async tx => {
-            await notifyNativeReviewState(tx, row);
+            await notifyIssueReviewState(tx, row);
             return tx
             .update(issueThreadInteractions)
             .set({
@@ -4662,7 +4662,7 @@ export function issueThreadInteractionService(
 
         for (const row of connectionIntentRows) {
           const [updated] = await db.transaction(async (tx) => {
-            await notifyNativeReviewState(tx, row);
+            await notifyIssueReviewState(tx, row);
             await tx
               .delete(toolOauthStates)
               .where(eq(toolOauthStates.interactionId, row.id));
@@ -4749,7 +4749,7 @@ export function issueThreadInteractionService(
         });
         const updated = await db.transaction(async (tx) => {
           if (row.kind === "request_confirmation") await notifyChatRunMilestones(tx, row);
-          else await notifyNativeReviewState(tx, row);
+          else await notifyIssueReviewState(tx, row);
           const [resolved] = await tx
             .update(issueThreadInteractions)
             .set({
@@ -4807,7 +4807,7 @@ export function issueThreadInteractionService(
           eq(issueThreadInteractions.status, "pending"),
         ));
       const expired: typeof issueThreadInteractions.$inferSelect[] = [];
-      if (pending.length) await notifyNativeReviewState(db, { companyId: issue.companyId, issueId: issue.id });
+      if (pending.length) await notifyIssueReviewState(db, { companyId: issue.companyId, issueId: issue.id });
       for (const row of pending) {
         const payload = row.payload as { purpose?: string; serviceName?: string } | null;
         const subject = payload?.purpose === "ai"
@@ -4869,7 +4869,7 @@ export function issueThreadInteractionService(
         const updated = await db
           .transaction(async (tx) => {
             if (["ask_user_questions", "request_confirmation"].includes(row.kind)) await notifyChatRunMilestones(tx, row);
-            else await notifyNativeReviewState(tx, row);
+            else await notifyIssueReviewState(tx, row);
             if (row.kind === "connection_intent") {
               await tx
                 .delete(toolOauthStates)
@@ -4961,7 +4961,7 @@ export function issueThreadInteractionService(
       const updated = await db.transaction(async (tx) => {
         await assertInteractionRunWriteAllowed(tx as unknown as Db, issue, actor);
         if (["ask_user_questions", "request_confirmation"].includes(current.kind)) await notifyChatRunMilestones(tx, current);
-        else await notifyNativeReviewState(tx, current);
+        else await notifyIssueReviewState(tx, current);
         await resolveLinkedToolActionRequests(tx, current, {
           status: "cancelled",
           fromStatuses: ["pending", "approved"],
@@ -5223,7 +5223,7 @@ export function issueThreadInteractionService(
       const updated = await db.transaction(async (tx) => {
         await assertInteractionRunWriteAllowed(tx as unknown as Db, issue, actor);
         if (["ask_user_questions", "request_confirmation"].includes(current.kind)) await notifyChatRunMilestones(tx, current);
-        else await notifyNativeReviewState(tx, current);
+        else await notifyIssueReviewState(tx, current);
         await resolveLinkedToolActionRequests(tx, current, {
           status: "cancelled",
           fromStatuses: ["pending", "approved"],

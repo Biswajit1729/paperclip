@@ -1,3 +1,4 @@
+import { notifyExternalConversationSettlement } from "../../../services/external-conversation-settlement-notifications.js";
 import { notifyNativeStatusReassessment } from "../../../services/native-status-reassessment-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "../../../services/unsafe-workspace-export-notifications.js";
 import { notifyChatInboundWakeNotices } from "../../../services/chat-inbound-wake-notice-notifications.js";
@@ -270,6 +271,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
             throw error;
           }
           const now = new Date();
+          await notifyChatInboundWakeNotices(tx, { companyId, issueId });
           await tx
             .update(agentWakeupRequests)
             .set({
@@ -1127,6 +1129,7 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
 
         for (const issue of candidateIssues) {
           if (issue.executionRunId === run.id || issue.checkoutRunId === run.id) {
+            await notifyExternalConversationSettlement(tx, { companyId: input.companyId, issueId: issue.id });
             await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: input.companyId, issueId: issue.id });
             await notifyNativeStatusReassessment(tx, { companyId: input.companyId, issueId: issue.id });
           }

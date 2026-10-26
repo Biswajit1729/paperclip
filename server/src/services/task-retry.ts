@@ -1,3 +1,4 @@
+import { notifyExternalConversationSettlement } from "./external-conversation-settlement-notifications.js";
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
@@ -41,6 +42,7 @@ export async function retireSupersededTaskRetry(db: Db, input: {
       sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${input.issueId}`),
   )).orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1);
   if (latest?.id === input.sourceRunId) return false;
+  await notifyExternalConversationSettlement(db, input);
   const retired = await db.update(agentWakeupRequests).set({ status: "skipped", error: "task_retry_superseded",
     finishedAt: new Date(), updatedAt: new Date() }).where(and(
     eq(agentWakeupRequests.companyId, input.companyId), eq(agentWakeupRequests.id, input.requestId),
@@ -197,10 +199,16 @@ export async function reconcileTaskChatRetryReceipts(db: Db) {
       });
     }
     const failed = chat && ["failed", "cancelled"].includes(chat.status);
-    await db.update(agentWakeupRequests).set({
+    const write = (writer: Pick<Db, "update">) => writer.update(agentWakeupRequests).set({
       ...(receipt?.runId ? { status: "coalesced", runId: receipt.runId, finishedAt: new Date() }
         : failed ? { status: "failed", finishedAt: new Date() } : {}),
       updatedAt: new Date(),
     }).where(and(eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.status, "deferred_issue_execution")));
+    if (receipt?.runId || failed) await db.transaction(async tx => {
+      await notifyExternalConversationSettlement(tx, { companyId: wake.companyId,
+        issueId: typeof wake.payload?.issueId === "string" ? wake.payload.issueId : undefined });
+      await write(tx);
+    });
+    else await write(db);
   }
 }

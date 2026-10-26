@@ -11,7 +11,7 @@ import { RESTRICTED_WORKSPACE_SOURCE_REASON } from "../workspace-source-restrict
 import { hasCommittedNativePlanWait } from "../native-runtime/native-plan-wait.js";
 import { listExternalReviewWaits } from "../native-runtime/external-review-wait.js";
 import { isNativeWorkspaceExportRepairCause } from "@paperclipai/shared";
-import { settleSlackConversation } from "../slack-conversation-lifecycle.js";
+import { pendingExternalConversationSettlement, settleSlackConversation } from "../slack-conversation-lifecycle.js";
 import { externalConversationStateSql } from "../slack-conversation-state.js";
 import { isIssueReviewPathRecoveryRun } from "./review-path-recovery.js";
 import { escalateExhaustedIssueReviewPathRecovery } from "./review-path-recovery-escalation.js";
@@ -4490,6 +4490,7 @@ export function recoveryService(
 
   async function reconcileStrandedAssignedIssues(opts?: {
     issueCreatedAtGte?: Date | null;
+    skipExternalConversationSettlement?: boolean;
   }) {
     const candidates = await db
       .select()
@@ -4563,7 +4564,16 @@ export function recoveryService(
 
     for (const issue of candidates) {
       if (issue.originKind === "chat_channel") {
-        await settleSlackConversation(db, issue.companyId, issue.id);
+        if (opts?.skipExternalConversationSettlement) {
+          // The settlement worker owns an answered turn before generic recovery
+          // may dispatch another run. Keep that ordering while delegating writes.
+          if (await pendingExternalConversationSettlement(db, issue.companyId, issue.id)) {
+            result.skipped += 1;
+            continue;
+          }
+        } else {
+          await settleSlackConversation(db, issue.companyId, issue.id);
+        }
         const [current] = await db.select({ externalConversationState: externalConversationStateSql() })
           .from(issues).where(and(eq(issues.companyId, issue.companyId), eq(issues.id, issue.id)));
         if (current?.externalConversationState === "waiting") { result.skipped += 1; continue; }
