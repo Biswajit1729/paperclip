@@ -1159,7 +1159,7 @@ async function resolveLinkedSecretProposal(
 ) {
   const proposalId = linkedSecretProposalId(interaction);
   if (!proposalId) return;
-  await notifyDeliveryWork(db, DELIVERY_QUEUES.secretProposalExpiry);
+  await notifyDeliveryWork(db, DELIVERY_QUEUES.secretProposalExpiry, interaction.companyId);
   const [proposal] = await db
     .update(companySecretProposals)
     .set({
@@ -3169,7 +3169,7 @@ export function issueThreadInteractionService(
           : execution.status;
         if (executionStatus === "failed" && proposal.status === "pending") {
           const resolutionReason = `Interaction acceptance failed: ${execution.errorCode ?? "secret_proposal_execution_failed"}`;
-          await notifyDeliveryWork(tx, DELIVERY_QUEUES.secretProposalExpiry);
+          await notifyDeliveryWork(tx, DELIVERY_QUEUES.secretProposalExpiry, proposal.companyId);
           await tx
             .update(companySecretProposals)
             .set({
