@@ -2994,3 +2994,36 @@ in scope; the next native duty audit is agent-status projection. An empty local
 runtime-service map is already SQL/network quiet and does not by itself justify
 another queue. No deployed host suspension, external alarm coverage, or fleet
 savings are claimed by these repairs.
+
+## October 26 approved-review and interrupted-outcome repairs
+
+Slice 05 now retains the originally admitted rate slot through human review,
+reconciles durable request/invocation history before dispatch, and settles
+permanently invalid records without recurring recovery. Formal approvals still
+awaiting human input remain quiet until a committed decision/cancellation; startup
+rediscovers them. Configuration/dependency failures retain retry debt, and saved
+or unknown provider outcomes are never replayed. The originating branch passed
+208 gateway/policy/approval/signature cases and server typechecking.
+
+Propagation preserved each existing owner boundary. Slice 06 retains its shared
+Test-tab fixture with optional rate admission. Slice 14 folds formal-review wakes
+into the existing approval write transaction; slice 16 carries that signal through
+the company-scoped approval notification owner; slice 49 also retains native task
+scopes. Eight affected suites passed 506 cases at source
+`d4ff4b9c04cbaa3739d1b62f7c29a3bff670c901`, including retention, seeding, and native
+review consumers. This is evidence for those integration changes, not separate
+certification of each intermediate branch.
+
+Slice 06 additionally preserves saved `cancelled` invocation status, completion
+time, and error while repairing a stranded executing request. Its new regression
+reproduced the unwanted overwrite; all 14 interrupted-review worker cases passed
+at that branch. Final combined source `b91de5102faf548217ea489667fe51de98c9071a`
+passes all 129 gateway tests, workspace typechecking, and the full build. This
+ledger-only follow-up leaves the tested source unchanged. Full local test:run was
+not repeated because of the previously documented embedded PostgreSQL capacity
+limitation. Fresh remote CI is still required.
+
+No stack PR was merged. Earlier CI debts, other review findings (including native
+notice lock order), the eight native facade suppression audits, the next native
+agent-status projection duty, and the rest of the original inventory remain in
+scope. These repairs do not establish deployed instance/database suspension.
