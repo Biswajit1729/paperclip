@@ -4056,7 +4056,7 @@ export function environmentRuntimeService(
         WHERE ${heartbeatRuns.id} = ${environmentLeases.heartbeatRunId}
           AND ${heartbeatRuns.status} IN ('queued', 'scheduled_retry', 'running')
       )`,
-    )).returning());
+    )).returning(), { companyId: input.leaseRow.companyId, runId: input.leaseRow.heartbeatRunId ?? undefined });
     if (!claimed) return null;
     const lease = toEnvironmentLeaseSnapshot(claimed);
     let renewalInFlight = false;
@@ -4095,7 +4095,7 @@ export function environmentRuntimeService(
         metadata: sql`${environmentLeases.metadata} || '{"pendingCleanupInFlight":false}'::jsonb`,
       }).where(and(eq(environmentLeases.id, lease.id),
         sql`${environmentLeases.metadata}->>'pendingCleanupAttemptId' = ${attemptId}`,
-      ))).catch(() => {
+      )), { companyId: lease.companyId, runId: lease.heartbeatRunId ?? undefined }).catch(() => {
         logger.warn({ leaseId: lease.id }, "scoped cleanup ownership settlement failed");
       });
     }
@@ -4266,7 +4266,7 @@ export function environmentRuntimeService(
                   sql`${environmentLeases.metadata}->>'pendingCleanupRetryAfterMs' = '0'`,
                 ) : undefined) : undefined,
               sql`${environmentLeases.metadata}->${intentKey} = ${JSON.stringify(leaseSnapshot.metadata?.[intentKey])}::jsonb`,
-            )).returning());
+            )).returning(), { companyId: leaseRow.companyId, runId: leaseRow.heartbeatRunId ?? undefined });
             if (!claimed) continue;
             const snapshot = toEnvironmentLeaseSnapshot(claimed);
             try {
