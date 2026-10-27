@@ -212,9 +212,16 @@ describe("automatic retained workspace recovery", () => {
     } finally { await coordinator.stop(); await worker.stop(); }
   }, 30_000);
 
-  it("fills a free export slot while another export is held and joins both at shutdown", async () => {
-    const held = await seed(), fast = await seed();
-    const fixtures = [held, fast];
+  it("fills a free export slot across the candidate cursor while another export is held and joins both at shutdown", async () => {
+    const orderedSeed = async (position: number) => {
+      const fixture = await seed();
+      const id = `00000002-000${position}-4000-8000-${randomUUID().slice(-12)}`;
+      await db.update(issueRecoveryActions).set({ id }).where(eq(issueRecoveryActions.id, fixture.actionId));
+      fixture.actionId = id; fixture.input.actionId = id;
+      return fixture;
+    };
+    const held = await orderedSeed(2);
+    const fixtures = [held];
     const runtimeFor = (runId: string) => fixtures.find(fixture => fixture.runId === runId)!.environmentRuntime;
     const runtime = { ...held.environmentRuntime,
       resumeWorkspaceRecoveryLease: (input: Parameters<typeof held.environmentRuntime.resumeWorkspaceRecoveryLease>[0]) =>
@@ -231,15 +238,20 @@ describe("automatic retained workspace recovery", () => {
         try { if (pause) await gate; return await resume(input); } finally { active -= 1; }
       });
     };
-    countExport(held, true); countExport(fast);
+    countExport(held, true);
     const errors = vi.fn();
     const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: errors });
     const worker = registerWorkspaceRecoveryWork(db, coordinator, runtime, async () => {});
     try {
       await expect.poll(() => held.runtime.resumeRunLease.mock.calls.length, { timeout: 20_000 }).toBe(1);
+      // Start the middle candidate only after the highest candidate occupies
+      // one slot. The next producer then sorts before that saved cursor.
+      const fast = await orderedSeed(1); fixtures.push(fast); countExport(fast);
+      await requestTaskRetry({ db, companyId: fast.companyId, issueId: fast.issueId, actorId: "board",
+        observedRunId: fast.runId, idempotencyKey: randomUUID() });
       await expect.poll(async () => readSystemRecovery((await action(fast.actionId)).evidence)?.state,
         { timeout: 20_000 }).toBe("complete");
-      const third = await seed(); fixtures.push(third); countExport(third);
+      const third = await orderedSeed(0); fixtures.push(third); countExport(third);
       await requestTaskRetry({ db, companyId: third.companyId, issueId: third.issueId, actorId: "board",
         observedRunId: third.runId, idempotencyKey: randomUUID() });
       await expect.poll(async () => readSystemRecovery((await action(third.actionId)).evidence)?.state,
