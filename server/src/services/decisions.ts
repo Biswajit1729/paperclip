@@ -25,7 +25,8 @@ type Snapshot = { status: string; assigneeAgentId: string | null; assigneeUserId
 export type DecisionServiceOptions = { wakeOriginAgent: DecisionContinuationWake };
 const DAY = 86_400_000;
 type DecisionOutcome = typeof decisions.$inferSelect & { executions: Array<typeof decisionEffectExecutions.$inferSelect> };
-const effectFlights = new WeakMap<object, Map<string, Promise<DecisionOutcome>>>();
+type EffectAttempt = { outcome: DecisionOutcome; resumed: boolean };
+const effectFlights = new WeakMap<object, Map<string, Promise<EffectAttempt | null>>>();
 
 function targetIds(options: DecisionOption[]) {
   const result = new Set<string>();
@@ -559,21 +560,53 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
     }
   }
 
-  function runEffects(decision: typeof decisions.$inferSelect, userActor: AuthorizationActor): Promise<DecisionOutcome> {
-    const existing = executing.get(decision.id);
+  function runEffects(id: string, userActor?: AuthorizationActor): Promise<EffectAttempt | null> {
+    const existing = executing.get(id);
     if (existing) return existing;
     const attempt = (async () => {
-      const current = await get(decision.id);
-      if (!current) throw notFound("Decision not found");
-      return current.executionStatus === "running" ? executeDecisionEffects(current, userActor) : outcome(current.id);
-    })().finally(() => { executing.delete(decision.id); });
-    executing.set(decision.id, attempt);
+      const current = await get(id);
+      if (!current) return null;
+      if (current.status !== "decided" || current.executionStatus !== "running") {
+        return { outcome: await outcome(id), resumed: false };
+      }
+      // Recovery derives authority from the current claim inside the shared flight.
+      const actor = userActor ?? (current.decidedByUserId
+        ? await recoveryActor(current.companyId, current.decidedByUserId)
+        : { type: "none" as const, source: "none" as const });
+      return { outcome: await executeDecisionEffects(current, actor), resumed: true };
+    })().finally(() => { executing.delete(id); });
+    executing.set(id, attempt);
     return attempt;
+  }
+
+  async function settleInvalidEffectOutcome(id: string) {
+    const publications: ActivityPublication[] = [];
+    await writeDecisionChange(db, async tx => {
+      const [current] = await tx.select().from(decisions).where(eq(decisions.id, id)).for("update");
+      if (!current || current.status !== "decided" || current.executionStatus !== "running") return;
+      const reason = !current.decidedByUserId ? "missing_decider"
+        : !current.options.some(option => option.id === current.chosenOptionId) ? "missing_option" : null;
+      if (!reason) return;
+      const [executed] = await tx.select({ id: decisionEffectExecutions.id }).from(decisionEffectExecutions)
+        .where(and(eq(decisionEffectExecutions.decisionId, id), eq(decisionEffectExecutions.status, "executed"))).limit(1);
+      const executionStatus = executed ? "partial" : "failed";
+      await tx.update(decisions).set({ executionStatus, updatedAt: new Date(), metadata: { ...current.metadata,
+        effectRecoveryError: reason,
+        ...(current.continuationPolicy === "wake_origin_agent" ? { continuationPending: true } : {}),
+      } }).where(eq(decisions.id, id));
+      await logActivity(tx, { companyId: current.companyId, actorType: "system", actorId: "decision-executor",
+        agentId: current.originAgentId, runId: current.originRunId, responsibleUserIdOverride: current.decidedByUserId,
+        action: "decision.recovery_failed", entityType: "decision", entityId: id,
+        details: { reason, executionStatus, chosenOptionId: current.chosenOptionId, decidedByUserId: current.decidedByUserId },
+      }, publications);
+    });
+    for (const publication of publications) publishActivity(publication);
+    return outcome(id);
   }
 
   async function executeDecisionEffects(decision: typeof decisions.$inferSelect, userActor: AuthorizationActor) {
     const option = decision.options.find((item) => item.id === decision.chosenOptionId);
-    if (!option || !decision.decidedByUserId) throw unprocessable("Stored decision outcome is invalid");
+    if (!option || !decision.decidedByUserId) return settleInvalidEffectOutcome(decision.id);
     const run = await db.select({ responsibleUserId: heartbeatRuns.responsibleUserId }).from(heartbeatRuns).where(eq(heartbeatRuns.id, decision.originRunId)).then((rows) => rows[0] ?? null);
     const metadata = decision.metadata as Record<string, unknown>;
     if (metadata.kind === "attention_archive_proposal") {
@@ -637,7 +670,9 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
   }
 
   async function resumeDecision(decision: typeof decisions.$inferSelect, userActor: AuthorizationActor) {
-    const result = decision.executionStatus === "running" ? await runEffects(decision, userActor) : await outcome(decision.id);
+    const attempt = decision.executionStatus === "running" ? await runEffects(decision.id, userActor) : undefined;
+    if (attempt === null) throw notFound("Decision not found");
+    const result = attempt?.outcome ?? await outcome(decision.id);
     await continuations.deliver(result.id);
     return outcome(decision.id);
   }
@@ -719,11 +754,9 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
   }
 
   async function recoverDecisionEffects(id: string) {
-    const current = await get(id);
-    if (!current || current.status !== "decided" || current.executionStatus !== "running" || !current.decidedByUserId) return false;
-    const recovered = await runEffects(current, await recoveryActor(current.companyId, current.decidedByUserId));
-    if (recovered.executionStatus === "running") return false;
-    await continuations.deliver(recovered.id);
+    const attempt = await runEffects(id);
+    if (!attempt?.resumed || attempt.outcome.executionStatus === "running") return false;
+    await continuations.deliver(attempt.outcome.id);
     return true;
   }
 
