@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
-import { agents, companies, createDb, executionWorkspaceRestorePoints, executionWorkspaces, heartbeatRuns, issues, projects, projectWorkspaces } from "@paperclipai/db";
+import { agents, applyPendingMigrations, companies, createDb, executionWorkspaceRestorePoints, executionWorkspaces, heartbeatRuns, issues, projects, projectWorkspaces } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { materializeManagedProjectWorkspace } from "../services/managed-repository-checkout.js";
 import { materializeIsolatedRemoteWorkspaceSource } from "../services/isolated-remote-workspace-source.js";
@@ -56,7 +56,8 @@ describeEmbeddedPostgres("nested repository clone migration", () => {
   const previousHome = process.env.PAPERCLIP_HOME;
   const previousInstance = process.env.PAPERCLIP_INSTANCE_ID;
   beforeAll(async () => {
-    if (!external) database = await startEmbeddedPostgresTestDatabase("nested-clone-migration-");
+    if (external) await applyPendingMigrations(external);
+    else database = await startEmbeddedPostgresTestDatabase("nested-clone-migration-");
     db = createDb(external ?? database!.connectionString);
     root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-nested-migration-"));
     process.env.PAPERCLIP_HOME = path.join(root, "home");
