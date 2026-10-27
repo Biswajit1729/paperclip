@@ -9,7 +9,7 @@ export function registerToolReviewInterruptionWork(
   canRun: () => boolean,
 ) {
   return registerDeadlineWork(coordinator, DELIVERY_QUEUES.toolReviewInterruption, {
-    retryMs: 30_000, canRun,
+    retryMs: 30_000, notificationCoalesceMs: 30_000, canRun,
     run: () => gateway.settleInterruptedActionReviews(),
     next: () => gateway.nextActionReviewInterruptionAt(),
   });
