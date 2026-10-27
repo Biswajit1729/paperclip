@@ -183,7 +183,7 @@ unpresented-run index alone still chose the wrong join order (16.532 ms).
 Expression statistics for the selected-comment predicate allowed PostgreSQL to
 start from the one unpresented run (0.091 ms).
 
-Generated migration `0403_futuristic_earthquake.sql` creates the partial index
+Generated migration `0404_futuristic_earthquake.sql` creates the partial index
 concurrently, adds idempotent expression statistics, and analyzes the table.
 The existing top-level migration runner owns concurrent-index replay/repair.
 Snapshot retention contains exactly 0396–0400. Fresh migration, journal replay,
