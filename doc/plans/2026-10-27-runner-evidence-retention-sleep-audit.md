@@ -40,7 +40,8 @@ independently keeps each PR's trigger and correctness claim reviewable.
   inclusive at the window boundary.
 - Busy sessions, incomplete scans, and failed inspection/removal retain actual
   recovery obligations. Bounded continuations run after one second. Concrete
-  failed or busy evidence retries use the shared 30-second retry behavior.
+  failed or busy evidence retries use a one-hour worker retry; an earlier saved
+  expiry or new publication can still wake the worker sooner.
 - Empty evidence, ignored cleanup-source archives, and fully processed history
   leave no evidence deadline or recurring filesystem/SQL calls.
 
