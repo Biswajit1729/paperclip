@@ -1491,6 +1491,44 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       await expect(approval).resolves.toMatchObject({ state: "approved", sessionId: session.id });
     } finally { release(); await approval.catch(() => undefined); vi.useRealTimers(); }
   });
+  it.each([false, true])("finishes an interrupted inbound approval using its existing live session (guest=%s)", async guest => {
+    const f = await inboundFixture(guest);
+    if (guest) await f.tool("submit_request", { text: "A public request before private approval" });
+    const input = { approve: true, approvalCode: f.call.approvalCode, issueId: f.issueId };
+    const approved = await f.service.inbound.decide(f.companyId, f.endpointId, f.call.id, f.input.caller, input);
+    // Older versions committed session creation/promotion before a separate
+    // admission binding. Reconstruct a crash in that gap, then retry the API.
+    await db.update(chatVoiceInboundCalls).set({ state: "approving", sessionId: guest ? approved.sessionId : null })
+      .where(eq(chatVoiceInboundCalls.id, f.call.id));
+    await expect(f.service.inbound.decide(f.companyId, f.endpointId, f.call.id, f.input.caller, input))
+      .resolves.toMatchObject({ state: "approved", sessionId: approved.sessionId });
+    await expect(f.service.start({ companyId: f.companyId, endpointId: f.endpointId, issueId: f.issueId,
+      caller: f.input.caller, idempotencyKey: `inbound:${f.call.id}`, maxDurationSeconds: 600,
+      mode: "inbound_phone", providerSessionId: f.event.session_id, toolToken: f.capability }))
+      .resolves.toMatchObject({ session: { id: approved.sessionId } });
+    const sessions = await db.select().from(chatVoiceSessions).where(eq(chatVoiceSessions.providerSessionId, f.event.session_id));
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]).toMatchObject({ id: approved.sessionId, callerId: f.callerId, issueId: f.issueId });
+    expect(f.transport.createBrowserSession).not.toHaveBeenCalled();
+    expect(f.transport.createPhoneSession).not.toHaveBeenCalled();
+    expect(f.transport.endSession).not.toHaveBeenCalled();
+  });
+
+  it.each(["ended", "expired", "token"] as const)("does not repair an interrupted approval after its session is %s", async change => {
+    const f = await inboundFixture();
+    const input = { approve: true, approvalCode: f.call.approvalCode, issueId: f.issueId };
+    const approved = await f.service.inbound.decide(f.companyId, f.endpointId, f.call.id, f.input.caller, input);
+    await db.update(chatVoiceInboundCalls).set({ state: "approving", sessionId: null }).where(eq(chatVoiceInboundCalls.id, f.call.id));
+    await db.update(chatVoiceSessions).set(change === "ended" ? { state: "ended", endedAt: new Date() }
+      : change === "expired" ? { createdAt: new Date(Date.now() - 2000), expiresAt: new Date(Date.now() - 1000) } : { toolTokenHash: "a".repeat(64) })
+      .where(eq(chatVoiceSessions.id, approved.sessionId!));
+    await expect(f.service.inbound.decide(f.companyId, f.endpointId, f.call.id, f.input.caller, input))
+      .rejects.toMatchObject({ status: 403 });
+    const [call] = await db.select().from(chatVoiceInboundCalls).where(eq(chatVoiceInboundCalls.id, f.call.id));
+    expect(call).toMatchObject({ state: "approving", sessionId: null });
+    expect(await db.select().from(chatVoiceSessions).where(eq(chatVoiceSessions.providerSessionId, f.event.session_id))).toHaveLength(1);
+  });
+
   it("requires approval of the specific incoming call before delivering any private work", async () => {
     const f = await inboundFixture();
     expect(await f.service.inbound.lifecycle(f.endpoint.publicId, f.signed.body, f.signed.headers)).toEqual(f.response);
