@@ -48,13 +48,14 @@ vi.mock("../api/issues", () => ({
   issuesApi: mockIssuesApi,
 }));
 
-vi.mock("../hooks/useAutosaveIndicator", () => ({
-  useAutosaveIndicator: () => ({
-    state: "idle",
-    markDirty: vi.fn(),
-    reset: vi.fn(),
-    runSave: async (save: () => Promise<unknown>) => save(),
-  }),
+const mockSession = vi.hoisted(() => ({ userId: "user-1", unreachable: false }));
+vi.mock("../api/auth", () => ({
+  authApi: {
+    getSession: async () => {
+      if (mockSession.unreachable) throw new Error("Service unavailable");
+      return { user: { id: mockSession.userId } };
+    },
+  },
 }));
 
 vi.mock("@/lib/router", () => ({
@@ -293,6 +294,7 @@ describe("IssueDocumentsSection", () => {
     window.localStorage.clear();
     vi.clearAllMocks();
     markdownEditorMockState.emitMountEmptyChange = false;
+    mockSession.unreachable = false;
   });
 
   afterEach(() => {
@@ -865,6 +867,119 @@ describe("IssueDocumentsSection", () => {
 
     expect(container.textContent).toContain("Loaded plan body");
     expect(container.textContent).not.toContain("Markdown body");
+
+    await act(async () => {
+      root.unmount();
+    });
+    queryClient.clear();
+  });
+
+  it("does not restore another account's unsaved edit", async () => {
+    const document = createIssueDocument({ body: "Server body" });
+    const issue = createIssue();
+    window.localStorage.setItem(
+      `paperclip:document-draft:v2:user-2:${issue.id}:plan`,
+      JSON.stringify({ key: "plan", title: "Plan", body: "Someone else's draft", baseRevisionId: "revision-4", isNew: false }),
+    );
+    mockIssuesApi.listDocuments.mockResolvedValue([document]);
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDocumentsSection issue={issue} canDeleteDocuments={false} />
+        </QueryClientProvider>,
+      );
+    });
+    await flush();
+    await flush();
+    expect(container.textContent).toContain("Server body");
+    expect(container.textContent).not.toContain("Someone else's draft");
+    expect(mockIssuesApi.upsertDocument).not.toHaveBeenCalled();
+
+    await act(async () => {
+      root.unmount();
+    });
+    queryClient.clear();
+    window.localStorage.clear();
+  });
+
+  it("keeps the known account's drafts while a session refetch fails", async () => {
+    const document = createIssueDocument({ body: "Server body" });
+    const issue = createIssue();
+    window.localStorage.setItem(
+      `paperclip:document-draft:v2:user-1:${issue.id}:plan`,
+      JSON.stringify({ key: "plan", title: "Plan", body: "Typed before the outage", baseRevisionId: "revision-4", isNew: false }),
+    );
+    mockIssuesApi.listDocuments.mockResolvedValue([document]);
+    mockSession.unreachable = true;
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    // Signed in earlier; the refetch on mount fails but the query keeps its data.
+    queryClient.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } }, { updatedAt: 0 });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDocumentsSection issue={issue} canDeleteDocuments={false} />
+        </QueryClientProvider>,
+      );
+    });
+    await flush();
+    await flush();
+    expect(queryClient.getQueryState(queryKeys.auth.session)?.status).toBe("error");
+    expect(container.textContent).toContain("Typed before the outage");
+
+    await act(async () => {
+      root.unmount();
+    });
+    queryClient.clear();
+    window.localStorage.clear();
+  });
+
+  it("restores an unsaved edit after reload and treats a 409 with our own text as saved", async () => {
+    const { ApiError } = await import("../api/client");
+    const document = createIssueDocument({ body: "Server body" });
+    const issue = createIssue();
+    // An edit typed before a reload; its save may have landed with a lost response.
+    window.localStorage.setItem(
+      `paperclip:document-draft:v2:user-1:${issue.id}:plan`,
+      JSON.stringify({ key: "plan", title: "Plan", body: "Edited during the outage", baseRevisionId: "revision-4", isNew: false }),
+    );
+    const saved = createIssueDocument({ body: "Edited during the outage", latestRevisionId: "revision-5" });
+    // The refetch after saving returns the server's current copy.
+    mockIssuesApi.listDocuments.mockResolvedValueOnce([document]).mockResolvedValue([saved]);
+    mockIssuesApi.upsertDocument.mockRejectedValue(
+      new ApiError("Document was updated by someone else", 409, { error: "Document was updated by someone else" }),
+    );
+    mockIssuesApi.getDocument.mockResolvedValue(saved);
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDocumentsSection issue={issue} canDeleteDocuments={false} />
+        </QueryClientProvider>,
+      );
+    });
+    await flush();
+    await flush();
+    expect(container.textContent).toContain("Edited during the outage");
+
+    // Autosave debounce.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 1_100));
+    });
+    await flush();
+
+    expect(mockIssuesApi.upsertDocument).toHaveBeenCalledWith(issue.id, "plan", expect.objectContaining({
+      body: "Edited during the outage",
+      baseRevisionId: "revision-4",
+    }));
+    expect(container.textContent).not.toContain("Out of date");
+    expect(window.localStorage.getItem(`paperclip:document-draft:v2:user-1:${issue.id}:plan`)).toBeNull();
 
     await act(async () => {
       root.unmount();
