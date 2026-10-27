@@ -48,7 +48,7 @@ Independent SQL writers or another process need a separate notification contract
 Agent actions retain their existing approved-to-executing claim. Test-tab
 foreground approval and recovery now share an equivalent claim before provider
 dispatch. The invocation then starts only if the request still holds that claim.
-Provider calls and target/policy lookup remain outside SQL transactions.
+Provider calls and target discovery remain outside SQL transactions. Current rate-policy admission and its receipt commit together in a short database transaction.
 
 The Test-tab invocation outcome and terminal request status commit together.
 Claim timestamps fence late settlement. A later audit failure cannot overwrite
@@ -187,3 +187,47 @@ proves the old owner cannot dispatch; the surviving approval later executes once
 A provider-error case proves that an already-started call is not requeued as a
 preparation failure. The existing Test-tab timeout and ownership cases exercise
 the other consumer of the shared boundary.
+
+
+## New or edited rate rules during approval
+
+A reviewed invocation already has durable `consumedRateAdmissions` in its policy
+explanation. The original read-only recheck retained unchanged rules correctly,
+but new or edited rules only inspected their counters. Two approved actions could
+therefore both execute against one available slot. The real recovery regression
+failed for both a newly added limit and an increased limit before this repair.
+
+The policy service now owns `admitInvocation`: lock the company-scoped invocation,
+validate its exact actor/task/tool/argument binding, recheck current policy, spend
+only admissions not already recorded for that policy generation, and save the
+receipt atomically. The gateway supplies its execution claim; that claim is locked
+and checked by ID, invocation, company, executing status and timestamp. This also
+supports historical approved requests whose invocation still says pending, without
+accepting a stale claimant. Existing claim/start/settlement owners still control
+provider execution. No queue table, periodic query, or per-route wrapper is added.
+
+Counter updates preserve the number of already spent slots when the limit changes.
+A rejection by a later policy or failure to save the receipt rolls back new charges.
+A retry of a committed admission retains the saved receipt, including concurrent
+rechecks. Read-only approval preflight and browser authority probes stay read-only;
+trust-rule usage is not counted again during execution revalidation. The policy
+service and its metric helper accept only the database capabilities they use, so
+transaction clients do not require a cast to a root connection.
+
+The owning gateway and policy suites pass all 181 cases against disposable real
+PostgreSQL databases. Coverage includes two competing invocations, concurrent
+retries of one invocation, changed limits, failed receipt writes, rejection after
+an earlier rate charge, unchanged admissions, historical approvals, scope mismatch,
+claim loss, quiet recovery and unknown provider outcomes. Server typechecking
+passes after preparing current runner dependencies.
+
+Earlier verification failures remain part of this evidence: the first full run
+was stopped because an old claim-loss fixture held the policy table while trying
+to revoke the newly locked invocation. It now pauses discovery before admission
+and retains the no-provider-dispatch assertion. A new receipt assertion was fixed
+to permit the intended additional receipt while preserving original fields. The
+next full run exposed an overly strict historical-approval check; exact execution-
+claim validation fixed it. Typechecking then exposed root-client-only signatures,
+which were narrowed to their actual database capabilities. The final complete
+suites and TypeScript check pass; stack integration and current-head CI remain
+separate gates. This proves worker and admission behavior, not deployed host sleep.
