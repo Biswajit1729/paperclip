@@ -1182,6 +1182,12 @@ export async function recoverCommittedNativeReviewResponse(db: Db, input: {
 }): Promise<boolean> {
   const materialized = await db.transaction(async transaction => {
     const tx = transaction as unknown as Db;
+    // Status replay and finalization also lock coordinator -> issue. Waiting
+    // for the coordinator must not hold a task lock needed by its current owner.
+    const [coordinator] = await tx.select({ id: nativeRunFinalizations.runId }).from(nativeRunFinalizations)
+      .where(and(eq(nativeRunFinalizations.companyId, input.companyId),
+        eq(nativeRunFinalizations.issueId, input.issueId), eq(nativeRunFinalizations.runId, input.runId))).for("update");
+    if (!coordinator) return null;
     const [issue] = await tx.select({ id: issues.id }).from(issues)
       .where(and(eq(issues.companyId, input.companyId), eq(issues.id, input.issueId))).for("update");
     if (!issue || await hasMaterializedNativeReviewResponse(tx, input)) return null;

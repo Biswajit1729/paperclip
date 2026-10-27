@@ -54,6 +54,7 @@ import type {
 
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { finalizeNativeRun, recoverCommittedNativeReviewResponse } from "./native-run-finalizer.js";
+import { commitNativeStatusDecision } from "./status-decision-committer.js";
 import { configureAgentLifecycle, createAgentLifecycle, processAgentLifecycle } from "../agent-lifecycle.js";
 import { createOAuthStateStore } from "../tool-access/oauth/state.js";
 import { approvalRecords } from "../approvals.js";
@@ -2929,6 +2930,49 @@ describe("native external-chat response wait", () => {
     expect(await work.load({ companyId: fixture.companyId })).toEqual([]);
     expect(await recoverCommittedNativeReviewResponse(db, fixture.input)).toBe(false);
     expect(await db.select().from(issueComments).where(eq(issueComments.createdByRunId, fixture.runId))).toHaveLength(1);
+  });
+
+  it("lets status replay finish while governed response recovery waits for its coordinator", async () => {
+    const fixture = await seedRecoverableReviewResponse();
+    const [issue] = await db.select().from(issues).where(eq(issues.id, fixture.issueId));
+    const [decision] = await db.select().from(statusDecisions).where(eq(statusDecisions.id, fixture.input.decisionId));
+    let recovery: Promise<{ value?: boolean; error?: unknown }> | undefined;
+    try {
+      await db.transaction(async tx => {
+        await tx.select().from(nativeRunFinalizations)
+          .where(eq(nativeRunFinalizations.runId, fixture.runId)).for("update");
+        const [backend] = await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`);
+        recovery = recoverCommittedNativeReviewResponse(db, fixture.input)
+          .then(value => ({ value }), error => ({ error }));
+        await vi.waitFor(async () => {
+          const [waiting] = await db.execute<{ count: number }>(sql`
+            select count(*)::int as count from pg_stat_activity
+            where datname = current_database() and wait_event_type = 'Lock'
+              and ${backend.pid} = any(pg_blocking_pids(pid))`);
+          expect(waiting.count).toBe(1);
+        });
+        // The real status committer takes coordinator -> issue. Recovery must
+        // not hold the issue while waiting for this already-owned coordinator.
+        await tx.execute(sql`set local lock_timeout = '500ms'`);
+        const replay = await commitNativeStatusDecision({
+          db: tx as unknown as typeof db, companyId: fixture.companyId,
+          issueId: fixture.issueId, runId: fixture.runId,
+          assessmentId: fixture.input.assessmentId,
+          priorStatus: issue.status, priorStatusVersion: issue.statusVersion,
+          priorDecisionId: issue.lastStatusDecisionId,
+          decision: decision.decisionJson as unknown as Parameters<typeof commitNativeStatusDecision>[0]["decision"],
+        });
+        expect(replay.replayed).toBe(true);
+      });
+    } finally {
+      if (recovery) {
+        const result = await recovery;
+        expect(result.error).toBeUndefined();
+        expect(result.value).toBe(true);
+      }
+    }
+    expect(await db.select().from(issueComments).where(eq(issueComments.createdByRunId, fixture.runId))).toHaveLength(1);
+    expect(await recoverCommittedNativeReviewResponse(db, fixture.input)).toBe(false);
   });
 
   it.each(["future", "claim"])("defers scheduled governed responses behind a new %s under the owner lock", async kind => {
