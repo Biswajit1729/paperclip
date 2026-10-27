@@ -166,7 +166,7 @@ endpoints to serialize against signed admission ingress.
 
 The existing admission row needs separate authorization and cleanup state. Three
 nullable fields record confirmation, retry and the signed provider account.
-Migration 0388_lying_trish_tilby.sql was generated with `pnpm db:generate`, made
+Migration 0389_lying_trish_tilby.sql was generated with `pnpm db:generate`, made
 idempotent, and given a concurrent partial index. It backfills only provable old
 termination. The initial two-field unpublished generation was replaced by this
 single migration after account-rotation analysis. Five newest snapshots remain;
