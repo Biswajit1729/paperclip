@@ -47,6 +47,7 @@ import { secretService } from "../services/secrets.js";
 import { githubChatWizardService } from "../services/chat-github-wizard.js";
 import { dispatchGitHubBotCloudEvent, registerGitHubBotCloudSetupPoller } from "../services/chat-github-cloud-ingress.js";
 import { githubChatManagementService } from "../services/chat-github-management.js";
+import { GITHUB_INLINE_RETRY_WINDOW_MS } from "../services/chat-channels/github/retry.js";
 import { githubChatReviewService } from "../services/chat-github-reviews.js";
 import { resolveGitHubReviewInstructions } from "../services/chat-channels/github/review-instructions.js";
 import { githubResponseCommentService } from "../services/chat-github-response-comments.js";
@@ -3907,7 +3908,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       const retry = gateway.executeTool(input);
       release();
       expect(await retry).toMatchObject({ result: { data: { actionId: expect.any(String) } } });
-      await expect.poll(async () => (await f.action())?.status).toBe("processed");
+      // A replay may return the durable receipt while the timed-out request
+      // still publishes. Observe the owner's bounded retry window, not the
+      // assertion library's one-second default.
+      await expect.poll(async () => (await f.action())?.status,
+        { timeout: GITHUB_INLINE_RETRY_WINDOW_MS }).toBe("processed");
       expect(await gateway.executeTool(input)).toMatchObject({ result: { data: { status: "processed" } } });
       const actions = await db.select().from(chatActions).where(and(eq(chatActions.endpointId, f.endpoint.id),
         eq(chatActions.kind, "github_review_publication")));
@@ -3915,7 +3920,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect(actions[0].status).toBe("processed");
       expect(f.responseComments.size).toBe(1);
       expect(f.responseWrites.map(write => write.method)).toEqual(["POST", "PATCH"]);
-    });
+    }, 60_000);
     it("rejects changed requests and revoked access before repeating an unstaged review", async () => {
       const f = await publicationRetryFixture();
       let metadataReads = 0;
