@@ -238,7 +238,10 @@ describe.skipIf(!support.supported)("environment cleanup scheduling", () => {
   it("keeps unknown historical resources scheduled until provider confirmation", async () => {
     const lease = await pending(); await environmentService(db).releaseLease(lease.id, "failed", { cleanupStatus: "success" });
     inspections.mockResolvedValueOnce({ providerLeaseId: lease.providerLeaseId, state: "unknown" });
-    await start(true); expect(coordinator!.nextWakeAt()).not.toBeNull();
+    await start(true);
+    // The provider sweep finishes before its pending-state read registers the
+    // retry. Readiness intentionally does not wait for historical verification.
+    await vi.waitFor(() => expect(coordinator!.nextWakeAt()).toBeGreaterThan(Date.now()));
     await settle(300_000); expect(inspections).toHaveBeenCalledTimes(2); await quiet();
   });
 });
