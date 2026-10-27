@@ -358,6 +358,28 @@ describeEmbeddedPostgres("tool gateway service", () => {
           canReconcile: () => true, onError: error => errors.push(error) });
         await registerToolReviewInterruptionWork(coordinator, gateway, () => !draining).ready;
       }
+      async function settle(ms = 60_000) {
+        await vi.advanceTimersByTimeAsync(ms);
+        if (!draining) await vi.waitFor(async () => {
+          // Finish real SQL before following an armed coalescing/retry deadline.
+          // Do not jump across a future business deadline while waiting for I/O.
+          if (idleWorkSnapshot().active > 0) {
+            await db.execute(sql`select pg_sleep(0.01)`);
+            const next = coordinator!.nextWakeAt();
+            if (next !== null && next <= Date.now() + 30_000) {
+              await vi.advanceTimersByTimeAsync(Math.max(0, next - Date.now()));
+            }
+          }
+          expect(idleWorkSnapshot().active).toBe(0);
+        }, { timeout: 5000 });
+      }
+      async function quiet() {
+        await settle(); expect(coordinator!.nextWakeAt()).toBeNull();
+        const selects = vi.spyOn(db, "select"), executes = vi.spyOn(db, "execute");
+        await settle(60 * 60_000);
+        expect(selects).not.toHaveBeenCalled(); expect(executes).not.toHaveBeenCalled();
+        selects.mockRestore(); executes.mockRestore();
+      }
       async function savedClaim(source = db, age = 0) {
         const pending = await request();
         const claimedAt = new Date(Date.now() - age);
@@ -374,6 +396,52 @@ describeEmbeddedPostgres("tool gateway service", () => {
         expect((await db.select().from(toolInvocations).where(eq(toolInvocations.id, pending.invocationId)))[0])
           .toMatchObject({ status: "failed", errorCode: "tool_execution_outcome_unknown" });
       }
+
+      it("coalesces sequential review writes into one interruption scan per window", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"], shouldAdvanceTime: false });
+        const previous = db.$client.options.debug;
+        const scans: string[] = [];
+        db.$client.options.debug = (_connection, query) => {
+          if (query.includes('from "tool_action_requests"') && query.includes('"updated_at" <=')) scans.push(query);
+        };
+        try {
+          await startInterruption();
+          const firstPassAt = Date.now();
+          expect(scans).toHaveLength(1);
+          for (let i = 0; i < 10; i++) {
+            await request();
+            await vi.advanceTimersByTimeAsync(1);
+            // Let each previous pass finish; overlapping calls already coalesce.
+            await db.execute(sql`select pg_sleep(0.01)`);
+          }
+          expect(scans).toHaveLength(1);
+          expect(coordinator!.nextWakeAt()).toBe(firstPassAt + 30_000);
+          await vi.advanceTimersByTimeAsync(30_000);
+          await vi.waitFor(() => {
+            expect(scans).toHaveLength(2);
+            expect(idleWorkSnapshot().active).toBe(0);
+            expect(coordinator!.nextWakeAt()).toBeNull();
+          });
+          await quiet();
+          expect(scans).toHaveLength(2);
+        } finally { db.$client.options.debug = previous; }
+      });
+
+      it("keeps a loaded stale-claim deadline ahead of review notification coalescing", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"], shouldAdvanceTime: false });
+        const pending = await savedClaim(db, 10 * 60_000 - 500);
+        const deadline = pending.updatedAt.getTime() + 10 * 60_000;
+        await startInterruption();
+        expect(coordinator!.nextWakeAt()).toBe(deadline);
+        await request();
+        await vi.advanceTimersByTimeAsync(1);
+        await db.execute(sql`select pg_sleep(0.01)`);
+        expect(coordinator!.nextWakeAt()).toBe(deadline);
+        await vi.advanceTimersByTimeAsync(499);
+        await vi.waitFor(async () => { await unknown(pending); });
+        expect(Date.now()).toBeLessThan(deadline + 1000);
+        await quiet();
+      });
 
       it("arms from a real execution claim and disarms after the provider result", async () => {
         await startInterruption(); await quiet();
