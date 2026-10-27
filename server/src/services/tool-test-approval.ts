@@ -36,6 +36,24 @@ export async function claimToolTestApproval(db: Db, actionRequestId: string, inv
   });
 }
 
+/** Return only this still-undispatched claim to its existing approval queue. */
+export async function releaseToolTestApproval(db: Db, claim: ToolTestApprovalClaim) {
+  return db.transaction(async tx => {
+    const [invocation] = await tx.select().from(toolInvocations)
+      .where(eq(toolInvocations.id, claim.invocationId)).for("update");
+    const [request] = await tx.select().from(toolActionRequests)
+      .where(and(eq(toolActionRequests.id, claim.actionRequestId),
+        eq(toolActionRequests.invocationId, claim.invocationId))).for("update");
+    if (invocation?.status !== "awaiting_approval" || invocation.startedAt !== null ||
+      request?.status !== "executing" || request.companyId !== invocation.companyId ||
+      request.updatedAt.getTime() !== claim.claimedAt.getTime()) return false;
+    await notifyToolReviewChange(tx, request.companyId);
+    await tx.update(toolActionRequests).set({ status: "approved", updatedAt: new Date() })
+      .where(eq(toolActionRequests.id, request.id));
+    return true;
+  });
+}
+
 export async function startToolTestInvocation(db: Db, invocationId: string, claim?: ToolTestApprovalClaim) {
   const now = new Date();
   if (!claim) {
