@@ -1111,7 +1111,8 @@ describeEmbeddedPostgres("tool access policy service", () => {
       .where(eq(toolInvocations.id, invocation.id));
     expect(await svc.decide(input)).toMatchObject({ decision: "rate_limited" });
     expect(invocation.policyExplanation?.consumedRateAdmissions).toEqual([
-      { policyId: ratePolicy.id, versionHash: expect.stringMatching(/^[a-f0-9]{64}$/) },
+      { policyId: ratePolicy.id, versionHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+        bucketKey: `${ratePolicy.id}:agent:${input.actor.agentId}|tool:send_email` },
     ]);
     const counters = await db.select().from(toolRateLimitCounters);
     expect(await svc.decide(input, { admittedInvocationId: invocation.id })).toMatchObject({ allowed: true });
