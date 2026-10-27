@@ -1160,7 +1160,7 @@ fn acpx_transport_failure_retains_its_error_without_reopening_the_provider() {
     assert_eq!(snapshot["status"], "closed");
     assert_eq!(snapshot["activeProviderTurnId"], Value::Null);
     assert!(executor.poll_events().unwrap().is_empty());
-    executor.shutdown().unwrap();
+    shutdown_recovered_acpx_fixture(&mut executor, &directory);
     fs::remove_dir_all(directory).unwrap();
 }
 
