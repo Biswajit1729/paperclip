@@ -64391,13 +64391,15 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         context.wakeup.mockImplementation(heartbeatService(db).wakeup);
       } else context.wakeup.mockImplementation(async (agentId, opts) => {
         const request = opts.durableChatRequest!;
-        await request.authorize(db);
-        await db.insert(agentWakeupRequests).values({ id: request.id, companyId,
-          agentId, source: opts.source!, triggerDetail: opts.triggerDetail, reason: "budget.blocked",
-          requestedByActorType: request.requestedByActorType, requestedByActorId: request.requestedByActorId,
-          requestedAt: request.requestedAt, idempotencyKey: request.idempotencyKey,
-          payload: { ...opts.payload, executionWait: { scopeType: "agent", scopeId: agentId } },
-          status: "skipped", finishedAt: new Date() });
+        await db.transaction(async tx => {
+          await request.authorize(tx);
+          await tx.insert(agentWakeupRequests).values({ id: request.id, companyId,
+            agentId, source: opts.source!, triggerDetail: opts.triggerDetail, reason: "budget.blocked",
+            requestedByActorType: request.requestedByActorType, requestedByActorId: request.requestedByActorId,
+            requestedAt: request.requestedAt, idempotencyKey: request.idempotencyKey,
+            payload: { ...opts.payload, executionWait: { scopeType: "agent", scopeId: agentId } },
+            status: "skipped", finishedAt: new Date() });
+        });
         return null;
       });
       if (realBudgetIngress) {
