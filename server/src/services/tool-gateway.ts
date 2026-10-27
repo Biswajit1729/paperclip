@@ -7827,10 +7827,26 @@ export function createToolGatewayService(
       if (!(await approvedManagedArgumentsRemainCurrent(session, tool, signedPayload.arguments))) {
         throw new ToolGatewayHttpError(409, "Approved tool action managed arguments changed after review", "approved_tool_managed_arguments_changed");
       }
-      const access = await policyService.admitInvocation(
+      const access = await basePolicyService.admitInvocation(
         policyInputForTool({ session, tool, parameters: signedPayload.arguments, consumeRateLimit: false }),
         invocation.id,
         claim,
+        async (policy, admissionInput) => {
+          const callerSession = delegatedTestCallerSession(session);
+          const callerInput = callerSession ? policyInputForTool({ session: callerSession, tool,
+            parameters: signedPayload.arguments, consumeRateLimit: true }) : null;
+          const options = { admittedInvocationId: invocation.id };
+          const caller = callerInput ? await policy.decide(callerInput, options) : null;
+          const target = await policy.decide(admissionInput, { ...options, sharedRateDecision: caller ?? undefined });
+          const chosen = caller && !caller.allowed && caller.decision !== "require_approval" ? caller
+            : !target.allowed ? target : caller?.decision === "require_approval" ? caller : target;
+          if (callerInput && caller) await policy.writeAudit(callerInput, caller);
+          return { ...chosen, policyExplanation: {
+            ...chosen.policyExplanation,
+            consumedRateAdmissions: target.policyExplanation?.consumedRateAdmissions,
+            delegatedCallerConsumedRateAdmissions: caller?.policyExplanation?.consumedRateAdmissions,
+          } };
+        },
       );
       if (!access.allowed && access.decision !== "require_approval") {
         throw new ToolGatewayHttpError(403, access.explanation, access.reasonCode);
