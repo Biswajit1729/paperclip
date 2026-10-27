@@ -46,7 +46,7 @@ function createFakeDb(options: {
       : options.settingsRow;
   const insertedTables: unknown[] = [];
   const deletedTables: unknown[] = [];
-  const selectWheres: Array<{ table: unknown; condition: unknown }> = [];
+  const selectWheres: Array<{ table: unknown; condition: unknown; locked?: boolean }> = [];
   function writeChain(table: unknown) {
     let values: unknown;
     const chain: Record<string, unknown> = {};
@@ -81,7 +81,8 @@ function createFakeDb(options: {
             if (options.selectThrows && table === instanceSettings) {
               throw new Error("select unavailable");
             }
-            selectWheres.push({ table, condition });
+            const selected: (typeof selectWheres)[number] = { table, condition };
+            selectWheres.push(selected);
             const rows =
               table === instanceSettings && settingsRow
                 ? [settingsRow]
@@ -90,7 +91,7 @@ function createFakeDb(options: {
                   : [];
             let locked = false;
             const result = {
-              for: () => { locked = true; return result; },
+              for: () => { locked = true; selected.locked = true; return result; },
               then: (resolve: (v: unknown) => unknown, reject?: (error: unknown) => unknown) => {
                 // The optional cross-company read can fail independently of
                 // the primary membership transaction, which must succeed.
@@ -269,7 +270,8 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
     expect(insertedTables.filter(table => table === companyMemberships)).toHaveLength(1);
     expect(deletedTables.filter(table => table === instanceUserRoles)).toHaveLength(20);
     expect(selectWheres.filter(entry => entry.table === instanceSettings)).toHaveLength(20);
-    expect(selectWheres.filter(entry => entry.table === companyMemberships)).toHaveLength(20);
+    expect(selectWheres.filter(entry => entry.table === companyMemberships && !entry.locked)).toHaveLength(20);
+    expect(selectWheres.filter(entry => entry.table === companyMemberships && entry.locked)).toHaveLength(1);
     expect(actors.every(actor => actor?.memberships?.[0]?.membershipRole === "owner")).toBe(true);
   });
 
