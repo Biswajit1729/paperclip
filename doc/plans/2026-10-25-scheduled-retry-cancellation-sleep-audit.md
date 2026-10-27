@@ -76,7 +76,7 @@ Shutdown joins active reads and does not start a cancellation after admission cl
 
 ## Migration
 
-`0394_breezy_mongu.sql` creates a partial ID index for scheduled retries with an
+`0395_breezy_mongu.sql` creates a partial ID index for scheduled retries with an
 object cancellation fence. It uses concurrent, idempotent creation and is listed
 in the client's top-level migration set. It changes no rows or API contracts.
 The migration was generated through `pnpm db:generate`. Journal entries and SQL
