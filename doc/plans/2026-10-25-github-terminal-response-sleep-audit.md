@@ -183,7 +183,7 @@ publication and stale-head review repair remain separate duties in maintenance.
 
 ## Candidate lookup and final acceptance
 
-Generated migration `0394_jittery_norrin_radd.sql` adds a partial index for
+Generated migration `0395_jittery_norrin_radd.sql` adds a partial index for
 processed, nonfinal response actions. It runs concurrently through the existing
 top-level migration registry and is idempotent on replay. Snapshot pruning retains
 0387 through 0391, exactly five. Application, replay, numbering/safety checks and
