@@ -1,4 +1,5 @@
 import { notifyNativeResponsePresentation } from "./native-response-presentation-notifications.js";
+import { notifyChatResponseAvailability } from "./chat-response-availability.js";
 import { notifyChatConfirmationWork } from "./chat-confirmation-notifications.js";
 import { notifyChatInboundWakeNotices } from "./chat-inbound-wake-notice-notifications.js";
 import { notifyChatNativeProgress } from "./chat-native-progress-notifications.js";
@@ -20,4 +21,6 @@ export async function notifyChatRunMilestones(tx: object, scope: ChatRunMileston
   // Admission and current chat authority also govern saved queue notices.
   await notifyChatInboundWakeNotices(tx, scope);
   await notifyChatConfirmationWork(tx, scope);
+  // Native presentation and run ownership can unblock a parked acknowledgement.
+  await notifyChatResponseAvailability(tx, scope);
 }
