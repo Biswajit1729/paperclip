@@ -24028,28 +24028,6 @@
           "method": "btree",
           "with": {}
         },
-        "decisions_running_recovery_idx": {
-          "name": "decisions_running_recovery_idx",
-          "columns": [
-            {
-              "expression": "updated_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"decisions\".\"status\" = 'decided' AND \"decisions\".\"execution_status\" = 'running'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "decisions_open_expiry_idx": {
           "name": "decisions_open_expiry_idx",
           "columns": [
@@ -32073,28 +32051,6 @@
             }
           ],
           "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "grok_dispatch_prepared_idx": {
-          "name": "grok_dispatch_prepared_idx",
-          "columns": [
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"grok_bot_dispatches\".\"status\" = 'prepared'",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -51192,6 +51148,18 @@
           "primaryKey": false,
           "notNull": false
         },
+        "git_authorization_grant_id": {
+          "name": "git_authorization_grant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "git_authorized_by_user_id": {
+          "name": "git_authorized_by_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "pause_reason": {
           "name": "pause_reason",
           "type": "text",
@@ -51329,6 +51297,19 @@
             "id"
           ],
           "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "projects_git_authorization_grant_id_connection_grants_id_fk": {
+          "name": "projects_git_authorization_grant_id_connection_grants_id_fk",
+          "tableFrom": "projects",
+          "tableTo": "connection_grants",
+          "columnsFrom": [
+            "git_authorization_grant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
           "onUpdate": "no action"
         }
       },
@@ -64188,6 +64169,6 @@
     "tables": {},
     "columns": {}
   },
-  "id": "d0909d89-89c0-412c-9764-3696eed9ed8d",
-  "prevId": "9518f54d-db89-43e6-8d87-f9ac789dbe12"
+  "id": "61e3453f-0fd5-4fb7-92bd-e3df63c657e5",
+  "prevId": "7f808b27-c88b-4f78-ac92-1da4ac6af1a4"
 }
