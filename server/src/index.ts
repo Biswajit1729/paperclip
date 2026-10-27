@@ -1,3 +1,4 @@
+import { registerDatabaseBackupWork } from "./services/database-backup-work.js";
 import { registerToolConnectionHealthWork } from "./services/tool-connection-health-work.js";
 import { approvalQueueSeedingService, registerApprovalQueueSeedingWork } from "./services/approval-queue-seeding-work.js";
 import { joinRequestRetentionService, registerJoinRequestRetentionWork } from "./services/join-request-retention.js";
@@ -2091,12 +2092,10 @@ async function startServerWithDatabaseTeardown(
     if (!isWarmStandby() && existsSync(idleBackupWakeMarker(config.databaseBackupDir))) {
       await runServerDatabaseBackup("scheduled").catch(() => {});
     }
-    setInterval(() => {
-      if (isWarmStandby() || isIdleTaskDrainActive()) return;
-      void runServerDatabaseBackup("scheduled").catch(() => {
-        // runServerDatabaseBackup already logs the failure with context.
-      });
-    }, backupIntervalMs);
+    await registerDatabaseBackupWork(deliveryWork, {
+      intervalMs: backupIntervalMs,
+      run: () => runServerDatabaseBackup("scheduled"),
+    }).ready;
   }
   
   // Wait for external adapters to finish loading before accepting requests.

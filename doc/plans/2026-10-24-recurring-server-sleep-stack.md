@@ -30,7 +30,7 @@ Do not mark an item done from a timer removal or a green check alone.
 | 12 | Plugin scheduled jobs | Registration/update/removal and actual job deadlines | #17518 published; see latest-head gate records below |
 | 13 | Routine, agent-timer and issue-monitor scheduling | Remove periodic wake backstops after complete producer coverage; routine execution-status reconciliation separately | Pending |
 | 14 | Skill-version retention and native-harness backup expiration | Separate retention owners and existing retention guarantees | Pending |
-| 15 | Automatic database backups | Shared scheduling, actual backup deadlines, existing checkpoint contract | Pending |
+| 15 | Automatic database backups | Shared scheduling, actual backup deadlines, existing checkpoint contract | Slice 60 implemented; remote acceptance pending; see `2026-10-26-database-backup-sleep-schedule.md` |
 | 16 | Aggregate maintenance tick | Retire enabled and disabled branches after all constituent owners migrate | Pending |
 | 17 | Grok routine dispatch | Committed reservations and feature changes; prepared-only recovery | [#17490](https://github.com/paperclipai/paperclip/pull/17490), all checks passed, Greptile 5/5 at `706beb01f2` |
 | 18 | Abandoned import transfer spools | Creation/completion events, existing retention deadline, startup recovery | [#17835](https://github.com/paperclipai/paperclip/pull/17835), implemented; remote acceptance pending |
@@ -3052,3 +3052,21 @@ and fixture failures during lifecycle testing are recorded in
 [the producer and lifecycle audit](2026-10-26-import-spool-cleanup-sleep.md).
 Workspace and remote checks remain separate acceptance gates. This is one
 remaining original duty, not a declaration that the inventory or stack is done.
+
+## Slice 60: automatic database backup scheduling
+
+The ordinary backup interval now registers its real deadline with the shared
+delivery coordinator. Backup execution, serialization, retention, manual calls,
+and the pre-sleep/restart-marker protocol remain with their existing owner.
+The coordinator prevents overlap, leaves passive drain/standby waits without
+SQL, and joins a scheduled backup during shutdown. Enabled backups still owe
+periodic work; this does not claim they become event-only or that Cloud persists
+this deadline. Existing host-sleep gates remain unchanged.
+
+Nine worker lifecycle cases and the complete affected six-suite set passed
+(152 cases), as did workspace typechecking and the full build. A real PostgreSQL
+backup/restore probe also passed after correcting two harness-only errors.
+Full local test:run and remote acceptance remain outstanding. See the dedicated
+[backup scheduling audit](2026-10-26-database-backup-sleep-schedule.md) for limits.
+Skill retention, native harness expiration, and the other original inventory
+duties remain open; this is not completion of the full stack request.

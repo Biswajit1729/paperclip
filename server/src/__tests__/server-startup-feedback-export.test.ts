@@ -61,6 +61,7 @@ const {
   const deliveryWorkErrors: Array<{ queue: string; error: unknown }> = [];
   const deliveryWorkRegisterMock = vi.fn((queue: string, task: {
     retryMs?: number;
+    nextRunAt?: () => number | null;
     run: (signal?: AbortSignal) => Promise<unknown>;
     hasPending?: () => Promise<boolean>;
   }) => ({ ready: task.run(new AbortController().signal).catch(error => { deliveryWorkErrors.push({ queue, error }); }), wake: vi.fn() }));
@@ -766,6 +767,19 @@ describe("startServer feedback export wiring", () => {
     expect(caseHandoffDeliveryServiceMock.hasPending).toHaveBeenCalledOnce();
   });
 
+  it.each([false, true])("registers automatic backups independently of heartbeat scheduling when enabled=%s", async enabled => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ databaseBackupEnabled: enabled, heartbeatSchedulerEnabled: false }));
+    await startServer();
+    const registration = deliveryWorkRegisterMock.mock.calls.find(([queue]) => queue === DELIVERY_QUEUES.databaseBackups);
+    expect(Boolean(registration)).toBe(enabled);
+    expect(runDatabaseBackup).not.toHaveBeenCalled();
+    if (registration) {
+      expect(registration[1].nextRunAt!()).toBeGreaterThan(Date.now());
+      await registration[1].run(new AbortController().signal);
+      expect(runDatabaseBackup).not.toHaveBeenCalled();
+    }
+  });
+
   it.each([false, true].flatMap(checkpointMode => [false, true].map(fails => ({ checkpointMode, fails }))))
   ("finishes restart backup before idle eligibility (checkpoint=$checkpointMode, failure=$fails)", async ({ checkpointMode, fails }) => {
     const directory = mkdtempSync(path.join(tmpdir(), "startup-idle-backup-"));
@@ -773,11 +787,6 @@ describe("startServer feedback export wiring", () => {
     process.env.PAPERCLIP_DB_BACKUP_IDLE_CHECKPOINT_ENABLED = checkpointMode ? "1" : "0";
     loadConfigMock.mockReturnValue(buildTestConfig({ databaseBackupEnabled: true, databaseBackupDir: directory }));
     const eligible = vi.spyOn(idleLocalWork, "markIdleStartupComplete");
-    let retry: (() => void) | undefined;
-    const timers = vi.spyOn(globalThis, "setInterval").mockImplementation(((callback: () => void, ms: number) => {
-      if (ms === 60 * 60 * 1000) retry = callback;
-      return 1 as unknown as ReturnType<typeof setInterval>;
-    }) as typeof setInterval);
     let finish!: () => void;
     const pending = new Promise<void>(resolve => { finish = resolve; });
     const writeBackup = async (options: Parameters<typeof runDatabaseBackup>[0]) => {
@@ -809,9 +818,12 @@ describe("startServer feedback export wiring", () => {
       expect(existsSync(idleBackupWakeMarker(directory))).toBe(fails);
       if (fails) {
         vi.mocked(runDatabaseBackup).mockImplementationOnce(writeBackup);
-        expect(retry).toEqual(expect.any(Function));
+        const registration = deliveryWorkRegisterMock.mock.calls.find(([queue]) => queue === DELIVERY_QUEUES.databaseBackups);
+        expect(registration).toBeDefined();
         const activeBeforeRetry = idleWorkSnapshot().active;
-        retry!();
+        const clock = vi.spyOn(Date, "now").mockReturnValue(registration![1].nextRunAt!()!);
+        try { await registration![1].run(new AbortController().signal); }
+        finally { clock.mockRestore(); }
         await vi.waitFor(() => {
           expect(existsSync(idleBackupWakeMarker(directory))).toBe(false);
           // Marker removal precedes directory fsync and release of the work receipt.
@@ -822,7 +834,7 @@ describe("startServer feedback export wiring", () => {
     } finally {
       finish();
       await starting;
-      timers.mockRestore(); eligible.mockRestore();
+      eligible.mockRestore();
       if (previousFlag === undefined) delete process.env.PAPERCLIP_DB_BACKUP_IDLE_CHECKPOINT_ENABLED;
       else process.env.PAPERCLIP_DB_BACKUP_IDLE_CHECKPOINT_ENABLED = previousFlag;
       rmSync(directory, { recursive: true, force: true });
