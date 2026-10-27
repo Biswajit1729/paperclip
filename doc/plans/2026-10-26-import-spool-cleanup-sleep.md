@@ -123,3 +123,30 @@ sleep blocker on the strength of this worker migration.
 
 Other original inventory duties, master reconciliation, and existing stack
 review/CI debts remain separate work. No stack PR is merged by this slice.
+
+## Review repairs
+
+The first review identified two concrete gaps, each reproduced before its fix:
+
+1. One unreadable child directory rejected the entire startup discovery pass,
+   leaving another completed, readable upload untouched. Discovery now retains
+   healthy entries and represents the failed child as unresolved work. The
+   existing per-entry retry and error path handles that child independently.
+   A failure to list the root still retains global discovery, because its child
+   inventory is unknown. A database outage likewise never proves absence.
+2. Re-running the route suite against the external test database failed on its
+   fixed company primary key. Company and actor identities are now unique to the
+   fixture. Teardown deletes exactly its actors' transfer rows and its company,
+   then closes the database and removes temporary files. It also handles partial
+   setup without trying to remove an undefined path.
+
+All 51 owning tests now pass, including 18 worker cases. The full 24-case route
+suite passed again against the same database after the combined run. Server
+typechecking also passes. The database-drain fault fixture now holds the read
+failure until explicitly released: a single transient read failure can recover
+on the first per-entry check, so it did not represent an outage through drain.
+The assertion that files survive a persistent outage remains unchanged.
+
+PR: [#17835](https://github.com/paperclipai/paperclip/pull/17835).
+Remote acceptance and workspace checks remain tracked in that PR; these repairs
+do not resolve other stack findings.

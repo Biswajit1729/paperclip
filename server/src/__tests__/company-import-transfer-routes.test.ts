@@ -1,11 +1,12 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import express from "express";
 import request from "supertest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { companies, createDb } from "@paperclipai/db";
+import { eq, inArray } from "drizzle-orm";
+import { companies, companyTransferRuns, createDb } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -94,7 +95,8 @@ const describeEmbeddedPostgres = embeddedPostgresSupport.supported
   ? describe
   : describe.skip;
 
-const companyId = "11111111-1111-4111-8111-111111111111";
+const companyId = randomUUID();
+const actorKeys = new Set<string>();
 const TEST_USER_HEADER = "x-test-user-id";
 
 function boardActor(userId: string) {
@@ -243,7 +245,9 @@ describeEmbeddedPostgres("company import transfer routes", () => {
     built.use((req, _res, next) => {
       const header = req.headers[TEST_USER_HEADER];
       const userId = typeof header === "string" && header.length > 0 ? header : "board-user-a";
-      (req as any).actor = boardActor(userId);
+      const scopedUserId = `${userId}-${companyId}`;
+      actorKeys.add(`board:${scopedUserId}`);
+      (req as any).actor = boardActor(scopedUserId);
       next();
     });
     built.use("/api/companies", companyRoutes(db, undefined, { importTransferSpoolRoot: spoolRoot }));
@@ -256,15 +260,22 @@ describeEmbeddedPostgres("company import transfer routes", () => {
     db = createDb(externalTestDatabaseUrl ?? tempDb!.connectionString);
     // The mocked import result points at this company; the ledger's
     // company_id foreign key needs the row to exist.
-    await db.insert(companies).values({ id: companyId, name: "Chunked Import Target" });
+    await db.insert(companies).values({ id: companyId, name: "Chunked Import Target", issuePrefix: `IT${companyId.slice(0, 6)}` });
     spoolRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-import-transfer-spool-"));
     app = await createApp();
   });
 
   afterAll(async () => {
-    await db?.$client.end({ timeout: 1 });
-    await tempDb?.cleanup();
-    await fs.rm(spoolRoot, { recursive: true, force: true });
+    try {
+      if (db) {
+        if (actorKeys.size) await db.delete(companyTransferRuns).where(inArray(companyTransferRuns.actorKey, [...actorKeys]));
+        await db.delete(companies).where(eq(companies.id, companyId));
+      }
+    } finally {
+      await db?.$client.end({ timeout: 1 });
+      await tempDb?.cleanup();
+      if (spoolRoot) await fs.rm(spoolRoot, { recursive: true, force: true });
+    }
   });
 
   beforeEach(() => {

@@ -31,8 +31,15 @@ export function registerImportSpoolCleanupWork(db: Db, coordinator: ReturnType<t
       const entries: Entry[] = [];
       for (const id of scope ? [scope] : await listImportTransferSpools(root)) {
         if (signal?.aborted || !canRun()) throw new Error("Import spool discovery paused");
-        const entry = await read(id);
-        if (entry) entries.push(entry);
+        try {
+          const entry = await read(id);
+          if (entry) entries.push(entry);
+        } catch {
+          // The directory is known, but its eligibility is unresolved. Let
+          // check retry this item with the shared per-entry backoff instead
+          // of discarding healthy discoveries and blocking the whole root.
+          entries.push({ id, companyId: "import-spools-without-company", dueAt: Date.now() });
+        }
       }
       return entries;
     },

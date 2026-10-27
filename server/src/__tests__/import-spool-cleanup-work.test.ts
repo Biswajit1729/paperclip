@@ -244,11 +244,31 @@ describe("import spool cleanup", () => {
 
   it("retains a failed database read through drain and recovers without losing the files", async () => {
     const run = await transfer(); await spool(run.id); await companyTransferRunService.cancel(db, run.id);
-    const reader = vi.spyOn(companyTransferRunService, "getCleanupState").mockRejectedValueOnce(new Error("database unavailable"));
+    const reader = vi.spyOn(companyTransferRunService, "getCleanupState").mockRejectedValue(new Error("database unavailable"));
     await start(); expect(errors.splice(0)).toHaveLength(1); expect(await exists(run.id)).toBe(true);
     admitted = false; await quiet(); expect(await exists(run.id)).toBe(true);
     reader.mockRestore(); admitted = true; worker!.wake(); await settle();
     expect(await exists(run.id)).toBe(false); await quiet();
+  });
+
+  it("cleans readable uploads while a different directory remains inaccessible", async () => {
+    const denied = await transfer(), healthy = await transfer();
+    await spool(denied.id); await spool(healthy.id);
+    await companyTransferRunService.cancel(db, denied.id); await companyTransferRunService.cancel(db, healthy.id);
+    const original = fs.lstat.bind(fs); let inaccessible = true;
+    const stat = vi.spyOn(fs, "lstat").mockImplementation(async (...args) => {
+      if (String(args[0]) === path.join(root, denied.id) && inaccessible)
+        throw Object.assign(new Error("one directory denied"), { code: "EACCES" });
+      return original(...args);
+    });
+    await start(); await settle();
+    expect(errors.splice(0)).toHaveLength(1);
+    expect(await exists(healthy.id)).toBe(false);
+    expect(await fs.readFile(path.join(root, denied.id, "part-0"), "utf8")).toBe("saved parts");
+    expect(coordinator!.nextWakeAt()).not.toBeNull();
+    inaccessible = false;
+    await vi.advanceTimersByTimeAsync(31_000); await settle(); stat.mockRestore();
+    expect(await exists(denied.id)).toBe(false); await quiet();
   });
 
   it("does not treat a database outage as evidence that old files are orphaned", async () => {
