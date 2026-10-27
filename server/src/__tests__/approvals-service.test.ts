@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { approvalService } from "../services/approvals.ts";
-import { companies, issueApprovals } from "@paperclipai/db";
+import { approvals, companies, issueApprovals } from "@paperclipai/db";
 
 vi.mock("../services/budgets.js", async importOriginal => ({
   ...await importOriginal<typeof import("../services/budgets.js")>(),
@@ -55,7 +55,9 @@ function createDbStub(selectResults: ApprovalRecord[][], updateResults: Approval
     : table === companies
     ? { where: () => ({ for: async () => [{ id: "company-1" }] }) }
     : { where: selectWhere });
-  const select = vi.fn(() => ({ from }));
+  const select = vi.fn((fields?: { id?: unknown }) => fields?.id === approvals.id
+    ? { from: () => ({ where: () => ({ for: async () => [{ id: "approval-1" }] }) }) }
+    : { from });
 
   const returning = vi.fn(async () => updateResults);
   const updateWhere = vi.fn(() => ({ returning }));
