@@ -124,7 +124,7 @@ and invocation were saved as failed, so approved recovery could not retry them.
 
 The preparation boundary now distinguishes explicit validation/access rejections
 from unexpected dependency errors and transient HTTP errors. The existing
-`tool-test-approval` owner releases only its exact claim: invocation and request
+`tool-approval-execution` owner releases only its exact claim: invocation and request
 are locked in the established order, their link/company/claim timestamp must
 match, and the invocation must still await approval with no recorded start.
 The request returns to `approved` with a transaction-aware notification. Signed
@@ -148,3 +148,42 @@ All 117 gateway-service cases pass on the owning slice, including existing targe
 invalidation, provider-outcome persistence failures and unknown-outcome no-replay
 cases. Integrated consumer checks, workspace verification and remote PR gates
 must still be recorded after propagation.
+
+
+## Agent-origin preparation and dispatch ownership
+
+Agent-origin approvals use the same pre-dispatch retry contract as Test-tab
+approvals. Previously, a policy or identity dependency failure after claiming an
+approved action permanently failed it; earlier issue/signing failures could
+leave the claim executing. Preparation now has one owning error boundary around
+issue, signature, identity, target, policy, managed-argument, and content checks.
+Validation and nontransient access rejections retain their terminal handling.
+Unexpected dependency failures and transient HTTP errors release only the exact,
+still-undispatched claim to the existing approved queue and publish its existing
+transactional work signal. No table, maintenance scan, or retry wrapper per
+producer is added.
+
+`tool-approval-execution.ts` owns the shared claim token, release, and dispatch
+transition. Its Test-tab claim/outcome functions remain specific to that consumer.
+Both origins use the same invocation-then-request locks and verify invocation,
+company, request linkage, claim timestamp, awaiting-approval state, and absence
+of an earlier start before dispatch. An agent that loses its claim during
+preparation cannot call the provider or overwrite its successor. The Test-tab
+unapproved direct-call path retains its original behavior.
+
+Only preparation is retryable here. Recording the invocation start, provider
+execution, and outcome persistence remain outside that catch. A provider error,
+unknown outcome, or failed durable release does not establish replay safety.
+Existing interruption handling remains the conservative fallback. Closed-issue
+expiry, signature/target invalidation, identity authority, and policy rejection
+remain enforced, including the final issue check before recording dispatch.
+
+Real PostgreSQL lock-timeout cases cover foreground approval and recovery:
+observe the committed executing claim, block the policy read, then require the
+same signed request to remain approved with no invocation start and zero provider
+calls. Recovery after releasing the table lock executes once and becomes quiet.
+A separate contention case replaces the claim while preparation is blocked and
+proves the old owner cannot dispatch; the surviving approval later executes once.
+A provider-error case proves that an already-started call is not requeued as a
+preparation failure. The existing Test-tab timeout and ownership cases exercise
+the other consumer of the shared boundary.
