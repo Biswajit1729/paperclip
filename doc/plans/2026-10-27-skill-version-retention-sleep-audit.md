@@ -215,21 +215,21 @@ but its cache remained after the worker became quiet. The reconciliation delete
 now registers its company hint in the owning transaction.
 
 Repeated instruction-collection transactions also reproduced multiple fresh
-company scans inside thirty seconds. The worker now limits fresh scans of a
-successfully observed company to one per thirty seconds. Bounded directory-page
-continuations still run after one second. Already observed saved deadlines bypass
-the fresh-scan limit, as a five-second grace regression proves. Empty or uncertain
-passes do not consume that limit: a first materialization can race an empty
-inspection or a held cache lock, and the publication must still reconcile promptly.
-No speculative recurring timer is armed merely to retain the limit in memory.
-Disposal also removes the cache-change subscription idempotently.
+company scans inside thirty seconds. That first repair limited successfully
+observed companies while keeping one-second page continuations and actual saved
+deadlines precise. It initially excluded empty and uncertain passes because a
+blanket floor hid the first materialization. The later security repair below
+supersedes that exclusion: timestamped per-directory hints preserve those cache
+deadlines while the floor applies to every completed fresh pass. No speculative
+recurring timer is armed merely to retain the limit in memory. Disposal also
+removes the cache-change subscription idempotently.
 
 The missing-source and busy-notification cases fail before repair. The initial
 five-second test used a new wall-clock read rather than the stored access marker;
 it was corrected to read the authoritative marker. An intermediate full run then
 caught the empty/uncertain materialization race introduced by applying the new
 scan limit indiscriminately. The original materialization/grace assertions remain
-intact and now pass. Final owning verification passes all 37 retention cases and
+intact and passed at that revision. Its owning verification passed all 37 retention cases and
 server typechecking. See local logs `sleep64-pony-red`, `sleep64-pony-green`,
 `sleep64-pony-final`, `sleep64-pony-focused`, `sleep64-pony-acceptance`, and
 `sleep64-pony-final-types` for the failure and repair sequence.
@@ -251,3 +251,50 @@ wake, durable spool append, retained recovery after failed flush, shared concurr
 flush, and a recovered pending-cleanup lease. The complete 19-case suite passes
 after this test-only repair. A guarded dedicated external test database makes the
 real transaction path available locally without relying on embedded PostgreSQL.
+
+
+## Security review repair: scoped wakes and bounded fresh inspection
+
+Five real-PostgreSQL regressions reproduced remaining amplification and deadline
+loss: ten settlement writes caused eleven fresh scans for an empty company; an
+uncertain company was inspected three times inside its existing retry window;
+runless notifications repeated global discovery nine times; administrative
+settings writes repeated discovery eleven times; and a cache written after a
+company scan's read lost its five-second grace deadline. All five fail before
+the repair and pass afterward.
+
+The producer audit confirmed all thirteen `writeEnvironmentCleanup` call sites
+already supply company scope, including the native backup writer named by the
+scanner. The helper now requires that scope at compile time. The actual unscoped
+production source was custom-image setup: those writes carry no heartbeat run
+(`issueId: null, heartbeatRunId: null`) and do not release captured skill pins.
+They keep the existing environment cleanup notifications but no longer imply a
+global skill-cache reconstruction. Scoped environment and instruction settlement
+continues to notify retention for its owning company. Instance settings uses a
+separate explicit reconstruction signal when its global execution setting changes.
+No supported pin-release producer was removed.
+
+Every completed fresh company scan now records the thirty-second floor, including
+empty and uncertain results. An already saved due deadline still bypasses that
+floor, and bounded page continuations retain their one-second cadence. A fresh
+instance reconstruction is also coalesced for thirty seconds; changes arriving
+during discovery retain one follow-up reconstruction without restarting its cursor.
+None of these in-memory limits arms a recurring scan after work is reconciled.
+
+Local cache events carry their directory, source and timestamp. An access event
+uses the timestamp just persisted in the access marker; materialization uses the
+start of its actual flight as a conservative inspection hint. The worker keeps
+per-directory pending deadline hints until a company scan consumes them. Reuse
+replaces the earlier hint for that same directory. Hints arriving during a scan
+survive its completion, so they can register a new five-second deadline even while
+fresh scanning is limited. The existing retention service exposes its configured
+grace duration and remains the authority for reading filesystem state, pin checks
+and removal eligibility. Notifications never authorize deletion themselves.
+
+All 42 retention cases pass, including the five new regressions and unchanged
+materialization, five-second deadline, interrupted-page, drain and cleanup tests.
+The combined cache, startup, environment-settlement and retained-session selection
+passes 215 cases with no skipped cases; server typechecking passes, including the
+required company scope on every cleanup writer. The startup fixtures include the
+new explicit grace-duration contract. Fresh remote CI, Greptile, Ponytail and the
+security scan remain required after publication.

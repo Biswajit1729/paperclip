@@ -1,3 +1,4 @@
+import { instanceSettingsService } from "../services/instance-settings.js";
 import { logger } from "../middleware/logger.js";
 import { prepareAgentHireApproval } from "../services/agent-hiring.js";
 import { notifyRetainedNativeSessionCleanup } from "../services/retained-native-session-cleanup-notifications.js";
@@ -472,6 +473,94 @@ describeEmbeddedPostgres("skill version snapshot retention", () => {
     await vi.waitFor(() => expect(idleWorkSnapshot().active).toBe(0));
     expect(pruned).toHaveBeenCalledOnce();
     await vi.advanceTimersByTimeAsync(30_000); await settled(); expect(pruned).toHaveBeenCalledTimes(2); await quiet();
+  });
+
+  it.each(["empty", "uncertain"] as const)("bounds fresh $0-company scans across repeated scoped settlement", async state => {
+    const companyId = await createCompany(), otherId = await createCompany();
+    let runId: string | undefined;
+    if (state === "uncertain") {
+      const { skillId, versionIds } = await createSkill(companyId, 2);
+      await writeSnapshot(companyId, skillId, versionIds[0]!);
+      const [agent] = await db.insert(agents).values({ companyId, name: "Unknown pins", adapterType: "codex_local" }).returning();
+      const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent!.id, status: "running", contextSnapshot: null }).returning();
+      runId = run!.id;
+    }
+    const service = skillVersionRetentionService(db), pruned = vi.spyOn(service, "pruneCompany");
+    const discovered = vi.spyOn(service, "listCompanies");
+    await startRetention(20_000, service);
+    await vi.waitFor(() => expect(idleWorkSnapshot().active).toBe(0));
+    for (let index = 0; index < 10; index++) {
+      await db.transaction(tx => notifyNativeEnvironmentSettlement(tx, { companyId }));
+      await vi.advanceTimersByTimeAsync(1000);
+    }
+    await vi.waitFor(() => expect(idleWorkSnapshot().active).toBe(0));
+    expect(discovered).toHaveBeenCalledOnce();
+    expect(pruned.mock.calls.filter(([id]) => id === companyId)).toHaveLength(1);
+    expect(pruned.mock.calls.filter(([id]) => id === otherId)).toHaveLength(1);
+    if (runId) await db.transaction(async tx => {
+      await notifyInstructionCollection(tx, { companyId, runId });
+      await tx.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, runId!));
+    });
+    await vi.advanceTimersByTimeAsync(30_000); await settled();
+    expect(pruned.mock.calls.filter(([id]) => id === companyId)).toHaveLength(2);
+    expect(pruned.mock.calls.filter(([id]) => id === otherId)).toHaveLength(1);
+    await quiet();
+  });
+
+  it("does not rediscover tenant caches after a runless environment notification", async () => {
+    const companyId = await createCompany(), otherId = await createCompany();
+    const service = skillVersionRetentionService(db), pruned = vi.spyOn(service, "pruneCompany");
+    const discovered = vi.spyOn(service, "listCompanies");
+    await startRetention(20_000, service); await settled();
+    for (let index = 0; index < 10; index++) {
+      await db.transaction(tx => notifyNativeEnvironmentSettlement(tx));
+      await vi.advanceTimersByTimeAsync(1000);
+    }
+    await settled();
+    expect(discovered).toHaveBeenCalledOnce();
+    expect(pruned.mock.calls.map(([id]) => id).sort()).toEqual([companyId, otherId].sort());
+    await quiet();
+  });
+
+  it("coalesces repeated instance reconstruction without restarting global discovery", async () => {
+    await createCompany(); await createCompany();
+    const service = skillVersionRetentionService(db), discovered = vi.spyOn(service, "listCompanies");
+    await startRetention(20_000, service); await settled();
+    for (let index = 0; index < 10; index++) {
+      await instanceSettingsService(db).updateExperimental({ enableWorktreeRunExecution: index % 2 === 0 });
+      await vi.advanceTimersByTimeAsync(1000);
+    }
+    await vi.waitFor(() => expect(idleWorkSnapshot().active).toBe(0));
+    expect(discovered).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(30_000); await settled();
+    expect(discovered).toHaveBeenCalledTimes(2); await quiet();
+  });
+
+  it("retains a new cache grace deadline that arrives after a company scan read", async () => {
+    const companyId = await createCompany();
+    const { skillId, versionIds } = await createSkill(companyId, 2);
+    await writeSnapshot(companyId, skillId, versionIds[1]!);
+    const service = skillVersionRetentionService(db, { graceMs: 5000 });
+    const prune = service.pruneCompany;
+    const began = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    let held = false;
+    service.pruneCompany = async (...args) => {
+      const result = await prune(...args);
+      if (held) { began.resolve(); await release.promise; }
+      return result;
+    };
+    await startRetention(5000, service); await settled(); held = true;
+    await db.transaction(tx => notifyInstructionCollection(tx, { companyId }));
+    const advancing = vi.advanceTimersByTimeAsync(30_000);
+    let directory = "", deadline = 0;
+    try {
+      await began.promise;
+      directory = await writeSnapshot(companyId, skillId, versionIds[0]!, 0);
+      deadline = (await lastUsedAt(skillVersionCachePaths(companyId, skillId, versionIds[0]!).access))! + 5000;
+    } finally { held = false; release.resolve(); }
+    await advancing; await settled(deadline);
+    await vi.advanceTimersByTimeAsync(deadline - Date.now()); await settled();
+    expect(await exists(directory)).toBe(false); await quiet();
   });
 
   it("lets an actual five-second grace deadline preempt the fresh scan limit", async () => {

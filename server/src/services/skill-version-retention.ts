@@ -66,11 +66,12 @@ export async function runVersionSnapshotFlight(skillDir: string, work: () => Pro
   }
   const existing = versionSnapshotFlights.get(skillDir);
   if (existing) return existing;
+  const startedAt = Date.now();
   const flight = work();
   versionSnapshotFlights.set(skillDir, flight);
   try { return await flight; } finally {
     if (versionSnapshotFlights.get(skillDir) === flight) versionSnapshotFlights.delete(skillDir);
-    noteSkillVersionCacheChange(skillDir);
+    noteSkillVersionCacheChange(skillDir, { occurredAt: startedAt });
   }
 }
 
@@ -478,5 +479,6 @@ export function skillVersionRetentionService(db: Db, defaults: SkillVersionPrune
     return db.select({ id: companies.id }).from(companies)
       .where(after ? gt(companies.id, after) : undefined).orderBy(asc(companies.id)).limit(51);
   }
-  return { pruneCompany, tick, listCompanies, dispose, dryRun: defaults.dryRun ?? false };
+  return { pruneCompany, tick, listCompanies, dispose, dryRun: defaults.dryRun ?? false,
+    graceMs: Math.max(0, defaults.graceMs ?? SKILL_VERSION_RETENTION_DEFAULT_GRACE_MS) };
 }
