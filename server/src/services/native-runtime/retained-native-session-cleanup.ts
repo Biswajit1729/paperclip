@@ -198,4 +198,3 @@ export function reconcileRetainedNativeSessionCleanups(
   owned.pending = pending;
   return pending;
 }
-
