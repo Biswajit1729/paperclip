@@ -405,7 +405,7 @@ export function createHeartbeatScheduling(
       .where(and(eq(agentWakeupRequests.companyId, input.claimed.companyId),
         eq(agentWakeupRequests.agentId, input.claimed.assigneeAgentId!),
         inArray(agentWakeupRequests.idempotencyKey, acceptedRecoveryKeys),
-        eq(agentWakeupRequests.reason, "issue_monitor_recovery"),
+        inArray(agentWakeupRequests.reason, ["issue_monitor_recovery", "issue_execution_same_name"]),
         sql`${agentWakeupRequests.payload}->>'issueId' = ${input.claimed.id}`,
         sql`${agentWakeupRequests.status} <> 'skipped'`)).limit(1);
     const wake = accepted ?? await enqueueWakeup(input.claimed.assigneeAgentId!, {
