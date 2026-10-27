@@ -7,12 +7,12 @@ import { createHeartbeatRunPreparation } from "../heartbeat/run-preparation.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, inArray } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { activityLog, agents, companies, createDb, environmentLeases, environments, externalAgentHolds, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations } from "@paperclipai/db";
+import { activityLog, agents, companies, createDb, applyPendingMigrations, environmentLeases, environments, externalAgentHolds, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { getExecutionBlocker } from "../execution-blocker.js";
 import { markExecutionReconciliation, settleUnrecoverableExecutions, validateExecutionReconciliation } from "../execution-recovery-resolution.js";
 import { prepareSandboxStopAndRetain, settleStopOnlyCleanup } from "../sandbox-stop-and-retain.js";
-import { preserveCancelledNativeWorkspaces, preserveNativeFailedWorkspace, registerCancelledWorkspacePreservationWork } from "./native-failed-workspace-recovery.js";
+import { preserveCancelledNativeWorkspaces, preserveNativeFailedWorkspace, preserveOrphanedNativeWorkspace, registerCancelledWorkspacePreservationWork } from "./native-failed-workspace-recovery.js";
 import type { NativeRestartRecoveryClaim } from "./native-restart-recovery.js";
 import { NativeWorkspaceFinalizationBusyError } from "./native-workspace-finalization-ownership.js";
 import { preserveWorkspaceRestoreRecoveryMetadataSql } from "../legacy-workspace-restore-recovery.js";
@@ -23,7 +23,10 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
   let db: ReturnType<typeof createDb>;
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   beforeAll(async () => {
-    if (externalUrl) db = createDb(externalUrl);
+    if (externalUrl) {
+      await applyPendingMigrations(externalUrl);
+      db = createDb(externalUrl);
+    }
     else {
       temporary = await startEmbeddedPostgresTestDatabase("native-failed-workspace-");
       db = createDb(temporary.connectionString);
@@ -294,6 +297,40 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
         } finally { await restarted.stop(); }
       } finally { release(); transactions.mockRestore(); await stopping; await worker.stop(); }
     });
+  });
+
+  it("keeps another orphan recoverable while a task lock delays preservation", async () => {
+    const busy = await seed(), free = await seed();
+    let unlock!: () => void, ready!: () => void;
+    const released = new Promise<void>(resolve => { unlock = resolve; });
+    const acquired = new Promise<void>(resolve => { ready = resolve; });
+    const holding = db.transaction(async tx => {
+      await tx.select().from(issues).where(eq(issues.id, busy.issueId)).for("update");
+      ready(); await released;
+    });
+    await acquired;
+    try {
+      expect(await preserveOrphanedNativeWorkspace(db, busy.lease)).toBe(false);
+      expect(await preserveOrphanedNativeWorkspace(db, free.lease)).toBe(true);
+      expect((await readLease(busy.lease.id)).status).toBe("active");
+      expect(await readLease(free.lease.id)).toMatchObject({ status: "pending_cleanup", leasePolicy: "retain_on_failure" });
+      expect(await actions(busy.issueId)).toHaveLength(0);
+    } finally { unlock(); await holding; }
+    expect(await preserveOrphanedNativeWorkspace(db, busy.lease)).toBe(true);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, busy.companyId))).toHaveLength(1);
+  });
+
+  it("rolls back orphan registration with its enclosing transaction", async () => {
+    const f = await seed();
+    await expect(db.transaction(async tx => {
+      expect(await preserveOrphanedNativeWorkspace(tx as unknown as typeof db, f.lease)).toBe(true);
+      throw new Error("rollback preservation");
+    })).rejects.toThrow("rollback preservation");
+    expect(await readRun(f.runId)).toEqual(f.run);
+    expect(await readLease(f.lease.id)).toEqual(f.lease);
+    expect(await actions(f.issueId)).toHaveLength(0);
+    expect(await preserveOrphanedNativeWorkspace(db, f.lease)).toBe(true);
+    expect(await actions(f.issueId)).toHaveLength(1);
   });
 
   it.each(["settled", "historical", "live_owner", "retry", "nonterminal", "wrong_wake", "wrong_hold_run", "no_hold"])("retires only an exact superseded native resume obligation: %s", async scenario => {

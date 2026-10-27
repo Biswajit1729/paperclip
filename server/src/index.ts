@@ -1833,8 +1833,12 @@ async function startServerWithDatabaseTeardown(
     }
     if (config.heartbeatSchedulerEnabled) await heartbeat.registerExternalConversationSettlementWork(deliveryWork,
       () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready;
-    if (config.heartbeatSchedulerEnabled) await heartbeat.registerNativeRecoveryNoticeWork(deliveryWork,
-      () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready;
+    if (config.heartbeatSchedulerEnabled) {
+      const worker = heartbeat.registerNativeRecoveryNoticeWork(deliveryWork,
+        () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby());
+      // Notice settlement may wait on task locks; retain shutdown ownership.
+      trackHeartbeatSchedulerWork(worker.ready);
+    }
     if (config.heartbeatSchedulerEnabled) {
       const worker = heartbeat.registerNativeRunProjectionWork(deliveryWork,
         () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby());
@@ -1842,8 +1846,12 @@ async function startServerWithDatabaseTeardown(
       // making HTTP readiness wait for that application transaction.
       trackHeartbeatSchedulerWork(worker.ready);
     }
-    if (config.heartbeatSchedulerEnabled) await heartbeat.registerNativeResultCommitWork(deliveryWork,
-      () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready;
+    if (config.heartbeatSchedulerEnabled) {
+      const worker = heartbeat.registerNativeResultCommitWork(deliveryWork,
+        () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby());
+      // Result settlement can wait on an execution lock; HTTP readiness need not.
+      trackHeartbeatSchedulerWork(worker.ready);
+    }
     if (config.heartbeatSchedulerEnabled) await heartbeat.registerNativeStatusReassessmentWork(deliveryWork,
       () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready;
     if (config.heartbeatSchedulerEnabled) await heartbeat.registerNativeReviewResponseWork(deliveryWork,
