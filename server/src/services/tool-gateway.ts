@@ -11484,9 +11484,14 @@ export function createToolGatewayService(
             .where(and(inArray(toolMcpGatewayTokens.id, expiredTokens.map((token) => token.id)), lte(toolMcpGatewayTokens.expiresAt, now)))
             .returning({ id: toolMcpGatewayTokens.id });
       }
-      const rows = await db
-        .delete(toolGatewaySessions)
+      const expiredSessions = await db.select({ id: toolGatewaySessions.id })
+        .from(toolGatewaySessions)
         .where(lte(toolGatewaySessions.expiresAt, now))
+        .orderBy(asc(toolGatewaySessions.expiresAt), asc(toolGatewaySessions.id))
+        .limit(500);
+      if (expiredSessions.length === 0) return { deletedCount: 0 };
+      const rows = await db.delete(toolGatewaySessions)
+        .where(and(inArray(toolGatewaySessions.id, expiredSessions.map((session) => session.id)), lte(toolGatewaySessions.expiresAt, now)))
         .returning({ id: toolGatewaySessions.id });
       return { deletedCount: rows.length };
     },
