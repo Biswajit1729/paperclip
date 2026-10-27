@@ -1,3 +1,4 @@
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
 import { notifyChatRunMilestones } from "./chat-run-milestone-notifications.js";
@@ -742,6 +743,7 @@ export function accessService(db: Db) {
         sql`${issues.status} not in ('done', 'cancelled')`,
       );
       await notifyNativeStatusReassessment(tx, { companyId });
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
       const resetInProgress = await tx
         .update(issues)
         .set({

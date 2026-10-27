@@ -302,6 +302,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
     if (scope.paused) return;
     await notifyCompanyRetentionWork(db, policy.companyId);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.routineSchedules);
+    await notifyDeliveryWork(db, DELIVERY_QUEUES.issueMonitors);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.agentLifecycle, policy.companyId);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.skillSourceSync);
     await db
@@ -360,6 +361,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
     if (scope.pauseReason !== "budget") return;
     await notifyCompanyRetentionWork(db, policy.companyId);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.routineSchedules);
+    await notifyDeliveryWork(db, DELIVERY_QUEUES.issueMonitors);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.agentLifecycle, policy.companyId);
     await db
       .update(companies)

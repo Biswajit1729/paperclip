@@ -1,3 +1,4 @@
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
 import { FAST_RESPONSE_AGENT_GUIDANCE, fastResponseHistoryBody } from "@paperclipai/shared";
 import {
@@ -261,6 +262,7 @@ export async function prepareConversationTurn(
         context.conversationReplayThroughCommentId = replayThrough?.id ?? commentId;
       }
     }
+    await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
     await tx
       .update(issues)
       .set({
@@ -379,6 +381,7 @@ export async function settleConversationTurn(
       issue.conversationState === conversationState
     )
       return true;
+    await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
     if (status === "in_review") await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: issue.companyId, issueId: issue.id });
     await tx
       .update(issues)

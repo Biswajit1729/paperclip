@@ -1,3 +1,4 @@
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../../services/delivery-work-notifications.js";
 import { notifyExternalAgentSettlement } from "../../external-agents/index.js";
 import { notifyNativeStatusReassessment } from "../../../services/native-status-reassessment-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "../../../services/unsafe-workspace-export-notifications.js";
@@ -347,6 +348,7 @@ export function createPostgresWatchdogAdapter(db: Db): WatchdogRunReader & Watch
       await notifyCancelledWorkspacePreservation(tx, { companyId, runId: input.run.id });
       await notifyUnsafeWorkspaceExportRecovery(tx, { companyId, issueId: input.sourceIssue.id });
       await notifyNativeStatusReassessment(tx, { companyId, issueId: input.sourceIssue.id });
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
       const [updatedRun] = await tx
         .update(heartbeatRuns)
         .set({

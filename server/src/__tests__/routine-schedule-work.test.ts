@@ -54,13 +54,13 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     const svc = service();
     coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => !draining, canReconcile: () => true,
       onError: error => errors.push(error) });
-    const workers = registerScheduledWork(coordinator, db, { retryMs: 30_000,
+    const workers = registerScheduledWork(coordinator, { retryMs: 30_000,
       canRun: () => !draining,
-      tickTimers: async () => {},
+      tickAgentTimers: async () => {}, tickIssueMonitors: async () => {}, nextIssueMonitorAt: async () => null,
       tickRoutines: options.run ?? (signal => svc.tickScheduledTriggers(new Date(), () => !draining && !signal.aborted)),
       nextRoutineRunAt: options.next ?? (() => svc.nextScheduledTriggerAt()),
     });
-    await Promise.all([workers.routines.ready, workers.timers.ready]);
+    await Promise.all([workers.routines.ready, workers.monitors.ready, workers.timers.ready]);
     return workers;
   }
   async function settled() {

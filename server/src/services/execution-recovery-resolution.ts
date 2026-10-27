@@ -594,6 +594,7 @@ export async function settleUnrecoverableExecutions(
         if (current) {
           await notifyNativeStatusReassessment(tx, { companyId: task.companyId, issueId: task.id });
           if (task.status !== "blocked") await notifyChatResponseAvailability(tx, { companyId: task.companyId, issueId: task.id });
+          await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
           const [projected] = await tx
             .update(issues)
             .set({

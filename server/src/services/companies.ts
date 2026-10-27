@@ -334,6 +334,7 @@ export function companyService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
         if (companyPatch.status !== undefined && companyPatch.status !== existing.status) {
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.routineSchedules);
+          await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
           await notifyCompanyRetentionWork(tx, id);
           await notifyChatInboundWakeNotices(tx, { companyId: id });
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentLifecycle, id);
@@ -488,6 +489,7 @@ export function companyService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
         if (!wasAlreadyArchived) {
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.routineSchedules);
+          await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
           await notifyCompanyRetentionWork(tx, id);
           await notifyChatInboundWakeNotices(tx, { companyId: id });
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentLifecycle, id);

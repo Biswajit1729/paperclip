@@ -1,3 +1,4 @@
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
 import { notifyNativeStatusReassessment } from "../native-status-reassessment-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery, notifyUnsafeWorkspaceExportRunChange } from "../unsafe-workspace-export-notifications.js";
@@ -3882,6 +3883,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               ].join("\n");
               await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: issue.companyId, issueId: issue.id });
               await notifyNativeStatusReassessment(tx, { companyId: issue.companyId, issueId: issue.id });
+              await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
               if (issue.status !== "blocked") await notifyChatResponseAvailability(tx, { companyId: issue.companyId, issueId: issue.id });
               await tx
                 .update(issues)

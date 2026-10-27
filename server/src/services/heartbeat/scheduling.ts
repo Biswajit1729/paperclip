@@ -1,3 +1,4 @@
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { notifyIssueReviewState } from "../issue-review-state-notifications.js";
 import { insertIssueComment } from "../issue-comment-writes.js";
 import {
@@ -591,6 +592,7 @@ export function createHeartbeatScheduling(
     const publications: ActivityPublication[] = [];
     try {
       await db.transaction(async (tx) => {
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
         const released = await tx.update(issues)
           .set({ monitorWakeRequestedAt: null, updatedAt: input.now })
           .where(issueMonitorClaimCondition(claimed)).returning({ id: issues.id });
@@ -622,8 +624,11 @@ export function createHeartbeatScheduling(
     } catch (err) {
       // Diagnostics are optional. Release the original claim even if audit storage
       // failed, and never clobber a monitor that was replaced in the meantime.
-      await db.update(issues).set({ monitorWakeRequestedAt: null, updatedAt: input.now })
-        .where(issueMonitorClaimCondition(claimed));
+      await db.transaction(async tx => {
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
+        await tx.update(issues).set({ monitorWakeRequestedAt: null, updatedAt: input.now })
+          .where(issueMonitorClaimCondition(claimed));
+      });
       logger.warn({ err, issueId: claimed.id }, "issue monitor diagnostic could not be recorded");
     }
   }
@@ -819,8 +824,9 @@ export function createHeartbeatScheduling(
         }
       }
 
-      const consumed = await db
-        .update(issues)
+      const consumed = await db.transaction(async tx => {
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
+        return tx.update(issues)
         .set({
           ...monitorOnlyDispatchPatch(buildIssueMonitorTriggeredPatch({
             issue: claimed,
@@ -831,6 +837,7 @@ export function createHeartbeatScheduling(
         })
         .where(issueMonitorClaimCondition(claimed))
         .returning({ id: issues.id });
+      });
       if (consumed.length === 0) return { outcome: "skipped" as const, reason: "monitor_replaced" };
 
       await logActivity(db, {
@@ -957,6 +964,7 @@ export function createHeartbeatScheduling(
 
     const staleClaimThreshold = new Date(now.getTime() - 5 * 60 * 1000);
     const claimed = await db.transaction(async (tx) => {
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
       const [updated] = await tx
         .update(issues)
         .set({
@@ -999,7 +1007,7 @@ export function createHeartbeatScheduling(
     });
   }
 
-  async function tickDueIssueMonitors(now = new Date()) {
+  async function tickDueIssueMonitors(now: Date, canContinue: () => boolean) {
     const staleClaimThreshold = new Date(now.getTime() - 5 * 60 * 1000);
     const dueMonitors = await db
       .select(issueMonitorDispatchColumns)
@@ -1027,7 +1035,9 @@ export function createHeartbeatScheduling(
     let skipped = 0;
 
     for (const due of dueMonitors) {
+      if (!canContinue()) break;
       const claimed = await db.transaction(async (tx) => {
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
         const [updated] = await tx
           .update(issues)
           .set({
@@ -1054,6 +1064,7 @@ export function createHeartbeatScheduling(
       });
 
       if (!claimed) continue;
+      if (!canContinue()) break;
 
       try {
         const result = await dispatchClaimedIssueMonitor(claimed, {
@@ -1080,6 +1091,26 @@ export function createHeartbeatScheduling(
       triggered,
       skipped,
     };
+  }
+
+  async function tickIssueMonitors(now = new Date(), canContinue: () => boolean = () => true) {
+    if (!canContinue() || (await getSchedulingSuppression()).suppressed) {
+      return { checked: 0, triggered: 0, skipped: 0 };
+    }
+    return tickDueIssueMonitors(now, canContinue);
+  }
+
+  async function nextIssueMonitorAt(): Promise<number | null> {
+    if ((await getSchedulingSuppression()).suppressed) return null;
+    const [row] = await db.select({ at: sql<string | null>`min(greatest(${issues.monitorNextCheckAt},
+      ${issues.monitorWakeRequestedAt} + interval '5 minutes' + interval '1 millisecond'))` })
+      .from(issues).innerJoin(companies, eq(companies.id, issues.companyId))
+      .where(and(eq(companies.status, "active"), noActiveNativeMonitorRun(),
+        sql`${issues.monitorNextCheckAt} is not null`, isNull(issues.assigneeUserId),
+        sql`${issues.assigneeAgentId} is not null`, inArray(issues.status, ["in_progress", "in_review"])));
+    // Keep overdue rows: capped passes and deferred admission still owe work.
+    // A claimed monitor becomes eligible only strictly after the five-minute fence.
+    return row?.at == null ? null : new Date(row.at).getTime();
   }
 
   async function recoverActiveSessionGoals() {
@@ -1243,7 +1274,7 @@ export function createHeartbeatScheduling(
     return { scanned: pending.length, enqueued, alreadyQueued, invalid };
   }
 
-  async function tickTimers(now = new Date()) {
+  async function tickAgentTimers(now = new Date()) {
       if ((await getSchedulingSuppression()).suppressed) {
         return {
           checked: 0,
@@ -1321,18 +1352,24 @@ export function createHeartbeatScheduling(
         else skipped += 1;
       }
 
-      const issueMonitors = await tickDueIssueMonitors(now);
-
-      return {
-        checked: checked + issueMonitors.checked,
-        enqueued: enqueued + issueMonitors.triggered,
-        skipped: skipped + issueMonitors.skipped,
-      };
+      return { checked, enqueued, skipped };
     }
+
+  // Keep the existing manual combined entry point. Scheduled workers invoke
+  // the distinct owners so legacy agent cadence cannot poll issue monitors.
+  async function tickTimers(now = new Date()) {
+    const timers = await tickAgentTimers(now);
+    const monitors = await tickIssueMonitors(now);
+    return { checked: timers.checked + monitors.checked,
+      enqueued: timers.enqueued + monitors.triggered, skipped: timers.skipped + monitors.skipped };
+  }
 
   return {
     triggerIssueMonitor,
     tickTimers,
+    tickAgentTimers,
+    tickIssueMonitors,
+    nextIssueMonitorAt,
     recoverActiveSessionGoals,
     recoverPendingSessionGoalActions,
   };
