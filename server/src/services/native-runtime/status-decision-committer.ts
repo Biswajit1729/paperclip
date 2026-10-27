@@ -12,7 +12,7 @@ import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-pre
 import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
 import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { scheduledIssueMonitorWait } from "../issue-monitors.js";
-import { hasPublishedGitHubReview } from "../chat-channels/github/review-wait.js";
+import { hasPublishedGitHubReview, readInheritedGitHubReviewWait } from "../chat-channels/github/review-wait.js";
 import { lockNativeGovernanceSources, pendingNativeGovernance } from "./native-governance.js";
 import { findSupersededExternalReviewRequests, supersedeExternalReviewRequestsInTransaction } from "./superseded-external-review-requests.js";
 import { normalizePrpResultSignals, type PrpStructuredRunResult } from "../../vendor/paperclip-runner/index.js";
@@ -60,6 +60,7 @@ import {
   restoreNativeChatReviewPresentationInTransaction,
 } from "./native-chat-review-presentation.js";
 import {
+  readPublishedGitHubReviewCompletionContinuationInTransaction,
   isExternalChatWaitAuthorizationContention,
   resolveExternalChatResponseWaitAuthorizationInTransaction,
 } from "./chat-attachment-reuse.js";
@@ -1602,7 +1603,7 @@ export async function commitNativeStatusDecision(input: {
   preMaterializedEffects?: NativeMaterializedStatusEffect[];
   supersedesCommittedDecisionId?: string;
   supersededExternalReviewRequests?: { agentId: string; resultId: string; interactionIds: string[] };
-  requireExternalChatResponseWaitAuthorization?: { agentId: string };
+  requireExternalChatResponseWaitAuthorization?: { agentId: string; completionContinuationKey?: string };
   requirePlanWaitSource?: NativePlanWaitSource;
   requireMonitorWait?: { agentId: string; nextCheckAt: string };
   requireMonitorDelivery?: NativeMonitorDelivery;
@@ -1769,8 +1770,23 @@ export async function commitNativeStatusDecision(input: {
     }
     if (reasonCode === "scheduled_monitor_waiting") {
       const expected = input.requireMonitorWait;
-      const publishedReviewWait = input.decision.statusAction === "in_review" && input.decision.toStatus === "in_review" &&
-        await hasPublishedGitHubReview(tx as unknown as Db, input);
+      const inReview = input.decision.statusAction === "in_review" && input.decision.toStatus === "in_review";
+      let publishedReviewWait = inReview && await hasPublishedGitHubReview(tx as unknown as Db, input);
+      if (expected && inReview && !publishedReviewWait) {
+        // Arbitration may reuse a previous publication. Prove that same source
+        // here, while retaining the independently saved monitor and its owner.
+        const [run] = await tx.select({
+          id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
+          responsibleUserId: heartbeatRuns.responsibleUserId,
+          activeIdentityContextId: heartbeatRuns.activeIdentityContextId,
+          nativeIssueId: heartbeatRuns.nativeIssueId, issueId: heartbeatRuns.issueId,
+        }).from(heartbeatRuns).where(and(
+          eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId),
+          eq(heartbeatRuns.nativeIssueId, input.issueId), eq(heartbeatRuns.agentId, expected.agentId),
+        )).limit(1);
+        publishedReviewWait = !!run && (await readInheritedGitHubReviewWait(tx as unknown as Db,
+          { ...run, contextSnapshot: null }))?.kind === "published";
+      }
       if (!expected || issue.workMode !== "standard" || issue.executionRunId !== input.runId ||
           (input.decision.statusAction !== "preserve" && !publishedReviewWait) || input.decision.effects.length !== 1 ||
           input.decision.effects[0]?.kind !== "release_checkout" ||
@@ -1841,6 +1857,13 @@ export async function commitNativeStatusDecision(input: {
       }
       if (authorization !== "authorized") {
         throw new NativeStatusRaceError();
+      }
+      if (input.requireExternalChatResponseWaitAuthorization.completionContinuationKey) {
+        const current = await readPublishedGitHubReviewCompletionContinuationInTransaction(tx as unknown as Db,
+          { companyId: input.companyId, issueId: input.issueId, runId: input.runId,
+            agentId: input.requireExternalChatResponseWaitAuthorization.agentId }, "nonblocking");
+        if (current?.idempotencyKey !== input.requireExternalChatResponseWaitAuthorization.completionContinuationKey)
+          throw new NativeStatusRaceError();
       }
     }
     const passiveBoardResponseWait =

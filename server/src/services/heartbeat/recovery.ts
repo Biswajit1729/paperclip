@@ -964,6 +964,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     }
     const dispositions = await claimNativeRestartRecoveries({
       db,
+      liveRunExecutions: activeRunExecutions,
       restartKind,
       recoveryRequestId: intent?.recoveryRequestId ?? null,
       coordinatedPreviousController: intent
