@@ -34,7 +34,8 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await db.insert(plugins).values({ id: pluginId, pluginKey: pluginId, packageName: pluginId, version: "1.0.0", manifestJson: {} as never });
     await Promise.all(Array.from({ length: 6 }, () => db.execute(sql`select pg_sleep(0.01)`)));
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"], shouldAdvanceTime: true });
-    vi.setSystemTime(new Date("2026-10-25T12:10:00.000Z"));
+    // Retry tests must not accidentally cross the next real hourly cron tick.
+    vi.setSystemTime(new Date("2026-10-27T12:05:00Z"));
   });
   afterEach(async () => {
     await scheduler?.stop(); await coordinator?.stop(); scheduler = undefined; coordinator = undefined;
@@ -250,6 +251,102 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       await completed(2); await settled(); errors.length = 0;
     }
   });
+  it.each(["succeeded", "failed"] as const)("retains a completed %s result when unregistering during a settlement failure", async outcome => {
+    await db.execute(sql`create function plugin_settlement_failure() returns trigger language plpgsql as $$ begin if new.status in ('succeeded', 'failed') then raise exception 'settlement unavailable'; end if; return new; end $$`);
+    await db.execute(sql`create trigger plugin_settlement_failure before update on plugin_job_runs for each row execute function plugin_settlement_failure()`);
+    if (outcome === "failed") rpc.mockRejectedValueOnce(new Error("Plugin failed before unregister"));
+    await due(); await start();
+    await vi.waitFor(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(errors.length).toBeGreaterThan(0);
+      expect(scheduler!.diagnostics().activeJobCount).toBe(0);
+    }, { timeout: 5000 });
+    try {
+      await scheduler!.unregisterPlugin(pluginId);
+      expect((await runs())[0].status).toBe("running");
+    } finally {
+      await db.execute(sql`drop trigger plugin_settlement_failure on plugin_job_runs`);
+      errors.length = 0;
+      await scheduler!.tick(); await settled(); errors.length = 0;
+    }
+    expect((await runs())[0].status).toBe(outcome);
+    expect(rpc).toHaveBeenCalledOnce();
+    await quiet();
+  });
+
+  it("preserves a completion committed while unregister waits on the discovered run", async () => {
+    const row = await job("finishing", "");
+    const run = await pluginJobStore(db).createRun({ jobId: row.id, pluginId, trigger: "manual" });
+    await pluginJobStore(db).markRunning(run.id);
+    await start(); await quiet();
+    let release!: () => void, locked!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const acquired = new Promise<void>(resolve => { locked = resolve; });
+    const finishing = db.transaction(async tx => {
+      await pluginJobStore(tx).completeRun(run.id, { status: "succeeded" });
+      locked(); await gate;
+    });
+    await acquired;
+    const unregistering = scheduler!.unregisterPlugin(pluginId);
+    try {
+      await vi.waitFor(async () => {
+        const [waiting] = await db.execute<{ count: number }>(sql`select count(*)::int as count from pg_stat_activity
+          where datname = current_database() and state = 'active' and wait_event_type = 'Lock'
+          and query like '%plugin_job_runs%'`);
+        expect(waiting.count).toBeGreaterThan(0);
+      });
+    } finally { release(); await finishing; await unregistering; }
+    expect((await runs())[0].status).toBe("succeeded");
+    expect(rpc).not.toHaveBeenCalled();
+    await quiet();
+  });
+
+  it("retains the manual reservation when a refresh read finishes after manual dispatch", async () => {
+    await start(2); await quiet();
+    const row = await due("raced");
+    let resumeRead!: () => void, enteredRead!: () => void, releaseCall!: () => void;
+    const readGate = new Promise<void>(resolve => { resumeRead = resolve; });
+    const readEntered = new Promise<void>(resolve => { enteredRead = resolve; });
+    const callGate = new Promise<void>(resolve => { releaseCall = resolve; });
+    rpc.mockImplementation(() => callGate);
+    const select = db.select.bind(db);
+    let held = false;
+    // Hold delivery of one real outstanding-run query result. The manual run
+    // commits after this snapshot, before the scheduled dispatch resumes.
+    const readSpy = vi.spyOn(db, "select").mockImplementation((fields) => {
+      const builder = select(fields);
+      if (fields?.jobId !== pluginJobRuns.jobId || held) return builder;
+      held = true;
+      const from = builder.from.bind(builder);
+      vi.spyOn(builder, "from").mockImplementation((table) => {
+        const query = from(table);
+        const then = query.then.bind(query);
+        query.then = ((fulfilled, rejected) => then(async rows => {
+          enteredRead(); await readGate; return rows;
+        }).then(fulfilled, rejected)) as typeof query.then;
+        return query;
+      });
+      return builder;
+    });
+    const refreshing = scheduler!.tick();
+    try {
+      await readEntered;
+      await scheduler!.triggerJob(row.id);
+      await vi.waitFor(() => expect(rpc).toHaveBeenCalledOnce());
+      resumeRead(); await refreshing;
+      expect(scheduler!.diagnostics().activeJobIds).toEqual([row.id]);
+      await due("waiting-one"); await due("waiting-two"); await scheduler!.tick();
+      await vi.waitFor(() => expect(rpc).toHaveBeenCalledTimes(2));
+      expect(scheduler!.diagnostics().activeJobCount).toBe(2);
+    } finally {
+      resumeRead(); readSpy.mockRestore();
+      await pluginJobStore(db).updateJobStatus(row.id, "paused");
+      releaseCall(); await refreshing; await settled();
+    }
+    await completed(3);
+    expect(rpc).toHaveBeenCalledTimes(3);
+  });
+
   it("preserves a deadline advanced during a concurrent unchanged declaration update", async () => {
     const row = await due();
     const advanced = new Date(Date.now() + 600_000);
