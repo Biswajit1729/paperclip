@@ -291,7 +291,12 @@ describe("registered run instruction copies", () => {
   });
 
   describe("captured instruction commit worker", () => {
-    afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
+    afterEach(async () => {
+      vi.useRealTimers(); vi.restoreAllMocks();
+      // A failed assertion must not leave retry debt for the next test's global reconstruction.
+      await db.update(agentInstructionWorkingCopies).set({ state: "saved", nextAttemptAt: null })
+        .where(eq(agentInstructionWorkingCopies.companyId, companyId));
+    });
     const clock = () => vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
     async function captured(copy: NonNullable<Awaited<ReturnType<typeof copies.get>>>, dueAt = new Date(), owner = db) {
       await owner.transaction(async tx => {
@@ -377,17 +382,39 @@ describe("registered run instruction copies", () => {
       const copy = await run(); await fs.writeFile(path.join(copy.localRoot, entryFile), "recovered bytes");
       clock(); const worker = coordinator();
       const rename = fs.rename.bind(fs);
+      let release!: () => void, entered!: () => void;
+      const held = new Promise<void>(resolve => { release = resolve; });
+      const saving = new Promise<void>(resolve => { entered = resolve; });
+      let destinationWrites = 0;
       const writes = vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
-        if (to === path.join(root, entryFile)) throw new Error("file replacement still unavailable");
+        if (to === path.join(root, entryFile)) {
+          if (++destinationWrites === 2) { entered(); await held; }
+          throw new Error("file replacement still unavailable");
+        }
         return rename(from, to);
       });
       try {
         await copies.registerCapturedCommitWork(worker, () => true, async () => true).ready;
         expect((await copies.collectStopped({ companyId, runId: copy.runId }))?.attempts).toBe(1);
         for (const attempts of [2, 3]) {
-          await vi.advanceTimersByTimeAsync(31_000);
-          await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(100);
-            expect((await copies.get(companyId, copy.runId))?.attempts).toBe(attempts);
+          const previous = await copies.get(companyId, copy.runId);
+          expect(previous?.nextAttemptAt).toBeInstanceOf(Date);
+          await vi.advanceTimersByTimeAsync(Math.max(0, previous!.nextAttemptAt!.getTime() - Date.now()) + 1);
+          if (attempts === 2) {
+            await saving;
+            // The attempt counter is the claim, not completion. Simulate slow
+            // storage across a whole retry interval before releasing its failure.
+            expect((await copies.get(companyId, copy.runId))?.attempts).toBe(2);
+            await vi.advanceTimersByTimeAsync(31_000);
+            release();
+          }
+          await vi.waitFor(async () => {
+            await vi.advanceTimersByTimeAsync(100);
+            const row = await copies.get(companyId, copy.runId);
+            expect(row?.attempts).toBe(attempts);
+            if (attempts < 3) expect(row!.nextAttemptAt!.getTime()).toBeGreaterThan(Date.now());
+            else expect(row?.nextAttemptAt).toBeNull();
+            expect(idleWorkSnapshot().active).toBe(0);
           });
         }
         await vi.advanceTimersByTimeAsync(1000);
@@ -399,7 +426,7 @@ describe("registered run instruction copies", () => {
         expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe(initial);
         expect(await copies.get(companyId, copy.runId)).toMatchObject({ state: "pending_commit", attempts: 3,
           candidateBase64: Buffer.from("recovered bytes").toString("base64"), nextAttemptAt: null });
-      } finally { writes.mockRestore(); await worker.stop(); }
+      } finally { release(); writes.mockRestore(); await worker.stop(); }
     });
     it("joins an active save during shutdown and reconstructs its remaining receipt", async () => {
       const copy = await run(); await captured(copy);
