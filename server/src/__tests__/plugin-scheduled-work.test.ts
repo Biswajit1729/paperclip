@@ -303,6 +303,9 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
 
   it("retains the manual reservation when a refresh read finishes after manual dispatch", async () => {
     await start(2); await quiet();
+    // Creating due work also wakes the scheduler. Keep dispatch paused until
+    // the snapshot barrier is installed, regardless of notification timing.
+    draining = true;
     const row = await due("raced");
     let resumeRead!: () => void, enteredRead!: () => void, releaseCall!: () => void;
     const readGate = new Promise<void>(resolve => { resumeRead = resolve; });
@@ -328,6 +331,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       });
       return builder;
     });
+    draining = false;
     const refreshing = scheduler!.tick();
     try {
       await readEntered;
