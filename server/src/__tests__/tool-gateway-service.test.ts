@@ -392,6 +392,31 @@ describeEmbeddedPostgres("tool gateway service", () => {
         expect(await db.select().from(toolCallEvents).where(eq(toolCallEvents.reasonCode, "approved_action_executed"))).toHaveLength(1);
       });
 
+      it.each(["new", "increased"] as const)("spends the newly available slot of a %s rate rule during approved recovery", async change => {
+        const rate = { companyId: fixture.company.id, name: "Changed reviewed-note limit",
+          policyType: "rate_limit" as const, priority: 1, selectors: { toolName: "mcp-remote-fixture:update_note" },
+          config: { limit: 2, windowSeconds: 3600, keyBy: ["agent", "tool"] } };
+        const original = change === "increased" ? (await db.insert(toolPolicies).values(rate).returning())[0] : null;
+        const first = await request(), second = await request();
+        if (original) {
+          await db.update(toolPolicies).set({ config: { ...rate.config, limit: 3 }, updatedAt: new Date() })
+            .where(eq(toolPolicies.id, original.id));
+        } else {
+          await db.insert(toolPolicies).values({ ...rate, config: { ...rate.config, limit: 1 } });
+        }
+        await approve(first); await approve(second);
+        await startRecovery(); await settle(); await quiet();
+        const requests = await db.select().from(toolActionRequests);
+        expect(requests.filter(row => row.status === "executed")).toHaveLength(1);
+        expect(requests.filter(row => row.status === "failed")).toHaveLength(1);
+        const invocations = await db.select().from(toolInvocations);
+        expect(invocations.filter(row => row.errorCode === "rate_limited")).toHaveLength(1);
+        expect(await db.select().from(toolCallEvents).where(eq(toolCallEvents.reasonCode, "approved_action_executed"))).toHaveLength(1);
+        const counters = await db.select().from(toolRateLimitCounters);
+        expect(counters).toHaveLength(1);
+        expect(counters[0]).toMatchObject({ limit: change === "increased" ? 3 : 1, remaining: 0 });
+      });
+
       it("reconstructs a saved approved action after restart", async () => {
         const pending = await request(); await approve(pending);
         await startRecovery(); await settle(); await executed(pending); await quiet();
@@ -735,7 +760,9 @@ describeEmbeddedPostgres("tool gateway service", () => {
         const gate = new Promise<void>(resolve => { unlock = resolve; });
         const acquired = new Promise<void>(resolve => { locked = resolve; });
         const lock = db.transaction(async tx => {
-          await tx.execute(sql`lock table tool_policies in access exclusive mode`);
+          // Pause tool discovery before admission locks the invocation. Revocation
+          // cannot legitimately take that lock from an in-flight admission.
+          await tx.execute(sql`lock table tool_catalog_entries in access exclusive mode`);
           locked(); await gate;
         });
         await acquired;
