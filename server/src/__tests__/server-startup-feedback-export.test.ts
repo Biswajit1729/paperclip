@@ -1216,15 +1216,19 @@ describe("startServer feedback export wiring", () => {
     }
   });
 
-  it.each(["retained cleanup", "workspace finalization", "environment settlement"] as const)("becomes ready while %s is held but joins it at shutdown", async owner => {
+  it.each(["retained cleanup", "workspace finalization", "environment settlement", "native run projection"] as const)("becomes ready while %s is held but joins it at shutdown", async owner => {
     loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: true }));
     let releaseCleanup!: () => void;
     const ready = new Promise<void>(resolve => { releaseCleanup = resolve; });
     const stop = vi.fn();
     const register = owner === "retained cleanup" ? heartbeatServiceMock.registerRetainedNativeSessionCleanupWork
       : owner === "workspace finalization" ? heartbeatServiceMock.registerNativeWorkspaceFinalizationWork
-      : heartbeatServiceMock.registerNativeEnvironmentSettlementWork;
-    register.mockReturnValueOnce({ ready, stop });
+      : owner === "environment settlement" ? heartbeatServiceMock.registerNativeEnvironmentSettlementWork
+      : heartbeatServiceMock.registerNativeRunProjectionWork;
+    if (owner === "native run projection") heartbeatServiceMock.registerNativeRunProjectionWork.mockReturnValueOnce({ ready });
+    else (owner === "retained cleanup" ? heartbeatServiceMock.registerRetainedNativeSessionCleanupWork
+      : owner === "workspace finalization" ? heartbeatServiceMock.registerNativeWorkspaceFinalizationWork
+      : heartbeatServiceMock.registerNativeEnvironmentSettlementWork).mockReturnValueOnce({ ready, stop });
     const timer = vi.spyOn(globalThis, "setInterval").mockImplementation(() => 1 as unknown as ReturnType<typeof setInterval>);
     let started = false;
     const starting = startServer().then(server => { started = true; return server; });
@@ -1239,7 +1243,7 @@ describe("startServer feedback export wiring", () => {
       const server = await starting;
       stopping = server.shutdown().then(() => { stopped = true; });
       await settleStartupHousekeeping();
-      if (owner !== "environment settlement") expect(stop).toHaveBeenCalledOnce();
+      if (owner !== "environment settlement" && owner !== "native run projection") expect(stop).toHaveBeenCalledOnce();
       expect(stopped).toBe(false);
     } finally {
       releaseCleanup();
