@@ -1216,7 +1216,7 @@ describe("startServer feedback export wiring", () => {
     }
   });
 
-  it.each(["retained cleanup", "workspace finalization", "environment settlement", "native run projection"] as const)("becomes ready while %s is held but joins it at shutdown", async owner => {
+  it.each(["retained cleanup", "workspace finalization", "environment settlement", "native run projection", "native result commit", "native recovery notices", "external conversation settlement"] as const)("becomes ready while %s is held but joins it at shutdown", async owner => {
     loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: true }));
     let releaseCleanup!: () => void;
     const ready = new Promise<void>(resolve => { releaseCleanup = resolve; });
@@ -1224,8 +1224,14 @@ describe("startServer feedback export wiring", () => {
     const register = owner === "retained cleanup" ? heartbeatServiceMock.registerRetainedNativeSessionCleanupWork
       : owner === "workspace finalization" ? heartbeatServiceMock.registerNativeWorkspaceFinalizationWork
       : owner === "environment settlement" ? heartbeatServiceMock.registerNativeEnvironmentSettlementWork
-      : heartbeatServiceMock.registerNativeRunProjectionWork;
+      : owner === "native run projection" ? heartbeatServiceMock.registerNativeRunProjectionWork
+      : owner === "native result commit" ? heartbeatServiceMock.registerNativeResultCommitWork
+      : owner === "native recovery notices" ? heartbeatServiceMock.registerNativeRecoveryNoticeWork
+      : heartbeatServiceMock.registerExternalConversationSettlementWork;
     if (owner === "native run projection") heartbeatServiceMock.registerNativeRunProjectionWork.mockReturnValueOnce({ ready });
+    else if (owner === "native result commit") heartbeatServiceMock.registerNativeResultCommitWork.mockReturnValueOnce({ ready });
+    else if (owner === "native recovery notices") heartbeatServiceMock.registerNativeRecoveryNoticeWork.mockReturnValueOnce({ ready });
+    else if (owner === "external conversation settlement") heartbeatServiceMock.registerExternalConversationSettlementWork.mockReturnValueOnce({ ready });
     else (owner === "retained cleanup" ? heartbeatServiceMock.registerRetainedNativeSessionCleanupWork
       : owner === "workspace finalization" ? heartbeatServiceMock.registerNativeWorkspaceFinalizationWork
       : heartbeatServiceMock.registerNativeEnvironmentSettlementWork).mockReturnValueOnce({ ready, stop });
@@ -1243,7 +1249,7 @@ describe("startServer feedback export wiring", () => {
       const server = await starting;
       stopping = server.shutdown().then(() => { stopped = true; });
       await settleStartupHousekeeping();
-      if (owner !== "environment settlement" && owner !== "native run projection") expect(stop).toHaveBeenCalledOnce();
+      if (owner === "retained cleanup" || owner === "workspace finalization") expect(stop).toHaveBeenCalledOnce();
       expect(stopped).toBe(false);
     } finally {
       releaseCleanup();
