@@ -6,7 +6,7 @@ import {
   type Db,
 } from "@paperclipai/db";
 import { registerGitHubTerminalResponseWork } from "./chat-channels/github/terminal-response-work.js";
-import { githubResponseExecution } from "./chat-channels/github/response-execution.js";
+import { githubResponseExecution, githubResponseRunColumns as responseRunColumns } from "./chat-channels/github/response-execution.js";
 import { notifyChatResponseAvailability } from "./chat-response-availability.js";
 import { registerGitHubAcknowledgementWork } from "./chat-channels/github/acknowledgement-work.js";
 import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
@@ -30,23 +30,6 @@ type Api = { request<T>(path: string, options?: { method?: string; body?: unknow
 type Lease = { commit<T>(write: (tx: Transaction) => Promise<T>): Promise<T> };
 type Source = GitHubResponseSource;
 type Comment = { id: number; body?: string; html_url: string; user?: { login?: string } };
-const responseRunColumns = {
-  id: heartbeatRuns.id,
-  companyId: heartbeatRuns.companyId,
-  agentId: heartbeatRuns.agentId,
-  responsibleUserId: heartbeatRuns.responsibleUserId,
-  activeIdentityContextId: heartbeatRuns.activeIdentityContextId,
-  nativeIssueId: heartbeatRuns.nativeIssueId,
-  issueId: heartbeatRuns.issueId,
-  status: heartbeatRuns.status,
-  updatedAt: heartbeatRuns.updatedAt,
-  contextSnapshot: sql<Record<string, unknown>>`jsonb_build_object(
-    'issueId', ${heartbeatRuns.contextSnapshot}->'issueId',
-    'taskId', ${heartbeatRuns.contextSnapshot}->'taskId',
-    'wakeCommentId', ${heartbeatRuns.contextSnapshot}->'wakeCommentId',
-    'wakeCommentIds', ${heartbeatRuns.contextSnapshot}->'wakeCommentIds'
-  )`,
-};
 const generation = (endpoint: Source["endpoint"]) => (endpoint.setup as { runtimeGeneration?: number }).runtimeGeneration ?? 0;
 const stoppedAcknowledgement = Symbol("stopped GitHub acknowledgement");
 const actionKey = (deliveryId: string) => `github_response:${deliveryId}`;
@@ -147,7 +130,7 @@ export async function writeGitHubResponseComment(
   const sameRequest = !shared || previous?.body?.includes(requestResponseMarker(source)) === true;
   const alreadyFinal = sameRequest && previous?.body?.includes("<!-- paperclip-response-state:final -->") === true;
   const body = `${projectSafeChatPublicationText(input.body)}\n\n${marker}${shared ? `\n${requestResponseMarker(source)}` : ""}\n<!-- paperclip-response-version:${versionAt.toISOString()} -->${input.final ? "\n<!-- paperclip-response-state:final -->" : ""}`;
-  const preserved = previous && (previous.body === body || (input.acknowledgement && sameRequest) || (alreadyFinal && !input.final) ||
+  const preserved = previous && (previous.body === body || (input.acknowledgement && (sameRequest || (shared && previous.body?.includes("<!-- paperclip-response-state:final -->")))) || (alreadyFinal && !input.final) ||
     (input.preserveFinal && previous.body?.includes("<!-- paperclip-response-state:final -->"))) ? previous : null;
   const posted = preserved && (!shared || preserved.body?.includes(marker)) ? preserved : await api.request<Comment>(
     previous ? `${item}/${previous.id}` : source.replyId
@@ -162,7 +145,8 @@ export async function writeGitHubResponseComment(
   const receipt = { id: String(posted.id), url: posted.html_url };
   await lease.commit(async tx => {
     if (shared) await tx.update(chatActions).set({ result: {
-      ...receipt, final: input.final || alreadyFinal, versionAt: versionAt.toISOString(), deliveryId: source.delivery.id,
+      ...receipt, final: input.final || alreadyFinal || Boolean(preserved?.body?.includes("<!-- paperclip-response-state:final -->")),
+      versionAt: versionAt.toISOString(), deliveryId: source.delivery.id,
     }, updatedAt: new Date() }).where(eq(chatActions.id, target.id));
     await tx.update(chatActions).set({ status: "processed", result: {
       ...receipt, final: input.final || alreadyFinal, versionAt: versionAt.toISOString(),
@@ -237,6 +221,19 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
           deliveryCreatedAt: source.delivery.createdAt,
         });
         if (execution.reply === "unsettled") throw conflict("GitHub reply is still being resolved");
+        if (execution.presentationPending) return;
+        if (isMainPullResponse(source) && execution.passiveResponseWait) {
+          // Preserve the shared assessment when this exact run intentionally waits
+          // without publishing. Retire only its request acknowledgement.
+          await lease.commit(async tx => {
+            await notifyChatResponseAvailability(tx, { companyId: source.endpoint.companyId, deliveryId });
+            await tx.update(chatActions).set({ status: "cancelled",
+              result: { ...existing.result, final: true, code: "passive_response_wait" }, updatedAt: new Date(),
+            }).where(and(eq(chatActions.id, existing.id), eq(chatActions.companyId, source.endpoint.companyId),
+              sql`coalesce(${chatActions.result}->>'final', 'false') <> 'true'`));
+          });
+          return;
+        }
         if (existing.result?.final === true) return existing.result.id ? { id: String(existing.result.id), url: String(existing.result.url) } : undefined;
         if (execution.paused && existing.status === "processed" && existing.result?.id && existing.result?.pausedVersion === execution.version)
           return existing.result.id ? { id: String(existing.result.id), url: String(existing.result.url) } : undefined;
@@ -379,6 +376,8 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
         )).orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1);
         if (latest?.id !== run.id) throw forbidden("A newer GitHub run owns the response");
         if ((await responseForRequest())?.result?.final === true) throw forbidden("GitHub request already has a final response");
+        if (current.nativePresentationPending) throw conflict("GitHub native response presentation is still being resolved");
+        if (isMainPullResponse(source) && current.passiveResponseWait) throw forbidden("GitHub run intentionally yielded without a new response");
         if (await githubRunReplyState(db, input) !== "none") throw conflict("GitHub reply is still being resolved");
       };
       receipt = await acknowledge(link.deliveryId, input.body, assertRun);
