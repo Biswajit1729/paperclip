@@ -233,3 +233,21 @@ intact and now pass. Final owning verification passes all 37 retention cases and
 server typechecking. See local logs `sleep64-pony-red`, `sleep64-pony-green`,
 `sleep64-pony-final`, `sleep64-pony-focused`, `sleep64-pony-acceptance`, and
 `sleep64-pony-final-types` for the failure and repair sequence.
+
+
+## CI fixture repair: fail the orphan write after replacement allocation
+
+The current remote CI run exposed the warm-task spool fixture rejecting every
+database transaction. Retiring the prior physical-task owners now correctly uses
+the environment-settlement transaction boundary, so that blanket fault stopped
+the test before it allocated the unowned replacement or reached the orphan spool.
+The unchanged fixture reproduces the exact CI assertion locally: the deferred
+cleanup listener is never called.
+
+The fault now starts after the replacement ownership write fails. Prior-owner
+settlement can commit, provider cleanup still fails, and orphan persistence still
+encounters the simulated database outage. All existing assertions remain: one
+wake, durable spool append, retained recovery after failed flush, shared concurrent
+flush, and a recovered pending-cleanup lease. The complete 19-case suite passes
+after this test-only repair. A guarded dedicated external test database makes the
+real transaction path available locally without relying on embedded PostgreSQL.
