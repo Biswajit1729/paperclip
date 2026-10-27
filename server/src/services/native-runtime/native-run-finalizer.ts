@@ -740,6 +740,27 @@ export async function recoverCommittedNativeChatResponse(
   try {
     materialized = await db.transaction(async (transaction) => {
       const tx = transaction as unknown as Db;
+      // Share coordinator -> issue -> run ordering with status, workspace, and
+      // recovery-notice owners; presentation may repair the same committed run.
+      const [coordinator] = await tx
+        .select()
+        .from(nativeRunFinalizations)
+        .where(
+          and(
+            eq(nativeRunFinalizations.runId, input.runId),
+            eq(nativeRunFinalizations.companyId, input.companyId),
+            eq(nativeRunFinalizations.issueId, input.issueId),
+            eq(nativeRunFinalizations.phase, "committed"),
+            isNull(nativeRunFinalizations.leaseOwner),
+          ),
+        )
+        .for("update");
+      if (
+        !coordinator?.resultId ||
+        !coordinator.decisionId ||
+        !coordinator.assessmentId
+      )
+        return false;
       const [issue] = await tx
         .select()
         .from(issues)
@@ -798,25 +819,6 @@ export async function recoverCommittedNativeChatResponse(
       if (
         typeof record(record(run.resultJson).presentationDecision).commentId ===
         "string"
-      )
-        return false;
-      const [coordinator] = await tx
-        .select()
-        .from(nativeRunFinalizations)
-        .where(
-          and(
-            eq(nativeRunFinalizations.runId, run.id),
-            eq(nativeRunFinalizations.companyId, input.companyId),
-            eq(nativeRunFinalizations.issueId, input.issueId),
-            eq(nativeRunFinalizations.phase, "committed"),
-            isNull(nativeRunFinalizations.leaseOwner),
-          ),
-        )
-        .for("update");
-      if (
-        !coordinator?.resultId ||
-        !coordinator.decisionId ||
-        !coordinator.assessmentId
       )
         return false;
       if (input.onlyWhenDue) {
