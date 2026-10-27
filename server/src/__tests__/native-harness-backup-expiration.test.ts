@@ -1,3 +1,4 @@
+import { logger } from "../middleware/logger.js";
 import { applyPendingMigrations } from "@paperclipai/db";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
@@ -421,7 +422,7 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
     const session = await seedSession({ issueStatus: "in_progress" });
     const archive = await seedArchive(session.root); let busy = true;
     await startEvidence({ isSessionBusy: () => busy });
-    const retryAt = coordinator!.nextWakeAt()!; expect(retryAt).toBeGreaterThan(Date.now());
+    const retryAt = coordinator!.nextWakeAt()!; expect(retryAt - Date.now()).toBeGreaterThanOrEqual(60 * 60_000);
     await quiet(5000); busy = false;
     await vi.advanceTimersByTimeAsync(retryAt - Date.now()); await settled();
     expect(await exists(archive)).toBe(false); await quiet();
@@ -444,6 +445,47 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
     worker!.unsubscribe(); await coordinator!.stop();
     await startEvidence(); await settled(deadline); await quiet(60_000);
     expect(coordinator!.nextWakeAt()).toBe(deadline);
+  });
+
+  it("backs off a failed state-base inspection and lets publication reactivate it", async () => {
+    const session = await seedSession({ issueStatus: "in_progress" });
+    const archive = await seedArchive(session.root), read = fs.readdir;
+    const denied = vi.spyOn(fs, "readdir").mockImplementation(async (...args) => {
+      if (args[0] === stateBase) throw Object.assign(new Error("state base unavailable"), { code: "EACCES" });
+      return read(...args);
+    });
+    await startEvidence(); expect(coordinator!.nextWakeAt()! - Date.now()).toBeGreaterThanOrEqual(60 * 60_000);
+    denied.mockRestore(); await quiet(5 * 60_000); expect(await exists(archive)).toBe(true);
+    noteNativeRunnerEvidence(now.getTime() - 10 * DAY_MS);
+    await settled(); expect(await exists(archive)).toBe(false); await quiet();
+  });
+
+  it("lets healthy saved expiry preempt a long-busy evidence retry", async () => {
+    const busy = await seedSession({ issueStatus: "in_progress" }), healthy = await seedSession({ issueStatus: "in_progress" });
+    const held = await seedArchive(busy.root);
+    const dueAt = now.getTime() + 10_001;
+    const available = await seedArchive(healthy.root, { name: `${dueAt - 7 * DAY_MS - 1}-${randomUUID()}` });
+    await startEvidence({ isSessionBusy: scope => scope === busy.scope }); await settled(dueAt);
+    await vi.advanceTimersByTimeAsync(dueAt - Date.now());
+    await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(100); expect(await exists(available)).toBe(false); });
+    expect(await exists(held)).toBe(true); expect(coordinator!.nextWakeAt()! - Date.now()).toBeGreaterThan(59 * 60_000);
+    await quiet(60_000);
+  });
+
+  it("reports reclaimed evidence bytes and dry-run mode", async () => {
+    const session = await seedSession({ issueStatus: "in_progress" });
+    const archive = await seedArchive(session.root); const reported = vi.spyOn(logger, "info");
+    await startEvidence(); await settled();
+    expect(reported.mock.calls).toEqual(expect.arrayContaining([[expect.objectContaining({ evidenceCandidates: 1,
+      evidenceRemoved: 1, evidenceReclaimedBytes: expect.any(Number), dryRun: false }), "native runner evidence retention"]]));
+    expect(await exists(archive)).toBe(false); await quiet();
+  });
+
+  it("schedules publication at the first removable instant after its retention boundary", async () => {
+    const scope = await emptyStateBase(); await startEvidence(); await settled(); await quiet();
+    const writtenAt = Date.now();
+    await seedQuarantine(scope, { name: `${scope}.identity_indeterminate.${writtenAt}.4242.${randomUUID()}` });
+    noteNativeRunnerEvidence(writtenAt); await settled(writtenAt + 7 * DAY_MS + 1);
   });
 
   it("uses bounded continuations without recounting an evidence session forever", async () => {

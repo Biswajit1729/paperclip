@@ -1,3 +1,4 @@
+import { logger } from "../../middleware/logger.js";
 import { registerDeadlineWork } from "../deadline-work.js";
 import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
@@ -15,8 +16,16 @@ export function registerNativeRunnerEvidenceRetentionWork(
   const worker = registerDeadlineWork(coordinator, DELIVERY_QUEUES.nativeRunnerEvidenceRetention, {
     retryMs: 30_000, canRun,
     run: async signal => {
-      const result = await service.tick({ shouldContinue: () => !signal.aborted && canRun() });
-      continuation = result.truncated ? Date.now() + 1000 : null;
+      try {
+        const result = await service.tick({ shouldContinue: () => !signal.aborted && canRun() });
+        if (result.evidenceCandidates > 0 || result.failed > 0) {
+          logger.info({ ...result, dryRun: options.dryRun ?? false }, "native runner evidence retention");
+        }
+        continuation = result.truncated ? Date.now() + 1000 : null;
+      } catch (err) {
+        continuation = Date.now() + 60 * 60_000;
+        logger.warn({ err }, "native runner evidence inspection failed");
+      }
     },
     next: async () => continuation ?? service.nextEvidenceAt(),
   });

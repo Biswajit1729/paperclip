@@ -72,6 +72,7 @@ type EvidenceContext = {
   retainedBefore: number;
   canInspect: () => boolean;
   dueAt: (at: number) => void;
+  retry: () => void;
 };
 
 type SessionIdentity = {
@@ -388,7 +389,7 @@ export function nativeHarnessBackupExpirationService(
       return skip("recent_evidence");
     }
     if (context.isSessionBusy(scopeDigest)) {
-      context.dueAt(context.now);
+      context.retry();
       return skip("session_active");
     }
     const bytes = await allocatedBytes(target);
@@ -396,7 +397,7 @@ export function nativeHarnessBackupExpirationService(
     result.evidenceCandidateBytes += bytes;
     if (context.dryRun) return;
     if (context.isSessionBusy(scopeDigest)) {
-      context.dueAt(context.now);
+      context.retry();
       return skip("session_active");
     }
     const trash = path.join(parent, `${EXPIRED_PREFIX}${randomUUID()}`);
@@ -433,7 +434,7 @@ export function nativeHarnessBackupExpirationService(
         await retireEvidence(parent, name, scopeDigest, Number(match[1]), context, result);
       } catch (err) {
         result.failed++;
-        context.dueAt(context.now);
+        context.retry();
         logger.warn({ err, scope: scopeDigest }, "native runner evidence retention skipped a continuity archive");
       }
     }
@@ -471,7 +472,7 @@ export function nativeHarnessBackupExpirationService(
         await retireEvidence(parent, name, match[1]!, Number(match[2]), context, result);
       } catch (err) {
         result.failed++;
-        context.dueAt(context.now);
+        context.retry();
         logger.warn({ err, scope: match[1] }, "native runner evidence retention skipped a quarantine entry");
       }
     }
@@ -480,7 +481,7 @@ export function nativeHarnessBackupExpirationService(
   }
 
   function noteEvidence(writtenAt: number) {
-    evidenceDueAt = Math.min(evidenceDueAt, writtenAt + evidenceRetentionMs());
+    evidenceDueAt = Math.min(evidenceDueAt, writtenAt + evidenceRetentionMs() + (defaults.duty === "evidence" ? 1 : 0));
   }
 
   function evidenceRetentionMs(options: NativeHarnessBackupExpirationOptions = {}) {
@@ -525,6 +526,9 @@ export function nativeHarnessBackupExpirationService(
       dueAt: (at) => {
         passDueAt = Math.min(passDueAt, at);
       },
+      retry: () => {
+        passDueAt = Math.min(passDueAt, now + (defaults.duty === "evidence" ? 60 * 60_000 : 0));
+      },
     };
 
     if (phase === "sessions") {
@@ -553,7 +557,7 @@ export function nativeHarnessBackupExpirationService(
           }
         } catch (err) {
           result.failed++;
-          context.dueAt(now);
+          context.retry();
           logger.warn({ err, scope: name }, "native runner retention could not inspect a session root");
           continue;
         }
@@ -571,7 +575,7 @@ export function nativeHarnessBackupExpirationService(
           stoppedAt = await retireContinuityBreaks(root, name, resumeAfter, context, result);
         } catch (err) {
           result.failed++;
-          context.dueAt(now);
+          context.retry();
           logger.warn({ err, scope: name }, "native runner evidence retention skipped a session");
         }
         if (stoppedAt !== null) {
@@ -596,7 +600,7 @@ export function nativeHarnessBackupExpirationService(
       }
     } catch (err) {
       result.failed++;
-      context.dueAt(now);
+      context.retry();
       quarantineCursor = null;
       logger.warn({ err }, "native runner evidence retention skipped quarantine");
     }

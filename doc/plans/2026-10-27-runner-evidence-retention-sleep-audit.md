@@ -89,3 +89,27 @@ evidence worker, disabled registration, and tracked startup after HTTP readiness
 Existing backup, manifest, lease, issue, dry-run, symlink, and cleanup-archive
 cases still pass. Server TypeScript checking and the full server build also pass.
 Remote review/CI and whole-stack acceptance remain pending.
+
+## Ponytail repair: quiet handled retries, summaries, and publication boundary
+
+Controlled tests reproduced a busy archive causing whole-tree inspection every
+thirty seconds, that overdue retry masking another archive's ten-second saved
+expiry, missing deletion/byte summaries, and a publication deadline one millisecond
+before the first removable instant. All four fail before this repair.
+
+The evidence-only owner now records an hourly retry for handled busy/inspection/
+removal failures. Genuine earlier saved expiries remain the minimum deadline.
+One-second truncated continuations remain independent. Unexpected state-base
+inspection failure is also retained as an hourly worker retry; a new publication
+can reactivate it immediately. Admission/drain reconciliation still uses the
+coordinator's existing short memory-only retry. Legacy combined/manual callers
+retain their original explicit-tick behavior.
+
+The worker again logs candidate, removal, reclaimed-byte, failure, and dry-run
+summary fields when it processes candidates or failures. Publication now schedules
+the first removable instant in evidence-only mode; the old manual notification
+case is unchanged. An added base-directory fault test proves five minutes of quiet
+before a publication resumes processing. Final owning acceptance passes 162 cases
+across retention, configuration, and startup, plus server typechecking. Earlier
+receipts remain tied to their recorded heads; integrated verification follows the
+parent skill-retention repair.
