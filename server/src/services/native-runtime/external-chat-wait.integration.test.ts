@@ -27,6 +27,7 @@ import {
   completionContracts,
   closeRegisteredClients,
   createDb,
+  subscribeDatabaseWork,
   heartbeatRuns,
   issueComments,
   issueAttachments,
@@ -56,6 +57,7 @@ import { approvalRecords } from "../approvals.js";
 import { issueApprovalService } from "../issue-approvals.js";
 import { NativeRunCoordinatorStore } from "./native-run-coordinator-store.js";
 import { nativeReviewResponseWork } from "./native-review-response-work.js";
+import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 import { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { idleWorkSnapshot } from "../task-admission.js";
 import { nativeCompletionFeedback } from "./native-completion-feedback.js";
@@ -2993,6 +2995,84 @@ describe("native external-chat response wait", () => {
       await expect.poll(async () => (await comments()).length, { timeout: 5_000 }).toBe(1);
       expect(errors).toEqual([]);
     } finally { await coordinator.stop(); }
+  });
+
+  it.each([
+    ["resolver", "single"], ["resolver", "bulk"],
+    ["linker", "single"], ["linker", "bulk"],
+  ] as const)("retains a settled task wake when %s starts first during concurrent %s approval linking", async (first, kind) => {
+    const fixture = await seedWaitTurn();
+    const [approval] = await db.insert(approvals).values({ companyId: fixture.companyId,
+      type: "request_board_approval", status: "pending", payload: {} }).returning();
+    const observed: string[] = [];
+    const reads: Promise<void>[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.nativeReviewResponse, (event, hints) => {
+      if (event !== "settled" || ![...(hints ?? [])].some(hint => {
+        const scope = JSON.parse(hint);
+        return scope.companyId === fixture.companyId && scope.issueId === fixture.issueId;
+      })) return;
+      reads.push(db.select({ status: approvals.status }).from(issueApprovals)
+        .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))
+        .where(and(eq(issueApprovals.issueId, fixture.issueId), eq(approvals.id, approval.id)))
+        .then(rows => { for (const row of rows) observed.push(row.status); }));
+    });
+    let release!: () => void, ready!: () => void;
+    const hold = new Promise<void>(resolve => { release = resolve; });
+    const held = new Promise<void>(resolve => { ready = resolve; });
+    let holderPid = 0, resolverPid = 0, linkerPid = 0;
+    let linked = false, resolved = false;
+    const link = async (tx: typeof db) => {
+      if (kind === "single") await issueApprovalService(tx).link(fixture.issueId, approval.id);
+      else await issueApprovalService(tx).linkManyForApproval(approval.id, [fixture.issueId]);
+    };
+    const holder = db.transaction(async tx => {
+      const [backend] = await tx.execute(sql`select pg_backend_pid() as pid`);
+      holderPid = Number(backend.pid);
+      if (first === "resolver") {
+        // Let resolution discover links, then stop its UPDATE. FK checks and
+        // SELECT FOR UPDATE remain allowed by this table lock.
+        await tx.execute(sql`lock table approvals in share mode`);
+      } else {
+        await link(tx as unknown as typeof db);
+      }
+      ready();
+      await hold;
+    });
+    let resolver: Promise<unknown> | undefined, linker: Promise<unknown> | undefined;
+    const blocked = async (pid: number, by: number) => {
+      if (!pid || !by) return false;
+      const [row] = await db.execute(sql`select ${by} = any(pg_blocking_pids(${pid})) as blocked`);
+      return row.blocked === true;
+    };
+    try {
+      await held;
+      resolver = db.transaction(async tx => {
+        const [backend] = await tx.execute(sql`select pg_backend_pid() as pid`);
+        resolverPid = Number(backend.pid);
+        await approvalRecords(tx as unknown as typeof db).resolveApproval(approval.id, "approved", fixture.userId, null);
+      }).then(() => { resolved = true; });
+      await expect.poll(async () => resolved || await blocked(resolverPid, holderPid), { timeout: 5000 }).toBe(true);
+      if (first === "resolver") {
+        linker = db.transaction(async tx => {
+          const [backend] = await tx.execute(sql`select pg_backend_pid() as pid`);
+          linkerPid = Number(backend.pid);
+          await link(tx as unknown as typeof db);
+        }).then(() => { linked = true; });
+        await expect.poll(async () => linked || await blocked(linkerPid, resolverPid), { timeout: 5000 }).toBe(true);
+      }
+      // Finish observing any early link wake while approval is still pending;
+      // the assertion below requires another wake that can see its decision.
+      await Promise.all(reads);
+      release();
+      await Promise.all([holder, resolver, linker]);
+      await Promise.all(reads);
+      expect(observed).toContain("approved");
+    } finally {
+      release();
+      await Promise.allSettled([holder, resolver, linker]);
+      await Promise.all(reads);
+      unsubscribe();
+    }
   });
 
   it.each(["cancel", "unlink"] as const)("keeps governed response approval %s behind outer commit and scoped to linked tasks", async action => {
