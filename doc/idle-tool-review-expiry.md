@@ -59,7 +59,10 @@ expiry has its own startup pass or worker. Approved-action recovery, interrupted
 execution quarantine, and terminal projection repair retain their behavior.
 An unknown external outcome is never replayed by this expiry worker.
 
-The next deadline comes from pending rows only, using a partial expiry index.
+The next deadline comes from pending rows only. Startup uses the existing
+partial expiry index to reconstruct company deadlines. A company notification
+uses an ordered, single-row lookup backed by the partial `(company_id,
+expires_at)` index, rather than aggregating that company's pending backlog.
 Null-expiry unsigned requests and retained resolved history do not keep this
 worker active. The concurrent index migration uses the existing top-level
 executor and is safe to apply again after interruption.
@@ -94,3 +97,40 @@ The external test database override requires a disposable database ending in
 This is one worker migration, not proof that the instance can sleep. Other tool
 review duties remain periodic. Existing Cloud sleep-safety gates and external
 alarm coverage are unchanged. An in-process deadline cannot wake a stopped host.
+
+## Scoped lookup review repair (2026-10-27)
+
+The original scoped aggregate examined 12,004 rows to return one deadline in a
+real PostgreSQL regression. The repaired lookup returns the earliest non-null
+pending expiry for the requested company with `ORDER BY expires_at LIMIT 1`.
+The grouped startup inventory remains unchanged. Existing company signals,
+authority checks, expiry settlement, paging, backoff, and sleep gates remain
+owned by their existing services.
+
+The generated additive migration reserves number 0402 because later PRs in this
+stack already own 0380 through 0401. It builds the new index concurrently and
+idempotently through the existing top-level migration executor. No old SQL
+migration is edited. Combined snapshots must be generated from each branch's
+merged schema, retaining the five newest snapshots, so the reserved later
+number cannot hide descendant schema changes from future generation.
+
+Two failures shaped the repair. The first migration attempt omitted its explicit
+top-level registration and PostgreSQL rejected the concurrent build inside a
+transaction; adding the registration fixed application and replay. An initial
+three-column index also lost to the global expiry index in the planner, which
+filtered 12,001 foreign-company rows before returning a result. The final index
+omits the unused request ID. With 12,000 additional pending rows in each of two
+companies, including earlier foreign deadlines, all three measured reloads
+examine one row. The assertion counts filtered rows as well as returned rows.
+This is evidence for the recorded fixture and query plan, not a production
+latency guarantee or a claim that PostgreSQL can never choose another plan.
+
+The complete gateway service, gateway acceptance, credential expiry, startup,
+custom-image deadline, and schema snapshot suites pass: 223 tests across six
+files. The run also exposed a credential test-clock overshoot; its correction
+belongs to the earlier gateway PR and waits for real SQL before advancing to
+an actually armed follow-up. Commit/rollback and exact expiry assertions remain.
+Server typechecking passes. Combined-stack migration upgrades, full build, and
+fresh remote checks remain required. Full local test:run is still unverified
+because of embedded PostgreSQL startup/capacity limits; real gateway suites used
+isolated, migrated test databases in the task-owned PostgreSQL instance.
