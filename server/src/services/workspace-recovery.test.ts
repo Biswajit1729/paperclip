@@ -215,7 +215,7 @@ describe("automatic retained workspace recovery", () => {
   it("fills a free export slot across the candidate cursor while another export is held and joins both at shutdown", async () => {
     const orderedSeed = async (position: number) => {
       const fixture = await seed();
-      const id = `00000002-000${position}-4000-8000-${randomUUID().slice(-12)}`;
+      const id = `00000002-000${position}-4000-8000-${randomUUID().slice(-12)}` as const;
       await db.update(issueRecoveryActions).set({ id }).where(eq(issueRecoveryActions.id, fixture.actionId));
       fixture.actionId = id; fixture.input.actionId = id;
       return fixture;
