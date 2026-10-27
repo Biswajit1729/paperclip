@@ -341,6 +341,7 @@ export interface ChatIdentityLink {
   externalDetail?: string | null;
   paperclipUserId?: string | null;
   paperclipUserLabel?: string | null;
+  paperclipUserImage?: string | null;
   status: ChatIdentityLinkStatus;
   expiresAt?: string | null;
   confirmedAt?: string | null;
@@ -408,6 +409,14 @@ export interface SafeExternalChatCard {
   title: string;
   body?: string;
   actions?: SafeExternalChatCardAction[];
+  /** A compact choice whose opaque option tokens use the normal action ledger. */
+  selection?: {
+    actionId: string;
+    label: string;
+    multiple?: boolean;
+    submitLabel?: string;
+    options: Array<{ actionId: string; label: string; description?: string; selected?: boolean }>;
+  };
 }
 
 export interface SafeChatPublicationPayload {

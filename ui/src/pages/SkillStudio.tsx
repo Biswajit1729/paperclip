@@ -1,3 +1,4 @@
+import { SkillsPageNavigation } from "@/components/skill-studio/SkillsNavigationTabs";
 import { interactionReadinessRefetchInterval } from "@/lib/issue-thread-interactions";
 import { SkillBinaryFile } from "../components/SkillBinaryFile";
 import { SkillSourceProvenance } from "../components/SkillSourceProvenance";
@@ -425,6 +426,7 @@ function StudioCreateMode({
             emptyLabel="New skill"
           />
         </header>
+        <SkillsPageNavigation activeView="authored" />
         <div className="min-h-0 flex-1 overflow-y-auto">
           <StudioNewSkillPanel
             companyId={companyId}
@@ -746,6 +748,7 @@ function StudioEmptyState({
             emptyLabel="Select skill"
           />
         </header>
+        <SkillsPageNavigation activeView="authored" />
         <div className="flex flex-1 items-center justify-center">
           <EmptyState
             icon={FileCode}
@@ -823,6 +826,7 @@ function StudioLanding({
             New skill
           </Button>
         </header>
+        <SkillsPageNavigation activeView="authored" />
         <div className="min-h-0 flex-1 overflow-auto">
           <div className="mx-auto w-full max-w-3xl space-y-8 px-4 py-8">
             {visited.length > 0 ? (
@@ -1069,6 +1073,7 @@ function StudioShell({
           onSelectSkill={(nextSkillId) => navigate(skillStudioRoute(nextSkillId))}
           onOpenVersions={() => setVersionSheetOpen(true)}
         />
+        <SkillsPageNavigation activeView="authored" />
         {projectScan ? (
           <ProjectScanNotice skill={skill} onEditACopy={() => setForkDialogOpen(true)} />
         ) : null}

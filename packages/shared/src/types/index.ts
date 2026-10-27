@@ -280,6 +280,7 @@ export type {
   AgentDetail,
   ClearAgentErrorResponse,
   AgentPermissions,
+  AgentProjectAccess,
   AgentPublicIdentity,
   AgentRuntimeConfig,
   AgentInstructionsBundleMode,
@@ -356,6 +357,7 @@ export type {
   Project,
   ProjectRepository,
   ProjectRepositoryOptions,
+  ProjectGitAuthorization,
   ProjectAccessMember,
   ProjectAccessSubjectType,
   ProjectDiscoverySummary,
@@ -367,6 +369,7 @@ export type {
   ProjectManagedByPlugin,
   ProjectVisibility,
   ProjectWorkspace,
+  ProjectWorkspaceProviderConfiguration,
 } from "./project.js";
 export type {
   CompanySearchCountType,
@@ -661,6 +664,7 @@ export type {
 } from "./external-object.js";
 export type {
   CompactIssue,
+  IssueSummary,
   Issue,
   IssueChangeReceiptEntry,
   IssueChanges,
@@ -729,6 +733,7 @@ export type {
   IssueReviewRequest,
   IssueExecutionDecision,
   IssueComment,
+  IssueRecentComments,
   IssueQueuedCommentEntry,
   IssueQueuedCommentProtocol,
   IssueQueuedCommentQueue,

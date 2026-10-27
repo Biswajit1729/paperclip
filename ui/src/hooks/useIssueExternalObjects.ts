@@ -210,6 +210,8 @@ export function useIssueExternalObjectSummaries(
   summaries: Map<string, ExternalObjectSummary>;
   isLoading: boolean;
   isReady: boolean;
+  error: Error | null;
+  refetch: () => void;
 } {
   const externalObjectsFeature = useExternalObjectsFeature();
   const normalizedIssueIds = useMemo(
@@ -231,6 +233,8 @@ export function useIssueExternalObjectSummaries(
     summaries,
     isLoading: enabled && query.isLoading,
     isReady: externalObjectsFeature.isLoaded && (!enabled || query.isSuccess),
+    error: query.error,
+    refetch: () => { void query.refetch(); },
   };
 }
 
