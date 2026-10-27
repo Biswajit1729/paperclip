@@ -929,7 +929,7 @@ export function accessService(db: Db) {
       const existing = await tx.select().from(companyMemberships).where(and(
         eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalType, principalType),
         eq(companyMemberships.principalId, principalId),
-      )).then(rows => rows[0] ?? null);
+      )).for("update").then(rows => rows[0] ?? null);
       if (existing) {
         if (existing.status !== status || existing.membershipRole !== membershipRole) {
           if (principalType === "user" && status === "active" && membershipRole !== "viewer"
