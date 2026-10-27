@@ -167,29 +167,42 @@ export function voiceSessionStore(db: Db, options: { allowLocalBoard: boolean; n
       await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`voice:${input.companyId}:${input.caller.id}:${input.idempotencyKey}`}, 0))`);
       await authorizeCaller(tx, input.companyId, input.caller);
       const previous = await tx.select().from(chatVoiceSessions).where(and(eq(chatVoiceSessions.companyId, input.companyId), eq(chatVoiceSessions.callerId, input.caller.id), eq(chatVoiceSessions.idempotencyKey, input.idempotencyKey))).then((rows) => rows[0]);
-      if (previous) {
-        if (previous.requestFingerprint !== input.requestFingerprint || previous.endpointId !== input.endpointId) throw conflict("Voice request key was already used for different work");
-        await authorizeConnection(tx, await endpointContext(tx, input.companyId, input.endpointId), input.caller);
-        await authorizeTask(tx, input.companyId, previous.issueId, input.caller);
-        return { session: previous, created: false as const };
-      }
+      if (previous && (previous.requestFingerprint !== input.requestFingerprint || previous.endpointId !== input.endpointId)) throw conflict("Voice request key was already used for different work");
       const context = await endpointContext(tx, input.companyId, input.endpointId);
       await authorizeConnection(tx, context, input.caller);
-      if (context.generation < 1 || input.maxDurationSeconds < 30 || input.maxDurationSeconds > 1800 || !Number.isInteger(input.maxDurationSeconds)) throw conflict("Voice setup or duration is invalid");
-      let inboundAdmissionId: string | undefined;
+      let inboundAdmission: typeof chatVoiceInboundCalls.$inferSelect | undefined;
       async function bindInboundSession(sessionId: string) {
-        if (!inboundAdmissionId) return;
+        if (!inboundAdmission || inboundAdmission.state === "approved" && inboundAdmission.sessionId === sessionId) return;
         // Admission expiry must relinquish cleanup in the same commit that
         // establishes an authorized owner for the existing provider call.
-        await notifyVoiceInbound(tx, { kind: "admission", id: inboundAdmissionId });
+        await notifyVoiceInbound(tx, { kind: "admission", id: inboundAdmission.id });
         await tx.update(chatVoiceInboundCalls).set({ state: "approved", sessionId, updatedAt: new Date() })
-          .where(eq(chatVoiceInboundCalls.id, inboundAdmissionId));
+          .where(eq(chatVoiceInboundCalls.id, inboundAdmission.id));
       }
       if (input.mode === "inbound_phone") {
         const [admission] = await tx.select().from(chatVoiceInboundCalls).where(and(eq(chatVoiceInboundCalls.companyId, input.companyId), eq(chatVoiceInboundCalls.endpointId, input.endpointId), eq(chatVoiceInboundCalls.providerSessionId, input.providerSessionId ?? ""))).for("update");
-        if (!admission || admission.state !== "approving" || admission.approvedByUserId !== input.caller.id || admission.callerAuthority !== input.caller.authority || admission.expiresAt.getTime() <= Date.now() || admission.generation !== context.generation || admission.credentialFingerprint !== context.fingerprint || admission.toolTokenHash !== voiceTokenHash(input.toolToken ?? "") || input.idempotencyKey !== `inbound:${admission.id}`) throw forbidden("This live call has not been approved for private work");
-        inboundAdmissionId = admission.id;
+        const approvedRetry = previous && admission?.state === "approved" && admission.sessionId === previous.id;
+        if (!admission || admission.state !== "approving" && !approvedRetry || admission.approvedByUserId !== input.caller.id || admission.callerAuthority !== input.caller.authority || admission.expiresAt.getTime() <= Date.now() || admission.generation !== context.generation || admission.credentialFingerprint !== context.fingerprint || admission.toolTokenHash !== voiceTokenHash(input.toolToken ?? "") || input.idempotencyKey !== `inbound:${admission.id}`) throw forbidden("This live call has not been approved for private work");
+        inboundAdmission = admission;
       }
+      if (previous) {
+        if (inboundAdmission) {
+          // A legacy approval may have committed the session before binding the
+          // admission. Lock admission before session, as inbound cleanup does.
+          const { session } = await authorizeSession(tx, input.companyId, previous.id);
+          if (session.mode !== "inbound_phone" || session.providerSessionId !== input.providerSessionId
+            || session.callerId !== input.caller.id || session.callerAuthority !== input.caller.authority
+            || session.approvedByUserId !== input.caller.id || session.toolTokenHash !== inboundAdmission.toolTokenHash
+            || inboundAdmission.sessionId !== null && inboundAdmission.sessionId !== session.id
+            || inboundAdmission.requestedIssueId !== null && inboundAdmission.requestedIssueId !== session.issueId)
+            throw forbidden("This live call has not been approved for private work");
+          await bindInboundSession(session.id);
+          return { session, created: false as const };
+        }
+        await authorizeTask(tx, input.companyId, previous.issueId, input.caller);
+        return { session: previous, created: false as const };
+      }
+      if (context.generation < 1 || input.maxDurationSeconds < 30 || input.maxDurationSeconds > 1800 || !Number.isInteger(input.maxDurationSeconds)) throw conflict("Voice setup or duration is invalid");
       const binding = await input.prepareBinding(tx);
       const task = await authorizeTask(tx, input.companyId, binding.issueId, input.caller);
       const conversation = await tx.select().from(chatConversations).where(and(eq(chatConversations.id, binding.conversationId), eq(chatConversations.companyId, input.companyId), eq(chatConversations.endpointId, input.endpointId), eq(chatConversations.issueId, binding.issueId))).then((rows) => rows[0]);
