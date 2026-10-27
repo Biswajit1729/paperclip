@@ -13,6 +13,7 @@ import {
   companies,
   costEvents,
   createDb,
+  applyPendingMigrations,
   documentRevisions,
   documents,
   environmentLeases,
@@ -60,7 +61,8 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    if (!external) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-run-dispatch-postgres-adapter-");
+    if (external) await applyPendingMigrations(external);
+    else tempDb = await startEmbeddedPostgresTestDatabase("paperclip-run-dispatch-postgres-adapter-");
     db = createDb(external ?? tempDb!.connectionString);
   }, 20_000);
 

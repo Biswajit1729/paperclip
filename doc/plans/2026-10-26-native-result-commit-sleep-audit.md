@@ -163,3 +163,15 @@ resource settlement. Keep uncertainty visible until each has an owning pending
 contract. The prior eight-worker suppression audit, older stack gate failures,
 full-stack master propagation and every remaining inventory duty remain open.
 No merge is authorized by this task.
+
+## Startup readiness follow-up (2026-10-27)
+
+The initial result-commit sweep can wait on a finalization lock. Registration now
+tracks its readiness promise through the existing heartbeat shutdown owner instead
+of awaiting it before HTTP startup completes. The delivery coordinator still owns
+worker cancellation; no independent subscription or timer is introduced. A held
+worker regression failed on the old wiring, then passed with HTTP ready, subsequent
+recovery registered, and shutdown waiting until the held work settles. All 80
+startup tests pass before and after integrating pinned master
+`8548173fc9efdc0fa07644fb92dcc0b6851a95e5`; production server types pass at the
+integrated revision. These lifecycle checks do not establish deployed host sleep.
