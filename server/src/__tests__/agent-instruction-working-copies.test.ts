@@ -17,7 +17,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
-import { activityLog, agents, companies, authUsers, companyMemberships, principalPermissionGrants, heartbeatRuns, agentInstructionWorkingCopies, createDb } from "@paperclipai/db";
+import { activityLog, agents, companies, authUsers, companyMemberships, principalPermissionGrants, heartbeatRuns, agentInstructionWorkingCopies, createDb, withDedicatedDbConnection } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { agentInstructionRevisionService } from "../services/agent-instruction-revisions.js";
 import { agentInstructionWorkingCopyService } from "../services/agent-instruction-working-copies.js";
@@ -537,31 +537,57 @@ describe("registered run instruction copies", () => {
         expect(worker.nextWakeAt()).toBeNull();
       } finally { await worker.stop(); }
     });
-    it("joins a foreground save and recovers one receipt without duplicating the save", async () => {
+    it.each((["shared", "separate", "dedicated"] as const).flatMap(mode =>
+      (["saved", "retry"] as const).map(outcome => ({ mode, outcome }))))("joins foreground ownership without consuming a recovery attempt ($mode, $outcome)", async ({ mode, outcome }) => {
       const copy = await run(); await fs.writeFile(path.join(copy.localRoot, entryFile), "recovered bytes");
-      clock(); const worker = coordinator();
-      let release!: () => void, entered!: () => void;
-      const held = new Promise<void>(resolve => { release = resolve; });
-      const reached = new Promise<void>(resolve => { entered = resolve; });
-      let foreground: ReturnType<typeof copies.collectStopped> | undefined;
-      const rename = fs.rename.bind(fs);
-      let holding = true;
-      const renameSpy = vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
-        if (holding && to === path.join(root, entryFile)) { holding = false; entered(); await held; }
-        return rename(from, to);
-      });
-      try {
-        await copies.registerCapturedCommitWork(worker, () => true, async () => true).ready;
-        foreground = copies.collectStopped({ companyId, runId: copy.runId });
-        await reached;
-        await vi.waitFor(async () => {
-          await vi.advanceTimersByTimeAsync(1000);
-          expect((await copies.get(companyId, copy.runId))?.attempts).toBe(2);
+      const exercise = async (workerDb: typeof db) => {
+        const recoveryCopies = mode === "shared" ? copies : agentInstructionWorkingCopyService(workerDb);
+        clock(); const worker = coordinator();
+        let release!: () => void, entered!: () => void;
+        const held = new Promise<void>(resolve => { release = resolve; });
+        const reached = new Promise<void>(resolve => { entered = resolve; });
+        let foreground: ReturnType<typeof copies.collectStopped> | undefined;
+        const rename = fs.rename.bind(fs);
+        let holding = true;
+        const renameSpy = vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+          if (holding && to === path.join(root, entryFile)) {
+            holding = false; entered(); await held;
+            if (outcome === "retry") throw new Error("temporary foreground replacement failure");
+          }
+          return rename(from, to);
         });
-        release(); await foreground; await saved(copy.runId);
-        const events = await db.select().from(activityLog).where(and(eq(activityLog.companyId, companyId), eq(activityLog.action, "agent.files_updated")));
-        expect(events).toHaveLength(1);
-      } finally { release(); await foreground; renameSpy.mockRestore(); await worker.stop(); }
+        try {
+          await recoveryCopies.registerCapturedCommitWork(worker, () => true, async () => true).ready;
+          foreground = copies.collectStopped({ companyId, runId: copy.runId });
+          await reached;
+          await vi.waitFor(async () => {
+            await vi.advanceTimersByTimeAsync(1000);
+            expect(idleWorkSnapshot().active).toBeGreaterThan(0);
+          });
+          // A long active save is still owned; elapsed time is not permission
+          // to spend a retry or invalidate its receipt's attempt fence.
+          await vi.advanceTimersByTimeAsync(120_000);
+          expect(await copies.get(companyId, copy.runId)).toMatchObject({ state: "pending_commit", attempts: 1 });
+          release();
+          const result = await foreground;
+          if (outcome === "retry") {
+            expect(result).toMatchObject({ state: "pending_commit", attempts: 1, nextAttemptAt: expect.any(Date) });
+            expect(result!.nextAttemptAt!.getTime()).toBeGreaterThan(Date.now() + 29_000);
+            await vi.advanceTimersByTimeAsync(1000);
+            await expect.poll(() => idleWorkSnapshot().active).toBe(0);
+            expect(worker.nextWakeAt()).toBe(result!.nextAttemptAt!.getTime());
+            await vi.advanceTimersByTimeAsync(Math.max(0, result!.nextAttemptAt!.getTime() - Date.now() - 5000));
+            expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe(initial);
+            expect((await copies.get(companyId, copy.runId))?.attempts).toBe(1);
+            await vi.advanceTimersByTimeAsync(5000);
+          } else expect(result).toMatchObject({ state: "saved", attempts: 1 });
+          await saved(copy.runId);
+          const events = await db.select().from(activityLog).where(and(eq(activityLog.companyId, companyId), eq(activityLog.action, "agent.files_updated")));
+          expect(events).toHaveLength(1);
+        } finally { release(); await foreground; renameSpy.mockRestore(); await worker.stop(); }
+      };
+      if (mode === "dedicated") await withDedicatedDbConnection(db, exercise);
+      else await exercise(db);
     });
   });
 
