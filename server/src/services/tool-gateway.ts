@@ -7777,7 +7777,7 @@ export function createToolGatewayService(
 
   function isApprovalPreparationRejection(error: unknown) {
     return error instanceof ToolContentValidationError ||
-      error instanceof ToolGatewayHttpError && error.status >= 400 && error.status < 500 &&
+      (error instanceof ToolGatewayHttpError || error instanceof HttpError) && error.status >= 400 && error.status < 500 &&
       ![408, 425, 429].includes(error.status);
   }
 
@@ -8249,8 +8249,8 @@ export function createToolGatewayService(
         gatewayId: invocation.gatewayId,
         gatewayPublicId: invocation.gatewayPublicId,
         gatewayTokenId: invocation.gatewayTokenId,
-        actorType: "agent",
-        actorId: invocation.actorType === "agent" ? invocation.actorId ?? invocation.agentId : invocation.agentId,
+        actorType: invocation.actorType as ToolGatewaySession["actorType"],
+        actorId: invocation.actorId,
         originatingAgentId: typeof invocation.policyExplanation?.delegatedGatewayIssuer === "string" ? invocation.policyExplanation.delegatedGatewayIssuer : invocation.actorType === "agent" && invocation.gatewayId && !invocation.runId && !invocation.gatewayTokenId ? invocation.actorId : null,
         createdAt: new Date(),
         expiresAt: new Date(Date.now() + DEFAULT_SESSION_TTL_MS),

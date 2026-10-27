@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { createServer } from "node:http";
 import { and, eq } from "drizzle-orm";
 import { beforeAll, afterAll, describe, expect, it, vi } from "vitest";
-import { activityLog, agentApiKeys, companies, companySecrets, companySecretVersions, chatConversations, chatDeliveries, chatEndpoints, chatExternalPrincipals, chatIdentityLinks, toolPolicies, connectionGrants, connectionGrantDelegations, toolAccessAuditEvents, toolOauthStates, issueThreadInteractions, connectionIntentDeliveries, agents, companyMemberships, heartbeatRuns, issues, principalPermissionGrants, projects, toolConnections, toolMcpGateways, toolMcpGatewayTokens, toolActionRequests, toolCatalogEntries, toolInvocations, toolCallEvents, toolProfileBindings, plugins, adapterAuthSessions, environments, routines, chatGitHubReviews } from "@paperclipai/db";
+import { activityLog, agentApiKeys, companies, companySecrets, companySecretVersions, chatConversations, chatDeliveries, chatEndpoints, chatExternalPrincipals, chatIdentityLinks, toolPolicies, toolRateLimitCounters, connectionGrants, connectionGrantDelegations, toolAccessAuditEvents, toolOauthStates, issueThreadInteractions, connectionIntentDeliveries, agents, companyMemberships, heartbeatRuns, issues, principalPermissionGrants, projects, toolConnections, toolMcpGateways, toolMcpGatewayTokens, toolActionRequests, toolCatalogEntries, toolInvocations, toolCallEvents, toolProfileBindings, plugins, adapterAuthSessions, environments, routines, chatGitHubReviews } from "@paperclipai/db";
 import { findSatisfiedToolConnection, satisfiedConnectionIntentService } from "../services/satisfied-connection-intents.js";
 import { connectionManagementService, continuingConnectionManagement } from "../services/connection-management.js";
 import { redactRunnerApiPayloads } from "../services/native-runtime/runner-api-log-redaction.js";
@@ -1227,7 +1227,7 @@ describe("connection management with production default agents", () => {
     expect((await use()).status).toBeGreaterThanOrEqual(400);
   });
 
-  it.each(["block", "ask", "ask-board", "ask-revoked", "ask-rate", "ask-token-revoked", "ask-token-deleted", "ask-token-scope", "ask-grant-revoked", "rate", "shared-rate", "target-block", "credential"] as const)("intersects gateway issuer and target rules (%s)", async mode => {
+  it.each(["block", "ask", "ask-board", "ask-revoked", "ask-rate", "ask-new-rate", "ask-new-shared-rate", "ask-new-rate-target-block", "ask-token-revoked", "ask-token-deleted", "ask-token-scope", "ask-grant-revoked", "rate", "shared-rate", "target-block", "credential"] as const)("intersects gateway issuer and target rules (%s)", async mode => {
     const f = await fixture();
     const cookie = await server.humanSession(f.userId);
     const createdTarget = await fetch(`${server.apiUrl}/api/companies/${f.companyId}/agents`, { method: "POST", headers: { cookie, origin: server.apiUrl, "Content-Type": "application/json" },
@@ -1300,16 +1300,36 @@ describe("connection management with production default agents", () => {
       if (!mode.startsWith("ask")) return;
       const [action] = await server.db.select().from(toolActionRequests).where(eq(toolActionRequests.invocationId, invocation.id));
       expect(action.requestedByAgentId).toBe(mode === "ask-board" ? null : f.agentId);
+      if (mode.startsWith("ask-new-")) {
+        await server.db.insert(toolPolicies).values({ companyId: f.companyId, name: "New admission after review", policyType: "rate_limit",
+          selectors: { connectionId: connection.body.id, ...(mode === "ask-new-shared-rate" ? {} : { agentId: f.agentId }) },
+          priority: -2, config: { limit: 1, windowSeconds: 60, keyBy: mode === "ask-new-shared-rate" ? ["company", "tool"] : ["agent", "tool"] } });
+        if (mode === "ask-new-rate") await server.db.insert(toolPolicies).values({ companyId: f.companyId, name: "New target admission", policyType: "rate_limit",
+          selectors: { connectionId: connection.body.id, agentId: target.id }, priority: -1,
+          config: { limit: 1, windowSeconds: 60, keyBy: ["agent", "tool"] } });
+        if (mode === "ask-new-rate-target-block") await server.db.insert(toolPolicies).values({ companyId: f.companyId, name: "New target block", policyType: "block",
+          selectors: { connectionId: connection.body.id, agentId: target.id }, priority: -1 });
+      }
       if (mode === "ask-revoked") await server.db.insert(toolPolicies).values({ companyId: f.companyId, name: "Issuer blocked after review", policyType: "block", selectors: { connectionId: connection.body.id, agentId: f.agentId }, priority: -1 });
       if (mode === "ask-token-revoked") await server.db.update(toolMcpGatewayTokens).set({ revokedAt: new Date() }).where(eq(toolMcpGatewayTokens.id, token.body.id));
       if (mode === "ask-token-deleted") await server.db.delete(toolMcpGatewayTokens).where(eq(toolMcpGatewayTokens.id, token.body.id));
       if (mode === "ask-token-scope") await server.db.update(toolMcpGatewayTokens).set({ allowedActions: ["tools/list"] }).where(eq(toolMcpGatewayTokens.id, token.body.id));
       if (mode === "ask-grant-revoked") await server.db.delete(principalPermissionGrants).where(and(eq(principalPermissionGrants.principalId, f.agentId), eq(principalPermissionGrants.permissionKey, "tools:manage_connections")));
-      const approvalDenied = ["ask-revoked", "ask-token-revoked", "ask-token-deleted", "ask-token-scope", "ask-grant-revoked"].includes(mode);
+      const approvalDenied = ["ask-revoked", "ask-new-rate-target-block", "ask-token-revoked", "ask-token-deleted", "ask-token-scope", "ask-grant-revoked"].includes(mode);
       const response = await fetch(`${server.apiUrl}/api/tool-gateway/action-requests/${action.id}/approve`, { method: "POST", headers: { cookie, origin: server.apiUrl, "Content-Type": "application/json" }, body: JSON.stringify({ companyId: f.companyId }) });
       expect(response.status, JSON.stringify(await response.json())).toBe(approvalDenied ? 403 : 200);
       expect(calls).toBe(approvalDenied ? 0 : 1);
-      if (mode === "ask-rate") {
+      if (mode.startsWith("ask-new-")) {
+        const counters = await server.db.select().from(toolRateLimitCounters).where(eq(toolRateLimitCounters.companyId, f.companyId));
+        expect(counters).toHaveLength(approvalDenied ? 0 : mode === "ask-new-shared-rate" ? 1 : 2);
+        expect(counters.every(counter => counter.remaining === 0)).toBe(true);
+        if (!approvalDenied) {
+          const [settled] = await server.db.select().from(toolInvocations).where(eq(toolInvocations.id, invocation.id));
+          expect(settled.policyExplanation?.consumedRateAdmissions).toHaveLength(1);
+          expect(settled.policyExplanation?.delegatedCallerConsumedRateAdmissions).toHaveLength(1);
+        }
+      }
+      if (["ask-rate", "ask-new-rate", "ask-new-shared-rate"].includes(mode)) {
         await rpc("tools/call", { name: tool.name, arguments: { another: true } });
         expect(calls).toBe(1);
       }
