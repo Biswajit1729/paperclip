@@ -184,8 +184,9 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     terminate.mockImplementation(async call => { if (call.id === broken.id && failed) throw new Error("provider unavailable"); return true; });
     await start();
     expect(terminate.mock.calls.slice(0, 25).some(([call]) => call.id === last.id)).toBe(true);
-    await vi.waitFor(async () => {
-      await vi.advanceTimersByTimeAsync(1000);
+    // waitFor already advances fake time. Extra one-second jumps can reach
+    // the failed provider's retry while ordinary database writes are pending.
+    await vi.waitFor(() => {
       expect(terminate.mock.calls.filter(([call]) => call.id !== broken.id)).toHaveLength(105);
     }, { timeout: 5000 });
     expect(errors).toHaveLength(1); failed = false;
