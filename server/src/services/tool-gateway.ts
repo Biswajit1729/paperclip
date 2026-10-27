@@ -1,5 +1,5 @@
 import { toolReviewInterruptionService } from "./tool-review-interruption.js";
-import { claimToolTestApproval, releaseToolTestApproval, persistToolTestOutcome, startToolTestInvocation, type ToolTestApprovalClaim } from "./tool-test-approval.js";
+import { claimToolTestApproval, releaseToolApproval, persistToolTestOutcome, startToolInvocation, type ToolApprovalClaim } from "./tool-approval-execution.js";
 import { approvedToolReviewCompanies, prepareApprovedToolReview, recoverApprovedToolReviews } from "./tool-review-recovery.js";
 import { toolReviewExpiryService } from "./tool-review-expiry.js";
 import { notifyToolReviewChange, writeToolReviewChange } from "./tool-review-work-notifications.js";
@@ -7418,7 +7418,7 @@ export function createToolGatewayService(
     matchedPolicyIds: string[];
     timeoutMs?: number;
     signal?: AbortSignal;
-    approvedClaim?: ToolTestApprovalClaim;
+    approvedClaim?: ToolApprovalClaim;
   }): Promise<
     | { decision: "allowed"; invocationId: string; result: unknown }
     | {
@@ -7427,7 +7427,7 @@ export function createToolGatewayService(
         error: { message: string; reasonCode: string };
       }
   > {
-    if (!(await startToolTestInvocation(db, args.invocationId, args.approvedClaim))) {
+    if (!(await startToolInvocation(db, args.invocationId, args.approvedClaim))) {
       throw new ToolGatewayHttpError(409, "Tool action execution claim is no longer current", "action_already_consumed");
     }
     await writeAudit({
@@ -7624,6 +7624,12 @@ export function createToolGatewayService(
 
   }
 
+  function isApprovalPreparationRejection(error: unknown) {
+    return error instanceof ToolContentValidationError ||
+      error instanceof ToolGatewayHttpError && error.status >= 400 && error.status < 500 &&
+      ![408, 425, 429].includes(error.status);
+  }
+
   async function runApprovedTestInvocation(
     invocation: typeof toolInvocations.$inferSelect,
     signedPayload: NonNullable<ReturnType<typeof readSignedToolArgumentsPayload>>,
@@ -7665,13 +7671,10 @@ export function createToolGatewayService(
         companyId: invocation.companyId, agentId, userId, argumentsSummary, reasonCode: "approval_granted",
         approvedClaim: claim, matchedPolicyIds: invocation.matchedPolicyIds ?? [] };
     } catch (err) {
-      const rejected = err instanceof ToolContentValidationError ||
-        err instanceof ToolGatewayHttpError && err.status >= 400 && err.status < 500 &&
-        ![408, 425, 429].includes(err.status);
-      if (!rejected) {
+      if (!isApprovalPreparationRejection(err)) {
         // Preparation has not entered runTestToolInvocation. Preserve approval
         // through dependency failures; the claim owner still verifies no dispatch.
-        await releaseToolTestApproval(db, claim);
+        await releaseToolApproval(db, claim);
         throw err;
       }
       const message = err instanceof Error ? err.message : String(err);
@@ -8026,81 +8029,67 @@ export function createToolGatewayService(
       );
     }
 
-    // Terminal-issue expiry revokes pending/approved requests, but a claim that
-    // committed just before the issue closed slips past that revocation. Recheck
-    // the issue after winning the claim so a governed action never runs external
-    // side effects for an issue that is already done or cancelled.
-    const issue = await assertIssueOpenForApprovedAction({
-      claimed,
-      invocation,
-    });
-
-    const signedPayload = readSignedToolArgumentsPayload({
-      signedArguments: claimed.signedArguments,
-      invocationId: invocation.id,
-      toolName: invocation.toolName,
-      signingSecret: options.toolActionSigningSecret,
-    });
-    if (!signedPayload) {
-      const error = new ToolGatewayHttpError(
-        409,
-        "Approved tool action arguments signature is invalid",
-        "signed_arguments_invalid",
-      );
-      await markApprovedActionFailed({
-        actionRequestId: claimed.id,
-        invocationId: invocation.id,
-        claimUpdatedAt: claimed.updatedAt,
-        expectedInvocationStatus: "awaiting_approval",
-        error,
-      });
-      throw error;
-    }
-    if (signedPayload.executionOnApprove !== true) {
-      const error = new ToolGatewayHttpError(
-        409,
-        "This approval predates execute-on-approve and must remain inert",
-        "legacy_approved_action_inert",
-      );
-      await markApprovedActionFailed({
-        actionRequestId: claimed.id,
-        invocationId: invocation.id,
-        claimUpdatedAt: claimed.updatedAt,
-        expectedInvocationStatus: "awaiting_approval",
-        error,
-      });
-      throw error;
-    }
-
-    const session: ToolGatewaySession = {
-      id: `approved-action:${claimed.id}`,
-      token: "",
-      companyId: invocation.companyId,
-      agentId: invocation.agentId,
-      runId: invocation.runId,
-      issueId: invocation.issueId,
-      projectId: issue?.projectId ?? null,
-      gatewayId: invocation.gatewayId,
-      gatewayPublicId: invocation.gatewayPublicId,
-      gatewayTokenId: invocation.gatewayTokenId,
-      actorType: "agent",
-      actorId: invocation.agentId,
-      createdAt: new Date(),
-      expiresAt: new Date(Date.now() + DEFAULT_SESSION_TTL_MS),
+    const claim: ToolApprovalClaim = {
+      actionRequestId: claimed.id, invocationId: invocation.id, claimedAt: claimed.updatedAt,
     };
-    let tool: ToolGatewayDescriptor;
-    let liveApprovalSnapshot: Awaited<
-      ReturnType<typeof connectedRemoteApprovalSnapshot>
-    >;
-    try {
+    const agentId = invocation.agentId;
+    async function prepareExecution() {
+      // Terminal-issue expiry revokes pending/approved requests, but a claim that
+      // committed just before the issue closed slips past that revocation. Recheck
+      // the issue after winning the claim so a governed action never runs external
+      // side effects for an issue that is already done or cancelled.
+      const issue = await assertIssueOpenForApprovedAction({
+        claimed,
+        invocation,
+      });
+
+      const signedPayload = readSignedToolArgumentsPayload({
+        signedArguments: claimed.signedArguments,
+        invocationId: invocation.id,
+        toolName: invocation.toolName,
+        signingSecret: options.toolActionSigningSecret,
+      });
+      if (!signedPayload) {
+        const error = new ToolGatewayHttpError(
+          409,
+          "Approved tool action arguments signature is invalid",
+          "signed_arguments_invalid",
+        );
+        throw error;
+      }
+      if (signedPayload.executionOnApprove !== true) {
+        const error = new ToolGatewayHttpError(
+          409,
+          "This approval predates execute-on-approve and must remain inert",
+          "legacy_approved_action_inert",
+        );
+        throw error;
+      }
+
+      const session: ToolGatewaySession = {
+        id: `approved-action:${claimed.id}`,
+        token: "",
+        companyId: invocation.companyId,
+        agentId,
+        runId: invocation.runId,
+        issueId: invocation.issueId,
+        projectId: issue?.projectId ?? null,
+        gatewayId: invocation.gatewayId,
+        gatewayPublicId: invocation.gatewayPublicId,
+        gatewayTokenId: invocation.gatewayTokenId,
+        actorType: "agent",
+        actorId: agentId,
+        createdAt: new Date(),
+        expiresAt: new Date(Date.now() + DEFAULT_SESSION_TTL_MS),
+      };
       await restoreApprovedActionIdentity(
         session,
         signedPayload.identityContextId,
       );
       session.approvedInvocationId = invocation.id;
       session.approvedSlackInvocationId = invocation.id;
-      tool = await findToolForSession(session, invocation.toolName);
-      liveApprovalSnapshot = await connectedRemoteApprovalSnapshot(
+      const tool = await findToolForSession(session, invocation.toolName);
+      const liveApprovalSnapshot = await connectedRemoteApprovalSnapshot(
         session,
         tool,
       );
@@ -8122,121 +8111,101 @@ export function createToolGatewayService(
           currentAccess.explanation,
           currentAccess.reasonCode,
         );
-    } catch (error) {
-      await markApprovedActionFailed({
-        actionRequestId: claimed.id,
-        invocationId: invocation.id,
-        claimUpdatedAt: claimed.updatedAt,
-        expectedInvocationStatus: "awaiting_approval",
-        error,
-      });
-      throw error;
-    }
-    if (
-      !approvalSnapshotsMatch(
-        signedPayload.approvalSnapshot,
-        liveApprovalSnapshot,
-      )
-    ) {
-      const error = new ToolGatewayHttpError(
-        409,
-        "Approved tool action target changed after review",
-        "approved_tool_target_changed",
-      );
-      await markApprovedActionFailed({
-        actionRequestId: claimed.id,
-        invocationId: invocation.id,
-        claimUpdatedAt: claimed.updatedAt,
-        expectedInvocationStatus: "awaiting_approval",
-        error,
-      });
-      throw error;
-    }
-    const parameters = signedPayload.arguments;
-    const canonicalArguments = canonicalToolArguments(parameters);
-    if (
-      ![
-        toolRequestIdentityHash(parameters, options.toolActionSigningSecret),
-        // Historical approvals used the redacted preview hash. Their signature
-        // still binds the complete canonical arguments checked below.
-        summarizeToolValue(parameters).sha256,
-      ].includes(claimed.canonicalArgumentsHash) ||
-      !verifyToolArgumentsSignature({
-        signedArguments: claimed.signedArguments,
-        invocationId: invocation.id,
-        toolName: invocation.toolName,
-        canonicalArguments,
-        approvalSnapshot: signedPayload.approvalSnapshot,
-        executionOnApprove: true,
-        identityContextId: signedPayload.identityContextId,
-        signingSecret: options.toolActionSigningSecret,
-      })
-    ) {
-      const error = new ToolGatewayHttpError(
-        409,
-        "Approved tool action arguments do not match reviewed hash",
-        "signed_arguments_mismatch",
-      );
-      await markApprovedActionFailed({
-        actionRequestId: claimed.id,
-        invocationId: invocation.id,
-        claimUpdatedAt: claimed.updatedAt,
-        expectedInvocationStatus: "awaiting_approval",
-        error,
-      });
-      throw error;
-    }
-    let managedArgumentsRemainCurrent: boolean;
-    try {
-      managedArgumentsRemainCurrent =
+      if (
+        !approvalSnapshotsMatch(
+          signedPayload.approvalSnapshot,
+          liveApprovalSnapshot,
+        )
+      ) {
+        const error = new ToolGatewayHttpError(
+          409,
+          "Approved tool action target changed after review",
+          "approved_tool_target_changed",
+        );
+        throw error;
+      }
+      const parameters = signedPayload.arguments;
+      const canonicalArguments = canonicalToolArguments(parameters);
+      if (
+        ![
+          toolRequestIdentityHash(parameters, options.toolActionSigningSecret),
+          // Historical approvals used the redacted preview hash. Their signature
+          // still binds the complete canonical arguments checked below.
+          summarizeToolValue(parameters).sha256,
+        ].includes(claimed.canonicalArgumentsHash) ||
+        !verifyToolArgumentsSignature({
+          signedArguments: claimed.signedArguments,
+          invocationId: invocation.id,
+          toolName: invocation.toolName,
+          canonicalArguments,
+          approvalSnapshot: signedPayload.approvalSnapshot,
+          executionOnApprove: true,
+          identityContextId: signedPayload.identityContextId,
+          signingSecret: options.toolActionSigningSecret,
+        })
+      ) {
+        const error = new ToolGatewayHttpError(
+          409,
+          "Approved tool action arguments do not match reviewed hash",
+          "signed_arguments_mismatch",
+        );
+        throw error;
+      }
+      const managedArgumentsRemainCurrent =
         await approvedManagedArgumentsRemainCurrent(session, tool, parameters);
+      if (!managedArgumentsRemainCurrent) {
+        throw await expireApprovedActionForManagedArgumentDrift({
+          companyId: claimed.companyId,
+          actionRequestId: claimed.id,
+          invocationId: invocation.id,
+          toolName: invocation.toolName,
+          ownsExecutingClaim: true,
+        });
+      }
+
+      const argumentsSummary = (await validateToolContent({
+        value: parameters,
+        direction: "arguments",
+        sensitiveMode: "redact",
+        promptInjectionMode: "ignore",
+      })).summary;
+      // Final recheck at the last DB write before dispatch: tool and snapshot
+      // resolution above involve network calls, so re-verify the issue is still
+      // open now that only the provider call remains. A close that commits after
+      // this read has raced an execution that was approved, claimed, and verified
+      // while the issue was open; that instant is irreducible for an external
+      // side effect gated by DB state (holding a DB lock across a remote provider
+      // call is not an option), and the accepted linearization is that the
+      // execution wins — its result still lands on the expired card via
+      // reflectToolActionInteractionLifecycle.
+      await assertIssueOpenForApprovedAction({ claimed, invocation });
+      return { session, tool, parameters, argumentsSummary };
+    }
+    let prepared: Awaited<ReturnType<typeof prepareExecution>>;
+    try {
+      prepared = await prepareExecution();
     } catch (error) {
-      await markApprovedActionFailed({
-        actionRequestId: claimed.id,
-        invocationId: invocation.id,
-        claimUpdatedAt: claimed.updatedAt,
-        expectedInvocationStatus: "awaiting_approval",
-        error,
-      });
+      if (isApprovalPreparationRejection(error)) {
+        await markApprovedActionFailed({
+          actionRequestId: claimed.id,
+          invocationId: invocation.id,
+          claimUpdatedAt: claimed.updatedAt,
+          expectedInvocationStatus: "awaiting_approval",
+          error,
+        });
+      } else {
+        await releaseToolApproval(db, claim);
+      }
       throw error;
     }
-    if (!managedArgumentsRemainCurrent) {
-      throw await expireApprovedActionForManagedArgumentDrift({
-        companyId: claimed.companyId,
-        actionRequestId: claimed.id,
-        invocationId: invocation.id,
-        toolName: invocation.toolName,
-        ownsExecutingClaim: true,
-      });
-    }
-
-    const argumentsSummary = (await validateToolContent({
-      value: parameters,
-      direction: "arguments",
-      sensitiveMode: "redact",
-      promptInjectionMode: "ignore",
-    })).summary;
-    // Final recheck at the last DB write before dispatch: tool and snapshot
-    // resolution above involve network calls, so re-verify the issue is still
-    // open now that only the provider call remains. A close that commits after
-    // this read has raced an execution that was approved, claimed, and verified
-    // while the issue was open; that instant is irreducible for an external
-    // side effect gated by DB state (holding a DB lock across a remote provider
-    // call is not an option), and the accepted linearization is that the
-    // execution wins — its result still lands on the expired card via
-    // reflectToolActionInteractionLifecycle.
-    await assertIssueOpenForApprovedAction({ claimed, invocation });
+    const { session, tool, parameters, argumentsSummary } = prepared;
 
     const startedAt = Date.now();
-    await db
-      .update(toolInvocations)
-      .set({
-        status: "executing",
-        approvalState: "approved",
-        startedAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(eq(toolInvocations.id, invocation.id));
+    // Keep dispatch and outcome persistence outside the preparation retry
+    // boundary. Only the still-current claim may record the provider start.
+    if (!(await startToolInvocation(db, invocation.id, claim))) {
+      throw new ToolGatewayHttpError(409, "Tool action execution claim is no longer current", "action_already_consumed");
+    }
     await reflectToolActionInteractionLifecycle({
       actionRequestId: claimed.id,
       status: "executing",
