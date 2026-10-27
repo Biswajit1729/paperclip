@@ -1330,7 +1330,7 @@ describeEmbeddedPostgres("tool gateway service", () => {
       const debug = db.$client.options.debug;
       db.$client.options.debug = (_id, query, params) => {
         if (/^select/i.test(query) && query.includes('"tool_action_requests"') &&
-          (query.includes('min(') || query.includes('"expires_at" <='))) reads.push({ query, params: [...params] });
+          (query.includes('min(') || query.includes('"expires_at" <=') || query.includes('"expires_at" is not null'))) reads.push({ query, params: [...params] });
       };
       try {
         for (let index = 0; index < 3; index++) {
@@ -1348,6 +1348,60 @@ describeEmbeddedPostgres("tool gateway service", () => {
       }
       expect((await db.select().from(toolActionRequests).where(eq(toolActionRequests.id, foreign.id)))[0].status).toBe("pending");
       expect(coordinator!.nextWakeAt()).toBe(foreign.expiresAt!.getTime());
+    });
+
+    it("reads one indexed deadline from a large company backlog on repeated reloads", async () => {
+      const pending = await request();
+      const foreignContext = await createRunFixture(db);
+      await db.insert(toolPolicies).values(reviewNotePolicyRow(foreignContext.company));
+      const foreign = await requestWithExpiry(new Date(Date.now() + 1000), foreignContext);
+      await db.execute(sql`insert into tool_action_requests
+        (company_id, invocation_id, canonical_arguments_hash, canonical_arguments_summary, expires_at)
+        select ${fixture.company.id}, ${pending.invocationId}, 'backlog', '{}'::jsonb,
+          ${pending.expiresAt!.toISOString()}::timestamptz + n * interval '1 second'
+        from generate_series(1, 12000) n`);
+      await db.execute(sql`insert into tool_action_requests
+        (company_id, invocation_id, canonical_arguments_hash, canonical_arguments_summary, expires_at)
+        select ${foreignContext.company.id}, ${foreign.invocationId}, 'foreign backlog', '{}'::jsonb,
+          ${foreign.expiresAt!.toISOString()}::timestamptz - n * interval '1 second'
+        from generate_series(1, 12000) n`);
+      await db.insert(toolActionRequests).values([
+        { ...pending, id: randomUUID(), interactionId: null, expiresAt: null },
+        { ...pending, id: randomUUID(), interactionId: null, status: "rejected", expiresAt: new Date(0) },
+      ]);
+      await db.execute(sql`analyze tool_action_requests`);
+      const reads: Array<{ query: string; params: unknown[] }> = [];
+      const debug = db.$client.options.debug;
+      db.$client.options.debug = (_id, query, params) => {
+        if (/^select/i.test(query) && query.includes('"tool_action_requests"')) reads.push({ query, params: [...params] });
+      };
+      try {
+        for (let i = 0; i < 3; i++) {
+          expect(await gateway.actionReviewExpiryDeadlines(fixture.company.id)).toEqual([
+            { companyId: fixture.company.id, dueAt: pending.expiresAt!.getTime() },
+          ]);
+        }
+      } finally { db.$client.options.debug = debug; }
+      expect(reads).toHaveLength(3);
+      type Plan = { "Node Type": string; "Actual Rows": number; "Actual Loops": number;
+        "Rows Removed by Filter"?: number; "Rows Removed by Index Recheck"?: number; Plans?: Plan[] };
+      const scannedRows = (plan: Plan): number =>
+        (/Scan/.test(plan["Node Type"]) ? (plan["Actual Rows"] + (plan["Rows Removed by Filter"] ?? 0)
+          + (plan["Rows Removed by Index Recheck"] ?? 0)) * plan["Actual Loops"] : 0)
+        + (plan.Plans ?? []).reduce((count, child) => count + scannedRows(child), 0);
+      for (const read of reads) {
+        const [result] = await db.$client.unsafe(
+          `explain (analyze, buffers, format json) ${read.query}`,
+          read.params as Parameters<typeof db.$client.unsafe>[1],
+        );
+        const plan = result["QUERY PLAN"][0].Plan as Plan;
+        expect(scannedRows(plan), JSON.stringify(plan)).toBeLessThanOrEqual(1);
+      }
+      expect(await gateway.actionReviewExpiryDeadlines(randomUUID())).toEqual([]);
+      expect(await gateway.actionReviewExpiryDeadlines()).toEqual(expect.arrayContaining([
+        { companyId: fixture.company.id, dueAt: pending.expiresAt!.getTime() },
+        { companyId: foreignContext.company.id, dueAt: foreign.expiresAt!.getTime() - 12_000_000 },
+      ]));
     });
 
     it("preserves a five-second deadline and an earlier committed replacement", async () => {
@@ -1371,10 +1425,10 @@ describeEmbeddedPostgres("tool gateway service", () => {
       const debug = db.$client.options.debug;
       db.$client.options.debug = (_id, query, params) => {
         if (/^select/i.test(query) && query.includes('"tool_action_requests"') &&
-          (query.includes('min(') || query.includes('"expires_at" <='))) reads.push({ query, params: [...params] });
+          (query.includes('min(') || query.includes('"expires_at" <=') || query.includes('"expires_at" is not null'))) reads.push({ query, params: [...params] });
       };
       try { await settle(6000); } finally { db.$client.options.debug = debug; }
-      expect(reads.some(read => read.query.includes('"expires_at" <='))).toBe(true);
+      expect(reads.some(read => read.query.includes('"expires_at" <=') || query.includes('"expires_at" is not null'))).toBe(true);
       for (const read of reads) {
         expect(read.query).toContain('"tool_action_requests"."company_id" =');
         expect(read.params).toContain(fixture.company.id);
