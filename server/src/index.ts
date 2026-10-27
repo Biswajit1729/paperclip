@@ -1831,8 +1831,13 @@ async function startServerWithDatabaseTeardown(
       // drain/shutdown without making HTTP readiness wait for that callback.
       trackHeartbeatSchedulerWork(worker.ready);
     }
-    if (config.heartbeatSchedulerEnabled) await heartbeat.registerNativeRunProjectionWork(deliveryWork,
-      () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready;
+    if (config.heartbeatSchedulerEnabled) {
+      const worker = heartbeat.registerNativeRunProjectionWork(deliveryWork,
+        () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby());
+      // A repair can wait on a run lock; own it through shutdown without
+      // making HTTP readiness wait for that application transaction.
+      trackHeartbeatSchedulerWork(worker.ready);
+    }
     if (config.heartbeatSchedulerEnabled) await heartbeat.registerNativeResultCommitWork(deliveryWork,
       () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready;
     if (config.heartbeatSchedulerEnabled) await heartbeat.registerNativeStatusReassessmentWork(deliveryWork,
