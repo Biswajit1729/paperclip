@@ -8,8 +8,8 @@ Status: implemented; focused lifecycle acceptance passes. Full acceptance and re
 ## Obligation and existing boundary
 
 The owning implementation is
-`server/src/services/chat-channels/telegram/confirmation-actions.ts`.
-A Telegram confirmation callback accepts or rejects an interaction through
+`server/src/services/chat-channels/interactions/confirmation-actions.ts`.
+A supported Slack or Telegram confirmation callback accepts or rejects an interaction through
 `issueThreadInteractionService`. Its `afterResolveInTransaction` callback
 changes the exact `confirmation_response` action from `issued` to `processing`
 in the same transaction as the terminal interaction decision. That action is
@@ -215,3 +215,61 @@ The initial implementation received Greptile 5/5 with no inline findings. The
 corrected head still requires a fresh full chat/startup run, final typecheck,
 and new remote checks/review. No unchanged-job retry was used. The PR is
 [#17651](https://github.com/paperclipai/paperclip/pull/17651), still draft.
+
+
+## Parked confirmations: complete the interaction producer contract
+
+The worker intentionally removes a processing action from its deadline set while
+its interaction is pending. A board decision must therefore wake that action.
+Four real PostgreSQL regressions reproduced the missing wake for checkbox
+accept/reject, suggestion rejection, and connection decline: the decision
+committed but the action remained processing. Existing terminal publication
+staging only expires issued tokens and cannot substitute for this signal.
+
+`notifyChatConfirmationResolution` in the existing confirmation notification
+owner selects the four supported kinds: ordinary confirmations, checkbox
+confirmations, task suggestions, and connection intents. The interaction service
+registers this issue-scoped signal before writes in its existing transactions.
+It does not add a new queue, timer, table, transaction wrapper per producer, or
+broader milestone wake. Existing milestone signals remain intact and duplicate
+hints in the same transaction coalesce.
+
+Audited producers now include:
+
+- Board accept/reject, suggestion acceptance/rejection, and connection resolution.
+- Target revision expiry, superseded confirmation sweeps, opt-in human-comment
+  supersession (including historical comments), and explicit connection replacement.
+- Deleted addressee, terminal issue, withdrawal, skip, and connection ownership change.
+- Existing-access reconciliation in `satisfied-connection-intents.ts`, which
+  expires an obsolete request without inventing human consent.
+
+Ownership-change expiry now joins its row write and terminal chat staging in
+one service-owned transaction, so the notification cannot race ahead of the
+saved expiry. Pending payload changes and dismissing attention do not resolve
+an interaction. Ordinary sibling creation already signals milestones; checkbox
+creation does not automatically supersede an older checkbox and was not changed.
+
+Alternate-writer audit: tool action reviews, secret proposal reflection, tool
+outcome reflection, automatic/obsolete native reviews, and native status effect
+commits already publish their owning milestone signal. Native external-review
+retirement runs inside that signalled status transaction. Conversation session
+reset affects questions, not confirmation actions. OAuth's legacy confirmations
+carry `connectionAuthorization` and are excluded from native callback token
+creation; connection-intent retry phase changes remain pending. Result/summary
+updates do not release a pending confirmation.
+
+Verification uses real Slack setup, immutable publication, and saved callback
+rows. Eight board/admin cases park an action, prove quiet, resolve inside an
+outer transaction, prove rollback preserves pending work, then commit and require
+automatic processing/expiry and quiet again. Cases cover checkbox accept/reject,
+withdrawal and opt-in comment supersession, suggestion accept/reject, and
+connection decline/reassignment. The existing-access producer separately proves
+its notification waits for the outer commit. Existing Telegram recovery,
+restart/drain, malformed/pending history, and Slack publication regressions remain
+covered. A first supersession fixture wrongly assumed creating a second checkbox
+expired the first; it was corrected to the supported opt-in human-comment path
+without changing product behavior. The external test DB fixture also preserves
+the single-connection concurrency case; no OS semaphore cleanup is required.
+
+This establishes worker quiet and supported in-process reactivation. It does not
+prove deployed host/database sleep or cross-replica notification coverage.
