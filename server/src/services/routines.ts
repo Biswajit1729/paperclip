@@ -698,6 +698,22 @@ export function routineService(
     pluginWorkerManager: deps.pluginWorkerManager,
   });
 
+  // The deadline and dispatcher must agree on which saved schedules can run.
+  const scheduledTriggerEligibility = () => and(
+    eq(routineTriggers.kind, "schedule"),
+    eq(routineTriggers.enabled, true),
+    eq(routineTriggers.archived, false),
+    eq(routines.status, "active"),
+    eq(companies.status, "active"),
+    isNotNull(routineTriggers.nextRunAt),
+    isNotNull(routineTriggers.cronExpression),
+    isNotNull(routineTriggers.timezone),
+  );
+  const scheduledRoutineJoin = () => and(
+    eq(routineTriggers.routineId, routines.id),
+    eq(routineTriggers.companyId, routines.companyId),
+  );
+
   async function getRoutineById(id: string) {
     if (!isRoutineUuidInput(id)) return null;
     return db
@@ -1812,6 +1828,11 @@ export function routineService(
         }
       }
 
+      // The scheduler reloads its own claimed deadline after a pass. A manual
+      // invocation naming a schedule can also advance it and needs a commit hint.
+      if (input.trigger?.kind === "schedule" && input.nextRunAtOverride === undefined) {
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.routineSchedules);
+      }
       const triggeredAt = new Date();
       const manualRunnerUserId = input.source === "manual" ? input.actor?.userId ?? null : null;
       const latestRevisionResponsibleUserId = input.routine.latestRevisionId
@@ -3214,7 +3235,18 @@ export function routineService(
       }));
     },
 
-    tickScheduledTriggers: async (now: Date = new Date()) => {
+    nextScheduledTriggerAt: async (): Promise<number | null> => {
+      const [row] = await db.select({ at: routineTriggers.nextRunAt })
+        .from(routineTriggers)
+        .innerJoin(routines, scheduledRoutineJoin())
+        .innerJoin(companies, eq(routines.companyId, companies.id))
+        .where(scheduledTriggerEligibility())
+        .orderBy(asc(routineTriggers.nextRunAt)).limit(1);
+      // Include overdue rows: a capped catch-up pass can leave more work owing.
+      return row?.at?.getTime() ?? null;
+    },
+
+    tickScheduledTriggers: async (now: Date = new Date(), canContinue: () => boolean = () => true) => {
       const worktreeActivation = isTruthyRuntimeEnvValue(runtimeEnv.PAPERCLIP_IN_WORKTREE)
         ? await resolveWorktreeRunExecutionActivationState({
           getExperimental: instanceSettings.getExperimental,
@@ -3228,15 +3260,12 @@ export function routineService(
           projectPausedAt: projects.pausedAt,
         })
         .from(routineTriggers)
-        .innerJoin(routines, eq(routineTriggers.routineId, routines.id))
+        .innerJoin(routines, scheduledRoutineJoin())
+        .innerJoin(companies, eq(routines.companyId, companies.id))
         .leftJoin(projects, eq(routines.projectId, projects.id))
         .where(
           and(
-            eq(routineTriggers.kind, "schedule"),
-            eq(routineTriggers.enabled, true),
-            eq(routineTriggers.archived, false),
-            eq(routines.status, "active"),
-            isNotNull(routineTriggers.nextRunAt),
+            scheduledTriggerEligibility(),
             lte(routineTriggers.nextRunAt, now),
           ),
         )
@@ -3244,6 +3273,9 @@ export function routineService(
 
       let triggered = 0;
       for (const row of due) {
+        // Once claimed, finish this trigger's admitted batch. Unclaimed rows stay
+        // durable for resume/restart if drain or shutdown interrupts the pass.
+        if (!canContinue()) break;
         if (!row.trigger.nextRunAt || !row.trigger.cronExpression || !row.trigger.timezone) continue;
 
         // Suppress scheduled firings while the routine's project is paused. The tick is still

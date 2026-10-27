@@ -189,6 +189,7 @@ const {
   };
   const externalObjectsServiceFactoryMock = vi.fn(() => externalObjectsServiceMock);
   const routineServiceMock = {
+    nextScheduledTriggerAt: vi.fn(async () => null),
     tickScheduledTriggers: vi.fn(async () => ({ triggered: 0 })),
   };
   const routineServiceFactoryMock = vi.fn(() => routineServiceMock);
@@ -1146,6 +1147,9 @@ describe("startServer feedback export wiring", () => {
       expect(issueThreadInteractionServiceMock.sweepMergedPullRequestConfirmations).toHaveBeenCalledTimes(1);
       expect(executionWorkspaceServiceMock.sweepTerminalWorkspaces).toHaveBeenCalledTimes(1);
       expect(routineServiceMock.tickScheduledTriggers).toHaveBeenCalledTimes(1);
+      const routineWorkerIndex = deliveryWorkRegisterMock.mock.calls.findIndex(([queue]) => queue === DELIVERY_QUEUES.routineSchedules);
+      expect(routineWorkerIndex).toBeGreaterThanOrEqual(0);
+      expect(deliveryWorkRegisterMock.mock.results[routineWorkerIndex]!.value.wake).not.toHaveBeenCalled();
       expect(environmentCustomImagesServiceMock.cleanupExpiredSetupSessions).toHaveBeenCalledTimes(1);
       expect(deliveryWorkRegisterMock.mock.calls.some(([queue]) => queue === DELIVERY_QUEUES.customImageExpiry)).toBe(true);
       expect(deliveryWorkRegisterMock.mock.calls.some(([queue]) => queue === DELIVERY_QUEUES.decisionContinuation)).toBe(true);

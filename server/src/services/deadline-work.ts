@@ -2,7 +2,7 @@ import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.
 import type { DeliveryQueue } from "./delivery-work-notifications.js";
 
 export function registerDeadlineWork(
-  coordinator: ReturnType<typeof createDeliveryWorkCoordinator>,
+  coordinator: Pick<ReturnType<typeof createDeliveryWorkCoordinator>, "register">,
   queue: DeliveryQueue,
   task: {
     run: (signal: AbortSignal) => Promise<unknown>;

@@ -1956,9 +1956,6 @@ async function startServerWithDatabaseTeardown(
         scheduleGitHubConnectionContinuitySweep();
 
         if (isIdleTaskDrainActive() || heartbeatSchedulerStopped) return;
-        scheduled.routines.wake();
-
-        if (isIdleTaskDrainActive() || heartbeatSchedulerStopped) return;
         trackHeartbeatSchedulerWork((async () => {
           const experimental = await instanceSettingsService(db).getExperimental();
           if (experimental.enableStatusCards !== true) return;
@@ -2052,7 +2049,10 @@ async function startServerWithDatabaseTeardown(
           const result = await heartbeat.tickTimers(new Date());
           if (result.enqueued > 0) logger.info({ ...result }, "heartbeat timer tick enqueued runs");
         },
-        tickRoutines: () => routines.tickScheduledTriggers(new Date()).then(result => {
+        canRun: () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped,
+        nextRoutineRunAt: () => routines.nextScheduledTriggerAt(),
+        tickRoutines: signal => routines.tickScheduledTriggers(new Date(),
+          () => !signal.aborted && !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).then(result => {
           if (result.triggered > 0) logger.info({ ...result }, "routine scheduler tick enqueued runs");
         }),
       });

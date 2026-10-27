@@ -28,7 +28,7 @@ Do not mark an item done from a timer removal or a green check alone.
 | 10 | External-object refresh | Configuration changes, refresh deadlines, source events | Pending |
 | 11 | Status-card evaluation | Settings/card mutations and evaluation deadlines | Pending |
 | 12 | Plugin scheduled jobs | Registration/update/removal and actual job deadlines | #17518 published; see latest-head gate records below |
-| 13 | Routine, agent-timer and issue-monitor scheduling | Remove periodic wake backstops after complete producer coverage; routine execution-status reconciliation separately | Pending |
+| 13 | Routine, agent-timer and issue-monitor scheduling | Remove periodic wake backstops after complete producer coverage; routine execution-status reconciliation separately | Routine schedules implemented in slice 61; issue/agent timers still pending |
 | 14 | Skill-version retention and native-harness backup expiration | Separate retention owners and existing retention guarantees | Pending |
 | 15 | Automatic database backups | Shared scheduling, actual backup deadlines, existing checkpoint contract | Slice 60 implemented; remote acceptance pending; see `2026-10-26-database-backup-sleep-schedule.md` |
 | 16 | Aggregate maintenance tick | Retire enabled and disabled branches after all constituent owners migrate | Pending |
@@ -3070,3 +3070,23 @@ Full local test:run and remote acceptance remain outstanding. See the dedicated
 [backup scheduling audit](2026-10-26-database-backup-sleep-schedule.md) for limits.
 Skill retention, native harness expiration, and the other original inventory
 duties remain open; this is not completion of the full stack request.
+
+
+## Slice 61: routine schedules
+
+Routine schedules now use their actual saved next-run timestamp and committed
+producer changes without the periodic heartbeat wake. The owner includes overdue
+catch-up debt, shares eligibility between dispatch and deadline reads, and stops
+between claimed trigger batches on drain/shutdown. Added producer coverage includes
+manual invocation of a schedule, company lifecycle and deletion, and budget-driven
+company pause/resume. Existing cron behavior and Cloud sleep proofs stay with their
+owners. Issue-monitor and legacy-agent-timer polling remain separate pending duties.
+
+Two original regressions and two budget-producer regressions failed before their
+fixes. Final acceptance passed 224 tests in eight complete suites, workspace
+typechecking, and the full build. Embedded PostgreSQL setup timed out, and the old
+external disposable cluster later lost a catalog file; a fresh isolated PostgreSQL
+cluster ran the same acceptance suites. No further IPC cleanup was performed.
+Remote checks/review and full-stack acceptance remain pending. See the
+[routine scheduling audit](2026-10-27-routine-schedule-sleep.md) for producer coverage,
+lifecycle evidence, harness corrections and the supported single-process writer model.
