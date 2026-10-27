@@ -136,23 +136,56 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
 
   it("joins active foreground effects when their recovery deadline arrives", async () => {
     const row = await create(); await start();
+    const effectKey = `decision-effect:${row.id}:0`;
+    const previousDebug = db.$client.options.debug;
+    let effectLockAttempts = 0;
+    db.$client.options.debug = (_connection, query, parameters) => {
+      if (query.includes("pg_advisory_xact_lock") && parameters.includes(effectKey)) effectLockAttempts++;
+    };
     let release!: () => void, locked!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
     const acquired = new Promise<void>(resolve => { locked = resolve; });
     const lock = db.transaction(async tx => {
-      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`decision-effect:${row.id}:0`}, 0))`);
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${effectKey}, 0))`);
       locked(); await gate;
     });
-    await acquired;
-    const deciding = decide(row.id);
+    let deciding: ReturnType<typeof decide> | undefined;
+    let recovering: ReturnType<typeof recovery.recoverEffects> | undefined;
     try {
+      await acquired;
+      deciding = decide(row.id);
       await vi.waitFor(async () => expect((await service().get(row.id))?.executionStatus).toBe("running"));
+      const claimed = (await service().get(row.id))!;
+      const deadline = claimed.updatedAt.getTime() + 60_000;
+      // Let the committed-claim discovery finish before advancing to its deadline.
+      // Startup and notification scans are separate from the recovery we test.
+      await vi.waitFor(() => expect(coordinator!.nextWakeAt()).toBe(deadline));
+      await vi.waitFor(() => expect(effectLockAttempts).toBe(2)); // Test gate + foreground execution.
+      const sweeps = vi.mocked(recovery.recoverEffects);
+      const beforeDeadline = sweeps.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(Math.max(0, deadline - Date.now()));
+      await vi.waitFor(() => expect(sweeps).toHaveBeenCalledTimes(beforeDeadline + 1));
+      let recoverySettled = false;
+      recovering = Promise.resolve(sweeps.mock.results[beforeDeadline].value).then(result => {
+        recoverySettled = true;
+        return result;
+      });
       await vi.advanceTimersByTimeAsync(120_000);
       expect(await comments()).toHaveLength(0); expect(wake).not.toHaveBeenCalled();
-      await vi.waitFor(() => expect(recovery.recoverEffects).toHaveBeenCalledTimes(2));
-    } finally { release(); }
-    await lock; await deciding; await quiet();
-    expect(await comments()).toHaveLength(1); expect(wake).toHaveBeenCalledTimes(1);
+      expect(recoverySettled).toBe(false);
+      expect(sweeps).toHaveBeenCalledTimes(beforeDeadline + 1);
+      expect(effectLockAttempts).toBe(2);
+      release();
+      await lock; await deciding;
+      await expect(recovering).resolves.toEqual({ resumed: 1 });
+      await quiet();
+      expect(effectLockAttempts).toBe(2);
+      expect(await comments()).toHaveLength(1); expect(wake).toHaveBeenCalledTimes(1);
+    } finally {
+      release();
+      await Promise.allSettled([lock, deciding, recovering]);
+      db.$client.options.debug = previousDebug;
+    }
   });
 
   it("defers an outer transaction until commit and ignores rollback", async () => {
