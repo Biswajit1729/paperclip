@@ -2635,28 +2635,6 @@
         }
       },
       "indexes": {
-        "agent_instruction_copies_collection_idx": {
-          "name": "agent_instruction_copies_collection_idx",
-          "columns": [
-            {
-              "expression": "run_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "NOT (coalesce(\"agent_instruction_working_copies\".\"receipt\", '{}'::jsonb) ? 'retainedByRunId') AND (\n      (\"agent_instruction_working_copies\".\"attempts\" < 3 AND (\"agent_instruction_working_copies\".\"state\" IN ('prepared', 'pending_collection', 'unchanged_turn', 'warm_saved')\n        OR (\"agent_instruction_working_copies\".\"state\" = 'preparing' AND \"agent_instruction_working_copies\".\"receipt\"->>'schema' = 'paperclip.agent-files.v1')))\n      OR (\"agent_instruction_working_copies\".\"state\" = 'unavailable' AND \"agent_instruction_working_copies\".\"process_stopped_at\" IS NULL\n        AND \"agent_instruction_working_copies\".\"location\" LIKE 'remote:%' AND \"agent_instruction_working_copies\".\"receipt\"->>'schema' = 'paperclip.agent-files.v1'))",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "agent_instruction_copies_cleanup_idx": {
           "name": "agent_instruction_copies_cleanup_idx",
           "columns": [
@@ -33669,28 +33647,6 @@
         }
       },
       "indexes": {
-        "heartbeat_runs_cancelled_workspace_preservation_idx": {
-          "name": "heartbeat_runs_cancelled_workspace_preservation_idx",
-          "columns": [
-            {
-              "expression": "id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"heartbeat_runs\".\"runtime_mode\" = 'native' AND \"heartbeat_runs\".\"status\" = 'cancelled'\n        AND \"heartbeat_runs\".\"runner_profile_json\"->'nativeWorkspaceSync'->>'state' = 'prepared'\n        AND \"heartbeat_runs\".\"result_json\"->'nativeCancellation'->>'dispatchState' = 'acknowledged'\n        AND (\"heartbeat_runs\".\"result_json\"->'workspaceRestoreRecovery'->>'schema' = 'paperclip.workspace-restore-recovery.v1'\n          AND \"heartbeat_runs\".\"result_json\"->>'workspaceRestoreFailure' IN ('restore_permission_denied', 'restore_lock_timeout', 'restore_unsafe_archive', 'restore_failed')) IS NOT TRUE",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "heartbeat_runs_retained_recovery_adoption_idx": {
           "name": "heartbeat_runs_retained_recovery_adoption_idx",
           "columns": [
@@ -51528,6 +51484,18 @@
           "primaryKey": false,
           "notNull": false
         },
+        "git_authorization_grant_id": {
+          "name": "git_authorization_grant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "git_authorized_by_user_id": {
+          "name": "git_authorized_by_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "pause_reason": {
           "name": "pause_reason",
           "type": "text",
@@ -51665,6 +51633,19 @@
             "id"
           ],
           "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "projects_git_authorization_grant_id_connection_grants_id_fk": {
+          "name": "projects_git_authorization_grant_id_connection_grants_id_fk",
+          "tableFrom": "projects",
+          "tableTo": "connection_grants",
+          "columnsFrom": [
+            "git_authorization_grant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
           "onUpdate": "no action"
         }
       },
@@ -64524,6 +64505,6 @@
     "tables": {},
     "columns": {}
   },
-  "id": "cdbdda56-b2cd-4079-a2d0-e1a5da5ba967",
-  "prevId": "ea82a255-bd66-468f-80a5-517f094202aa"
+  "id": "e2f67eec-2bae-44a5-9734-29d2cb250699",
+  "prevId": "d92b44b5-5a66-445f-a426-9db239d78247"
 }

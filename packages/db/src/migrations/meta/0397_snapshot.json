@@ -2635,50 +2635,6 @@
         }
       },
       "indexes": {
-        "agent_instruction_copies_collection_idx": {
-          "name": "agent_instruction_copies_collection_idx",
-          "columns": [
-            {
-              "expression": "run_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "NOT (coalesce(\"agent_instruction_working_copies\".\"receipt\", '{}'::jsonb) ? 'retainedByRunId') AND (\n      (\"agent_instruction_working_copies\".\"attempts\" < 3 AND (\"agent_instruction_working_copies\".\"state\" IN ('prepared', 'pending_collection', 'unchanged_turn', 'warm_saved')\n        OR (\"agent_instruction_working_copies\".\"state\" = 'preparing' AND \"agent_instruction_working_copies\".\"receipt\"->>'schema' = 'paperclip.agent-files.v1')))\n      OR (\"agent_instruction_working_copies\".\"state\" = 'unavailable' AND \"agent_instruction_working_copies\".\"process_stopped_at\" IS NULL\n        AND \"agent_instruction_working_copies\".\"location\" LIKE 'remote:%' AND \"agent_instruction_working_copies\".\"receipt\"->>'schema' = 'paperclip.agent-files.v1'))",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "agent_instruction_copies_cleanup_idx": {
-          "name": "agent_instruction_copies_cleanup_idx",
-          "columns": [
-            {
-              "expression": "run_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"agent_instruction_working_copies\".\"state\" IN ('saved', 'unchanged', 'resolved', 'unavailable')\n      AND \"agent_instruction_working_copies\".\"process_stopped_at\" IS NOT NULL\n      AND \"agent_instruction_working_copies\".\"receipt\"->>'schema' = 'paperclip.agent-files.v1'\n      AND coalesce(\"agent_instruction_working_copies\".\"receipt\"->>'retainedByRunId', '') = ''\n      AND \"agent_instruction_working_copies\".\"receipt\"->>'cleanupPending' IS DISTINCT FROM 'false'\n      AND (\"agent_instruction_working_copies\".\"receipt\" ? 'baseline' OR \"agent_instruction_working_copies\".\"receipt\"->>'cleanupPending' = 'true')",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "agent_instruction_copies_pending_idx": {
           "name": "agent_instruction_copies_pending_idx",
           "columns": [
@@ -51506,6 +51462,18 @@
           "primaryKey": false,
           "notNull": false
         },
+        "git_authorization_grant_id": {
+          "name": "git_authorization_grant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "git_authorized_by_user_id": {
+          "name": "git_authorized_by_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "pause_reason": {
           "name": "pause_reason",
           "type": "text",
@@ -51643,6 +51611,19 @@
             "id"
           ],
           "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "projects_git_authorization_grant_id_connection_grants_id_fk": {
+          "name": "projects_git_authorization_grant_id_connection_grants_id_fk",
+          "tableFrom": "projects",
+          "tableTo": "connection_grants",
+          "columnsFrom": [
+            "git_authorization_grant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
           "onUpdate": "no action"
         }
       },
@@ -64502,6 +64483,6 @@
     "tables": {},
     "columns": {}
   },
-  "id": "ea82a255-bd66-468f-80a5-517f094202aa",
-  "prevId": "96dd1bdb-58a6-4051-bd30-b0a773916371"
+  "id": "d92b44b5-5a66-445f-a426-9db239d78247",
+  "prevId": "fe7e7da1-a10d-4567-94fd-766fa2d82463"
 }
