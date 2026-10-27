@@ -532,3 +532,17 @@ Tests verify their checksums and exact changed source fields, historical decodin
 and refusal to launch any historical identity through current installation
 admission. TypeScript and Rust declarations are generated together. This is source
 identity validation, not a claim of live provider qualification.
+
+### Master integration follow-up (2026-10-27)
+
+Pinned master `8548173fc9efdc0fa07644fb92dcc0b6851a95e5` advances Copilot to v65.
+The combined transport retains its exhausted-reconnect cancellation behavior and
+this duty's per-root maintenance-idle completion notifications. The generated
+combined identity is v66; only the version, compatibility source, and runtime
+request bridge differ from master's v65 declaration. Master's v64/v65 fixtures
+remain unchanged. The stack's different former v64 is preserved as
+`copilot-profile-v64-sleep-maintenance-historical-identity.json` alongside its
+former v62 evidence. Installation tests retain both histories and prove historical
+profiles remain decodable but cannot launch as the current pinned profile.
+The profile generator's check, TypeScript/Rust agreement, and runner typecheck
+pass. This remains source identity verification, not live provider qualification.
