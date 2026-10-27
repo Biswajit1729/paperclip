@@ -50,7 +50,7 @@ function fixture(input: { routine?: number | null; monitor?: number | null; tick
     return deadlines.routine;
   });
   const workers = registerScheduledWork(coordinator,
-    { retryMs: 60_000, tickAgentTimers, tickIssueMonitors, nextIssueMonitorAt, tickRoutines, nextRoutineRunAt, canRun: () => canRun });
+    { retryMs: 60_000, nextAgentTimerAt: async () => null, tickAgentTimers, tickIssueMonitors, nextIssueMonitorAt, tickRoutines, nextRoutineRunAt, canRun: () => canRun });
   return { coordinator, workers, owner, deadlines, execute, nextRoutineRunAt, nextIssueMonitorAt, tickAgentTimers, tickIssueMonitors, tickRoutines, errors,
     ready: () => Promise.all([workers.routines.ready, workers.monitors.ready, workers.timers.ready]),
     canRun: (value: boolean) => { canRun = value; }, canReconcile: (value: boolean) => { canReconcile = value; }, failRead: (value: boolean) => { failRead = value; } };

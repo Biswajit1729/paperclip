@@ -61,7 +61,7 @@ describe.skipIf(!support.supported)("scheduled deadline database queries", () =>
     registerScheduledWork({ register: (queue, task) => {
       tasks.set(queue, task);
       return { ready: Promise.resolve(), wake: () => {} };
-    } }, { retryMs: 60_000, tickAgentTimers: async () => {}, tickIssueMonitors: async () => {},
+    } }, { retryMs: 60_000, tickAgentTimers: async () => {}, nextAgentTimerAt: async () => null, tickIssueMonitors: async () => {},
       nextIssueMonitorAt: () => heartbeatService(db).nextIssueMonitorAt(), tickRoutines: async () => {}, canRun: () => true,
       nextRoutineRunAt: () => routineService(db).nextScheduledTriggerAt() });
     for (const task of tasks.values()) await task.run(new AbortController().signal);

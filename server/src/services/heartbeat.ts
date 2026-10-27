@@ -1312,6 +1312,7 @@ export function heartbeatService(
     trackWakeup,
     resumeQueuedRuns,
     parseHeartbeatPolicy,
+    nextTimerHeartbeatAt,
     claimDueTimerHeartbeat,
   } = heartbeatQueue;
 
@@ -1550,6 +1551,7 @@ export function heartbeatService(
     triggerIssueMonitor,
     tickTimers,
     tickAgentTimers,
+    nextAgentTimerAt,
     tickIssueMonitors,
     nextIssueMonitorAt,
     recoverActiveSessionGoals,
@@ -1565,6 +1567,7 @@ export function heartbeatService(
     toAgentOrgRow,
     groupAgentOrgRowsByCompany,
     parseHeartbeatPolicy,
+    nextTimerHeartbeatAt,
     claimDueTimerHeartbeat,
   });
 
@@ -4254,6 +4257,7 @@ export function heartbeatService(
 
     tickTimers,
     tickAgentTimers,
+    nextAgentTimerAt,
     tickIssueMonitors,
     nextIssueMonitorAt,
 

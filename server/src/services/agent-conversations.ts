@@ -263,6 +263,7 @@ export async function prepareConversationTurn(
       }
     }
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
+    await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
     await tx
       .update(issues)
       .set({
@@ -382,6 +383,7 @@ export async function settleConversationTurn(
     )
       return true;
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
+    await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
     if (status === "in_review") await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: issue.companyId, issueId: issue.id });
     await tx
       .update(issues)

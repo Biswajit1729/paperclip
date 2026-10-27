@@ -53,6 +53,7 @@ function callbacks(db: Db) {
     getSchedulingSuppression: vi.fn(async () => ({ suppressed: false })),
     getWorktreeExecutionCutoff: vi.fn<HeartbeatSchedulingDependencies["getWorktreeExecutionCutoff"]>(async () => null),
     parseHeartbeatPolicy: vi.fn<HeartbeatSchedulingDependencies["parseHeartbeatPolicy"]>(() => timerPolicy),
+    nextTimerHeartbeatAt: vi.fn<HeartbeatSchedulingDependencies["nextTimerHeartbeatAt"]>(async agent => new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime() + 60_000),
     claimDueTimerHeartbeat: vi.fn<HeartbeatSchedulingDependencies["claimDueTimerHeartbeat"]>(async () => ({ wasFirstHeartbeat: true })),
   } satisfies HeartbeatSchedulingDependencies;
 }
@@ -363,7 +364,7 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
       if (dispatch === "worker") {
         monitorWorker = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
         const workers = registerScheduledWork(monitorWorker, { retryMs: 1000, canRun: () => true,
-          tickAgentTimers: async () => {}, tickRoutines: async () => {}, nextRoutineRunAt: async () => null,
+          tickAgentTimers: async () => {}, nextAgentTimerAt: async () => null, tickRoutines: async () => {}, nextRoutineRunAt: async () => null,
           tickIssueMonitors: signal => f.scheduler.tickIssueMonitors(new Date(), () => !signal.aborted),
           nextIssueMonitorAt: () => f.scheduler.nextIssueMonitorAt(),
         });
@@ -507,7 +508,7 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
       coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => !draining,
         canReconcile: () => true, onError: error => errors.push(error) });
       const workers = registerScheduledWork(coordinator, { retryMs: 30_000, canRun: () => !draining,
-        tickAgentTimers: async () => {}, tickRoutines: async () => {}, nextRoutineRunAt: async () => null,
+        tickAgentTimers: async () => {}, nextAgentTimerAt: async () => null, tickRoutines: async () => {}, nextRoutineRunAt: async () => null,
         tickIssueMonitors: signal => f.scheduler.tickIssueMonitors(new Date(), () => !draining && !signal.aborted),
         nextIssueMonitorAt: () => f.scheduler.nextIssueMonitorAt(),
       });

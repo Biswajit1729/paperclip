@@ -7,7 +7,8 @@ export function registerScheduledWork(
   coordinator: Pick<ReturnType<typeof createDeliveryWorkCoordinator>, "register">,
   options: {
     retryMs: number;
-    tickAgentTimers: () => Promise<unknown>;
+    tickAgentTimers: (signal: AbortSignal) => Promise<unknown>;
+    nextAgentTimerAt: () => Promise<number | null>;
     tickIssueMonitors: (signal: AbortSignal) => Promise<unknown>;
     nextIssueMonitorAt: () => Promise<number | null>;
     tickRoutines: (signal: AbortSignal) => Promise<unknown>;
@@ -28,13 +29,12 @@ export function registerScheduledWork(
     retryMs: options.retryMs,
     notificationCoalesceMs: options.retryMs,
   });
-  // Legacy agent interval policies retain their existing external tick until
-  // that separate duty is migrated. They do not scan issue monitors.
-  const timers = coordinator.register(DELIVERY_QUEUES.agentTimers, {
-    retryMs: options.retryMs,
+  const timers = registerDeadlineWork(coordinator, DELIVERY_QUEUES.agentTimers, {
     run: options.tickAgentTimers,
-    hasPending: async () => false,
-    nextRunAt: () => null,
+    next: options.nextAgentTimerAt,
+    canRun: () => options.canRun() && readTaskDrain(new Date()) === null,
+    retryMs: options.retryMs,
+    notificationCoalesceMs: options.retryMs,
   });
   return { routines, monitors, timers };
 }

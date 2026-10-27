@@ -301,6 +301,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
     const scope = await resolveScopeRecord(db, "company", policy.scopeId);
     if (scope.paused) return;
     await notifyCompanyRetentionWork(db, policy.companyId);
+    await notifyDeliveryWork(db, DELIVERY_QUEUES.agentTimers);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.routineSchedules);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.issueMonitors);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.agentLifecycle, policy.companyId);
@@ -360,6 +361,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
     const scope = await resolveScopeRecord(db, "company", policy.scopeId);
     if (scope.pauseReason !== "budget") return;
     await notifyCompanyRetentionWork(db, policy.companyId);
+    await notifyDeliveryWork(db, DELIVERY_QUEUES.agentTimers);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.routineSchedules);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.issueMonitors);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.agentLifecycle, policy.companyId);

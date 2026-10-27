@@ -37,6 +37,7 @@ export async function deleteAgentDependencies(tx: Db, companyId: string, id: str
   await notifyExternalConversationSettlement(tx, { companyId });
   await issueThreadInteractionService(tx).cancelPendingForDeletedAddressee(companyId, id);
   await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
+  await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
   await tx.update(agents).set({ reportsTo: null }).where(eq(agents.reportsTo, id));
   await tx
     .update(issues)

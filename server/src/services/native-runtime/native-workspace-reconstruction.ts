@@ -186,6 +186,7 @@ export async function reconstructNativeWorkspace(input: {
       wakePolicy: null, monitorPolicy: null,
     }).where(eq(issueRecoveryActions.id, source.action.id));
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
+    await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
     await tx.update(issues).set({ status: "todo", unblockDescriptor: null, blockedTransitionAt: null,
       blockedOwnerNotifiedAt: null, updatedAt: now }).where(eq(issues.id, issue.id));
     const publication = await persistActivity(db, { companyId: input.companyId, actorType: "user", actorId: input.actorId,

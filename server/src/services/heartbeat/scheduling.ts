@@ -69,11 +69,11 @@ type RunPreparation = ReturnType<typeof createHeartbeatRunPreparation>;
 
 export interface HeartbeatSchedulingDependencies
   extends Pick<HeartbeatRetryDependencies, "getRun" | "getAgent" | "getWorktreeExecutionCutoff">,
-    Pick<HeartbeatQueue, "enqueueWakeup" | "parseHeartbeatPolicy" | "claimDueTimerHeartbeat">,
+    Pick<HeartbeatQueue, "enqueueWakeup" | "parseHeartbeatPolicy" | "nextTimerHeartbeatAt" | "claimDueTimerHeartbeat">,
     Pick<RunPreparation, "toAgentOrgRow" | "groupAgentOrgRowsByCompany"> {
   issuesSvc: Pick<ReturnType<typeof issueService>, "listReviewAttention" | "create">;
   scheduleBoundedRetryForRun: ReturnType<typeof createHeartbeatRetries>["scheduleBoundedRetryForRun"];
-  getSchedulingSuppression: () => Promise<{ suppressed: boolean }>;
+  getSchedulingSuppression: (fresh?: boolean) => Promise<{ suppressed: boolean }>;
 }
 
 function readNonEmptyString(value: unknown): string | null {
@@ -138,6 +138,7 @@ export function createHeartbeatScheduling(
     toAgentOrgRow,
     groupAgentOrgRowsByCompany,
     parseHeartbeatPolicy,
+    nextTimerHeartbeatAt,
     claimDueTimerHeartbeat,
   } = dependencies;
 
@@ -1274,89 +1275,84 @@ export function createHeartbeatScheduling(
     return { scanned: pending.length, enqueued, alreadyQueued, invalid };
   }
 
-  async function tickAgentTimers(now = new Date()) {
-      if ((await getSchedulingSuppression()).suppressed) {
-        return {
-          checked: 0,
-          enqueued: 0,
-          skipped: 0,
-        };
-      }
-      const cutoff = await getWorktreeExecutionCutoff();
+  async function eligibleTimerAgents() {
+    const cutoff = await getWorktreeExecutionCutoff();
 
-      const allAgents = await db
-        .select({ ...getTableColumns(agents) })
-        .from(agents)
-        .innerJoin(companies, eq(companies.id, agents.companyId))
-        .where(eq(companies.status, "active"));
-      const agentsByCompany = groupAgentOrgRowsByCompany(
-        allAgents.map(toAgentOrgRow),
+    const allAgents = await db
+      .select({ ...getTableColumns(agents) })
+      .from(agents)
+      .innerJoin(companies, eq(companies.id, agents.companyId))
+      .where(eq(companies.status, "active"));
+    const agentsByCompany = groupAgentOrgRowsByCompany(
+      allAgents.map(toAgentOrgRow),
+    );
+    const eligible: Array<{ agent: typeof agents.$inferSelect; intervalSec: number }> = [];
+
+    for (const agent of allAgents) {
+      const invokability = evaluateAgentInvokability(
+        toAgentOrgRow(agent),
+        agentsByCompany.get(agent.companyId) ?? [],
       );
-      let checked = 0;
-      let enqueued = 0;
-      let skipped = 0;
+      if (!invokability.invokable) continue;
+      const policy = parseHeartbeatPolicy(agent);
+      if (!policy.enabled || policy.intervalSec <= 0) continue;
 
-      for (const agent of allAgents) {
-        const invokability = evaluateAgentInvokability(
-          toAgentOrgRow(agent),
-          agentsByCompany.get(agent.companyId) ?? [],
-        );
-        if (!invokability.invokable) continue;
-        const policy = parseHeartbeatPolicy(agent);
-        if (!policy.enabled || policy.intervalSec <= 0) continue;
-
-        if (cutoff) {
-          const eligibleIssue = await db
-            .select({ id: issues.id })
-            .from(issues)
-            .where(
-              and(
-                eq(issues.companyId, agent.companyId),
-                eq(issues.assigneeAgentId, agent.id),
-                inArray(issues.status, ["todo", "in_progress"]),
-                gte(issues.createdAt, cutoff),
-              ),
-            )
-            .limit(1)
-            .then((rows) => rows[0] ?? null);
-          if (!eligibleIssue) continue;
-        }
-
-        checked += 1;
-        const baseline = new Date(
-          agent.lastHeartbeatAt ?? agent.createdAt,
-        ).getTime();
-        const elapsedMs = now.getTime() - baseline;
-        if (elapsedMs < policy.intervalSec * 1000) continue;
-        const timerClaim = await claimDueTimerHeartbeat(
-          agent,
-          now,
-          policy.intervalSec,
-        );
-        if (!timerClaim) continue;
-
-        const run = await enqueueWakeup(agent.id, {
-          source: "timer",
-          triggerDetail: "system",
-          reason: "heartbeat_timer",
-          requestedByActorType: "system",
-          requestedByActorId: "heartbeat_scheduler",
-          contextSnapshot: {
-            source: "scheduler",
-            reason: "interval_elapsed",
-            now: now.toISOString(),
-            timerClaimWasFirstHeartbeat: timerClaim.wasFirstHeartbeat,
-          },
-        });
-        if (run) enqueued += 1;
-        else skipped += 1;
+      if (cutoff) {
+        const eligibleIssue = await db
+          .select({ id: issues.id })
+          .from(issues)
+          .where(
+            and(
+              eq(issues.companyId, agent.companyId),
+              eq(issues.assigneeAgentId, agent.id),
+              inArray(issues.status, ["todo", "in_progress"]),
+              gte(issues.createdAt, cutoff),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        if (!eligibleIssue) continue;
       }
 
-      return { checked, enqueued, skipped };
+      eligible.push({ agent, intervalSec: policy.intervalSec });
     }
+    return eligible;
+  }
+
+  async function nextAgentTimerAt(now = new Date()): Promise<number | null> {
+    if ((await getSchedulingSuppression(true)).suppressed) return null;
+    let next: number | null = null;
+    for (const { agent } of await eligibleTimerAgents()) {
+      const deadline = await nextTimerHeartbeatAt(agent, now);
+      if (deadline !== null) next = next === null ? deadline : Math.min(next, deadline);
+    }
+    return next;
+  }
+
+  async function tickAgentTimers(now = new Date(), canContinue: () => boolean = () => true) {
+    if (!canContinue() || (await getSchedulingSuppression(true)).suppressed) return { checked: 0, enqueued: 0, skipped: 0 };
+    let checked = 0, enqueued = 0, skipped = 0;
+    for (const { agent, intervalSec } of await eligibleTimerAgents()) {
+      if (!canContinue()) break;
+      checked++;
+      const deadline = await nextTimerHeartbeatAt(agent, now);
+      if (deadline === null || deadline > now.getTime()) continue;
+      if (!canContinue()) break;
+      const timerClaim = await claimDueTimerHeartbeat(agent, now, intervalSec);
+      if (!timerClaim) continue;
+      const run = await enqueueWakeup(agent.id, {
+        source: "timer", triggerDetail: "system", reason: "heartbeat_timer",
+        requestedByActorType: "system", requestedByActorId: "heartbeat_scheduler",
+        contextSnapshot: { source: "scheduler", reason: "interval_elapsed", now: now.toISOString(),
+          timerClaimWasFirstHeartbeat: timerClaim.wasFirstHeartbeat },
+      });
+      if (run) enqueued++; else skipped++;
+    }
+    return { checked, enqueued, skipped };
+  }
 
   // Keep the existing manual combined entry point. Scheduled workers invoke
-  // the distinct owners so legacy agent cadence cannot poll issue monitors.
+  // the distinct owners so one duty never scans another duty's backlog.
   async function tickTimers(now = new Date()) {
     const timers = await tickAgentTimers(now);
     const monitors = await tickIssueMonitors(now);
@@ -1368,6 +1364,7 @@ export function createHeartbeatScheduling(
     triggerIssueMonitor,
     tickTimers,
     tickAgentTimers,
+    nextAgentTimerAt,
     tickIssueMonitors,
     nextIssueMonitorAt,
     recoverActiveSessionGoals,

@@ -492,6 +492,7 @@ export function createPostgresWatchdogAdapter(db: Db): WatchdogRunReader & Watch
         ));
       const runningCount = Number(runningCountRow?.count ?? 0);
       const nextAgentStatus = runningCount > 0 ? "running" : "idle";
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
       await tx
         .update(agents)
         .set({ status: nextAgentStatus, lastHeartbeatAt: new Date(), updatedAt: new Date() })

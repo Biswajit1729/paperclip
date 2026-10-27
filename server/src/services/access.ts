@@ -744,6 +744,7 @@ export function accessService(db: Db) {
       );
       await notifyNativeStatusReassessment(tx, { companyId });
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
       const resetInProgress = await tx
         .update(issues)
         .set({
