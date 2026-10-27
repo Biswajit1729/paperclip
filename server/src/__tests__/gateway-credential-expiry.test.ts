@@ -190,6 +190,25 @@ describe.skipIf(!supported)("gateway credential expiry", () => {
     await quiet();
   });
 
+  it.each(["sessions", "tokens", "both"] as const)("drains the full %s backlog without a registered scheduler", async kind => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"], shouldAdvanceTime: false });
+    const now = new Date();
+    const futureSession = await session();
+    const futureToken = await token(new Date(now.getTime() + 60_000));
+    const nonexpiringToken = await token();
+    if (kind !== "tokens") await db.insert(toolGatewaySessions).values(Array.from({ length: 1001 }, () => ({
+      companyId, agentId, runId, tokenHash: randomUUID(), expiresAt: new Date(now.getTime() - 1),
+    })));
+    if (kind !== "sessions") await db.insert(toolMcpGatewayTokens).values(Array.from({ length: 1001 }, () => ({
+      companyId, gatewayId: namedId, name: "Expired", tokenHash: randomUUID(), expiresAt: new Date(now.getTime() - 1),
+    })));
+    await expect(gateway.cleanupExpiredSessions({ now })).resolves.toEqual({ deletedCount: kind === "tokens" ? 0 : 1001 });
+    expect((await db.select().from(toolGatewaySessions)).map(row => row.id)).toEqual([futureSession.id]);
+    expect((await db.select().from(toolMcpGatewayTokens)).map(row => row.id).sort()).toEqual([futureToken.id, nonexpiringToken.id].sort());
+    expect(coordinator).toBeUndefined();
+    expect(idleWorkSnapshot().active).toBe(0);
+  });
+
   it("bounds session cleanup and schedules the remaining overdue batch", async () => {
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"], shouldAdvanceTime: false });
     await db.insert(toolGatewaySessions).values(Array.from({ length: 501 }, () => ({
