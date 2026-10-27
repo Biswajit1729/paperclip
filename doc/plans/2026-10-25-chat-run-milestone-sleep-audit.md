@@ -1577,3 +1577,25 @@ Evidence:
 Latest-head CI/review and stack reconciliation remain required. These local
 passes do not discharge previous cancellation/deadlock evidence or parent review
 findings. No merge or host-sleep qualification is claimed.
+
+
+## Master integration: extracted GitHub credential fixture
+
+Master extracted the credential fixture into a helper shared with project Git
+authorization. Its direct `acceptSteeredIdentity(db, ...)` call bypassed the
+existing transaction owner. Combined verification reproduced four credential
+failures and one project-authorization failure when activation registered work.
+The helper now calls `reconcileSteeredIdentity`, which already owns the task/run
+locks and transaction. No production transaction contract changed.
+
+The project suite initially skipped all 30 cases because embedded PostgreSQL was
+unavailable. It now supports the existing validated external-test-database option
+through `PAPERCLIP_PROJECT_GIT_TEST_DATABASE_URL` and closes that pool. Use a fresh
+disposable database per run: the suite seeds fixed A/B user IDs. Reusing the red
+run's database caused a duplicate-user setup failure; a new database resolved
+that fixture setup issue without changing product behavior. All 25 credential
+cases and all 30 project-authorization cases then passed on the owning branch.
+The original failures remain in `/tmp/sleep-master-credentials-tests.log` and
+`/tmp/sleep-master-project-git-external-before.log`; corrected results are in
+`/tmp/sleep-master-identity-fixture-tests.log` (credentials) and
+`/tmp/sleep-master-project-git-fixed.log` (project authorization).
