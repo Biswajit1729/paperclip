@@ -183,7 +183,7 @@ publication and stale-head review repair remain separate duties in maintenance.
 
 ## Candidate lookup and final acceptance
 
-Generated migration `0392_jittery_norrin_radd.sql` adds a partial index for
+Generated migration `0394_jittery_norrin_radd.sql` adds a partial index for
 processed, nonfinal response actions. It runs concurrently through the existing
 top-level migration registry and is idempotent on replay. Snapshot pruning retains
 0387 through 0391, exactly five. Application, replay, numbering/safety checks and
@@ -251,3 +251,26 @@ this is not a complete chat-file result. Logs:
 `/tmp/sleep-chat-quiet-contamination-red.log`,
 `/tmp/sleep-chat-quiet-contamination-contained.log`, and
 `/tmp/sleep-chat-quiet-owner-tests.log`.
+
+
+## Master integration: native presentation and passive review waits
+
+Master added two durable presentation guards after this worker was extracted.
+The integrated provider resolver retains both through the same bounded run
+projection used by direct response authorization. A terminal native status with
+an unsettled presentation decision creates no fallback-send obligation yet.
+The worker becomes quiet and the existing native finalizer milestone signal
+reactivates it after a committed presentation update. A confirmed publication
+still takes precedence over an absent fallback.
+
+For a main PR response whose exact owned run deliberately yielded without a
+publication, acknowledgement retires its own action under the publication lease
+and keeps the shared assessment untouched. Issue-thread and review-thread
+fallbacks retain their existing behavior. The cancellation signals response
+availability inside the committing transaction. No provider call is replayed.
+
+Acceptance includes master's passive-assessment and malformed/pending-decision
+cases plus two worker cases: quiet pending presentation, rolled-back settlement,
+committed passive or missing-response settlement, and final drain. The fixture
+uses real PostgreSQL with controlled GitHub responses. The new cases must pass
+before this integration is published; source merging alone is not acceptance.
