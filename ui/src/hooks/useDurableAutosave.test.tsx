@@ -132,6 +132,50 @@ describe("useDurableAutosave", () => {
     expect(current.status).toBe("saved");
   });
 
+  it("saves a queued draft with the save function it was queued with", async () => {
+    // The editor stays mounted while the user opens another record; the
+    // waiting edit still belongs to the first one.
+    const saveFirst = vi.fn().mockResolvedValue(undefined);
+    const saveSecond = vi.fn().mockResolvedValue(undefined);
+    render({ save: saveFirst });
+    store.reportError(outage());
+    await advance(0);
+    await act(async () => {
+      await current.run("Title for the first task");
+    });
+    expect(current.status).toBe("waiting");
+
+    render({ save: saveSecond });
+    probe.mockResolvedValue({ reachable: true });
+    await act(async () => {
+      store.probeNow();
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    await advance(0);
+    expect(saveFirst).toHaveBeenCalledTimes(1);
+    expect(saveFirst).toHaveBeenCalledWith("Title for the first task");
+    expect(saveSecond).not.toHaveBeenCalled();
+  });
+
+  it("hands a definitive failure of a background retry to the job's caller", async () => {
+    const save = vi.fn()
+      .mockRejectedValueOnce(outage())
+      .mockRejectedValueOnce(conflict());
+    const onRetryFailed = vi.fn();
+    render({ save: vi.fn() });
+    await act(async () => {
+      await current.run("Mine", { save, onRetryFailed });
+    });
+    expect(current.status).toBe("waiting");
+    expect(onRetryFailed).not.toHaveBeenCalled();
+
+    await advance(1_000);
+    expect(save).toHaveBeenCalledTimes(2);
+    expect(current.status).toBe("error");
+    expect(onRetryFailed).toHaveBeenCalledTimes(1);
+    expect(onRetryFailed).toHaveBeenCalledWith(expect.objectContaining({ status: 409 }));
+  });
+
   it("never rejects and shows readable copy for a definitive failure", async () => {
     const save = vi.fn().mockRejectedValue(new ApiError("tenant_access_denied", 403, { error: "tenant_access_denied" }));
     render({ save });

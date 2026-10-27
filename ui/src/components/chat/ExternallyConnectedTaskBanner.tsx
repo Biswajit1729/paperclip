@@ -411,6 +411,8 @@ function ConnectedTaskComposer({
       }
     },
   });
+  // Automatic resends gave up while online; only Resend now tries again.
+  const resendStalled = resendWaiting && autoResend.stalled && !autoResend.resending;
   const uploadDisabled = Boolean(
     retainedSend.current ||
     publication ||
@@ -749,14 +751,18 @@ function ConnectedTaskComposer({
                 className="space-y-1 rounded-md border border-border bg-background p-3 text-xs"
               >
                 <p className="font-medium">
-                  {resendWaiting || autoResend.resending
-                    ? "Sending when reconnected…"
-                    : "Delivery result not confirmed"}
+                  {resendStalled
+                    ? "Couldn’t send this update yet."
+                    : resendWaiting || autoResend.resending
+                      ? "Sending when reconnected…"
+                      : "Delivery result not confirmed"}
                 </p>
                 <p className="text-muted-foreground">
-                  {resendWaiting || autoResend.resending
-                    ? "Your exact draft and request identity are kept. It resends on its own without creating a duplicate."
-                    : "Your exact draft and request identity are kept. Retry safely to learn the authoritative publication state without creating a duplicate."}
+                  {resendStalled
+                    ? "Your exact draft and request identity are kept. Automatic resends stopped; choose Resend now to try again without creating a duplicate."
+                    : resendWaiting || autoResend.resending
+                      ? "Your exact draft and request identity are kept. It resends on its own without creating a duplicate."
+                      : "Your exact draft and request identity are kept. Retry safely to learn the authoritative publication state without creating a duplicate."}
                 </p>
                 <Link
                   className="inline-block font-medium underline underline-offset-4"

@@ -268,6 +268,19 @@ describe("interaction resolution replay", () => {
     expect(mockApi.get).toHaveBeenCalledWith("/issues/issue-1/interactions");
   });
 
+  it("retries the verification when reading the card back also hits the outage", async () => {
+    const accepted = { id: "interaction-6", status: "accepted" };
+    mockApi.post
+      .mockRejectedValueOnce(outage())
+      .mockRejectedValueOnce(alreadyResolved())
+      .mockRejectedValueOnce(alreadyResolved());
+    mockApi.get.mockRejectedValueOnce(outage()).mockResolvedValue([accepted]);
+    await expect(issuesApi.acceptInteraction("issue-1", "interaction-6")).rejects.toMatchObject({ status: 503 });
+    // The decision landed, but the read-back is still down: stay retryable.
+    await expect(issuesApi.acceptInteraction("issue-1", "interaction-6")).rejects.toMatchObject({ status: 503 });
+    await expect(issuesApi.acceptInteraction("issue-1", "interaction-6")).resolves.toEqual(accepted);
+  });
+
   it("keeps the conflict when the card was resolved differently", async () => {
     mockApi.post.mockRejectedValueOnce(outage()).mockRejectedValueOnce(alreadyResolved());
     mockApi.get.mockResolvedValue([{ id: "interaction-2", status: "rejected" }]);

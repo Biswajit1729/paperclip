@@ -434,7 +434,9 @@ export function NewIssueDialog() {
   const initializationKeyRef = useRef<string | null>(null);
   const defaultAssigneePendingRef = useRef(false);
   const defaultProjectPendingRef = useRef(false);
-  const createRequestRef = useRef<{ fingerprint: string; idempotencyKey: string } | null>(null);
+  // `recovering`: a create restored without its files keeps its key until it is
+  // sent or cancelled, whatever the files and fields look like when resubmitted.
+  const createRequestRef = useRef<{ fingerprint: string; idempotencyKey: string; recovering?: boolean } | null>(null);
   const draftOwner = useDraftOwner();
   const awaitingFilesKey = draftOwner !== undefined ? pendingSendKeyFor(CREATE_AWAITING_FILES_KEY, draftOwner) : null;
 
@@ -609,7 +611,11 @@ export function NewIssueDialog() {
     if (!awaitingFilesKey) return;
     const awaiting = readPendingSend(awaitingFilesKey, isPendingCreate);
     if (!awaiting) return;
-    createRequestRef.current ??= { fingerprint: awaiting.payload.fingerprint, idempotencyKey: awaiting.idempotencyKey };
+    createRequestRef.current ??= {
+      fingerprint: awaiting.payload.fingerprint,
+      idempotencyKey: awaiting.idempotencyKey,
+      recovering: true,
+    };
     const names = awaiting.payload.stagedFileNames;
     if (names?.length) setResendError((current) => current ?? stagedFilesMissingDescription(names));
   }, [awaitingFilesKey]);
@@ -637,7 +643,11 @@ export function NewIssueDialog() {
       if (error instanceof StagedFilesMissingError) {
         // Reattaching the same files resubmits under the original key, so a
         // create that already reached the server is replayed, not duplicated.
-        createRequestRef.current = { fingerprint: pending.payload.fingerprint, idempotencyKey: pending.idempotencyKey };
+        createRequestRef.current = {
+          fingerprint: pending.payload.fingerprint,
+          idempotencyKey: pending.idempotencyKey,
+          recovering: true,
+        };
         if (awaitingFilesKey) writePendingSend(awaitingFilesKey, pending);
       }
       if (pending.idempotencyKey !== firstAttemptKey.current) setResendError(description);
@@ -1026,12 +1036,17 @@ export function NewIssueDialog() {
         : {}),
     };
     // An explicit board create is a new task even when its title already exists.
-    // Reuse the request key only for retries of the same submitted draft.
-    const fingerprint = JSON.stringify({ ...createData, stagedFiles: stagedFiles.map(stagedFileIdentity) });
-    if (createRequestRef.current?.fingerprint !== fingerprint) {
-      createRequestRef.current = { fingerprint, idempotencyKey: createUuid() };
+    // Reuse the request key only for retries of the same submitted draft, and
+    // always for a create waiting for its files: it may already have reached
+    // the server, and its key then replays that task instead of a second one.
+    // The file set is compared without regard to selection order.
+    const fingerprint = JSON.stringify({ ...createData, stagedFiles: stagedFiles.map(stagedFileIdentity).sort() });
+    let request = createRequestRef.current;
+    if (!request || (!request.recovering && request.fingerprint !== fingerprint)) {
+      request = { fingerprint, idempotencyKey: createUuid() };
+      createRequestRef.current = request;
     }
-    const { idempotencyKey } = createRequestRef.current;
+    const { idempotencyKey } = request;
     stagedFilesByKey.current.set(idempotencyKey, stagedFiles);
     firstAttemptKey.current = idempotencyKey;
     setResendError(null);

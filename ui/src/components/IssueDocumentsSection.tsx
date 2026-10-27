@@ -651,9 +651,10 @@ export function IssueDocumentsSection({
       applySaved(await upsertDocument.mutateAsync(attempted));
     };
     // A retry after a lost response finds its own earlier save: the base
-    // revision is stale, but the server already holds exactly this text.
+    // revision is stale (or, for a new document, the key now exists), but the
+    // server already holds exactly this text.
     const matchesServer = async (error: unknown) => {
-      if (currentDraft.isNew || isLockedDocumentError(error)) return false;
+      if (isLockedDocumentError(error)) return false;
       const latest = await documentSubject.getDocument(normalizedKey);
       if (latest.body !== currentDraft.body) return false;
       if (!isPlanKey(normalizedKey) && (latest.title ?? "") !== normalizedTitle) return false;
@@ -661,44 +662,52 @@ export function IssueDocumentsSection({
       return true;
     };
 
+    const handleSaveFailure = async (err: unknown): Promise<false> => {
+      if (isLockedDocumentError(err)) {
+        setError("Document is locked. Unlock it before editing.");
+        resetAutosaveState();
+        invalidateIssueDocuments();
+        return false;
+      }
+      if (isDocumentConflictError(err)) {
+        try {
+          const latestDocument = await documentSubject.getDocument(normalizedKey);
+          setDocumentConflict({
+            key: normalizedKey,
+            serverDocument: latestDocument,
+            localDraft: {
+              key: normalizedKey,
+              title: isPlanKey(normalizedKey) ? "" : normalizedTitle,
+              body: currentDraft.body,
+              baseRevisionId: currentDraft.baseRevisionId,
+              isNew: false,
+            },
+            showRemote: true,
+          });
+          setFoldedDocumentKeys((current) => current.filter((key) => key !== normalizedKey));
+          setError(null);
+          resetAutosaveState();
+          return false;
+        } catch {
+          setError("Document changed remotely and the latest version could not be loaded");
+          return false;
+        }
+      }
+      setError(describeError(err, { action: "save the document" }).body);
+      return false;
+    };
+
     if (options?.trackAutosave) setAutosaveDocumentKey(normalizedKey);
-    const result = await runAutosave(attempted, { save, matchesServer });
+    const result = await runAutosave(attempted, {
+      save,
+      matchesServer,
+      // A retry after an outage reports a lock or a conflict the same way.
+      onRetryFailed: (err) => void handleSaveFailure(err),
+    });
     if (result.kind === "saved") return true;
     // Kept on this device; it saves when the connection allows.
     if (result.kind === "waiting") return false;
-    const err = result.error;
-    if (isLockedDocumentError(err)) {
-      setError("Document is locked. Unlock it before editing.");
-      resetAutosaveState();
-      invalidateIssueDocuments();
-      return false;
-    }
-    if (isDocumentConflictError(err)) {
-      try {
-        const latestDocument = await documentSubject.getDocument(normalizedKey);
-        setDocumentConflict({
-          key: normalizedKey,
-          serverDocument: latestDocument,
-          localDraft: {
-            key: normalizedKey,
-            title: isPlanKey(normalizedKey) ? "" : normalizedTitle,
-            body: currentDraft.body,
-            baseRevisionId: currentDraft.baseRevisionId,
-            isNew: false,
-          },
-          showRemote: true,
-        });
-        setFoldedDocumentKeys((current) => current.filter((key) => key !== normalizedKey));
-        setError(null);
-        resetAutosaveState();
-        return false;
-      } catch {
-        setError("Document changed remotely and the latest version could not be loaded");
-        return false;
-      }
-    }
-    setError(describeError(err, { action: "save the document" }).body);
-    return false;
+    return handleSaveFailure(result.error);
   }, [documentConflict, documentSubject, draftScope, invalidateIssueDocuments, resetAutosaveState, runAutosave, sortedDocuments, syncDocumentCaches, upsertDocument]);
 
   const reloadDocumentFromServer = useCallback((key: string) => {

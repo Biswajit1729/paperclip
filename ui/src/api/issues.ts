@@ -160,7 +160,12 @@ async function resolveInteractionOnce(
       const current = await api
         .get<IssueThreadInteraction[]>(`/issues/${issueId}/interactions`)
         .then((rows) => rows.find((row) => row.id === interactionId) ?? null)
-        .catch(() => null);
+        .catch((readError: unknown) => {
+          // A temporary read failure is no verdict: let it escape so the
+          // replay policy retries, and the next attempt verifies again.
+          if (classifySendFailure(readError) === "pending") throw readError;
+          return null;
+        });
       if (current && matchesRequest(current)) {
         transientlyFailedResolutions.delete(key);
         return current;

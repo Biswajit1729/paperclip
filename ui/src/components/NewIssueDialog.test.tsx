@@ -1646,6 +1646,40 @@ describe("NewIssueDialog", () => {
     act(() => reloaded.root.unmount());
   });
 
+  it("resends a restored create under its original key when its files are attached again in another order", async () => {
+    mockIssuesApi.create.mockResolvedValue({ id: "issue-1", identifier: "PAP-1", companyId: "company-1" });
+    mockIssuesApi.uploadAttachment.mockResolvedValue({});
+    dialogState.newIssueDefaults = { title: "Has files" };
+    const spec = new File(["a"], "spec.pdf", { lastModified: 1 });
+    const notes = new File(["bb"], "notes.pdf", { lastModified: 2 });
+    localStorage.setItem("paperclip:issue-draft:pending-create:user-1", JSON.stringify({
+      version: 1,
+      key: "paperclip:issue-draft:pending-create:user-1",
+      idempotencyKey: "create-key-123",
+      createdAt: Date.now(),
+      payload: {
+        fingerprint: JSON.stringify({ stagedFiles: ["attachment::spec.pdf:1:1", "attachment::notes.pdf:2:2"] }),
+        data: { companyId: "company-1", title: "Has files" },
+        stagedFileNames: ["spec.pdf", "notes.pdf"],
+      },
+    }));
+    const { root } = renderDialog(container);
+    await flush();
+    await waitForAssertion(() => expect(container.querySelector('[role="alert"]')?.textContent).toContain("spec.pdf"));
+
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+    Object.defineProperty(input, "files", { configurable: true, value: [notes, spec] });
+    await act(async () => {
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flush();
+    const send = container.querySelector<HTMLButtonElement>('[aria-label="Create task"]')!;
+    await act(async () => { send.click(); });
+    await waitForAssertion(() => expect(mockIssuesApi.create).toHaveBeenCalledTimes(1));
+    expect(mockIssuesApi.create.mock.calls[0][1].idempotencyKey).toBe("create-key-123");
+    act(() => root.unmount());
+  });
+
   it("submits Chinese, Japanese, and Hindi issue text without normalization", async () => {
     const title = "验证中文任务";
     const description = [

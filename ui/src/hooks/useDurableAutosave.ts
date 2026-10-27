@@ -55,6 +55,11 @@ export interface DurableAutosaveOptions<T> {
 export interface DurableAutosaveJob<T> {
   save?: (draft: T) => Promise<unknown>;
   matchesServer?: (error: unknown, draft: T) => Promise<boolean> | boolean;
+  /**
+   * A background retry of this draft failed definitively. `run` returns that
+   * outcome to its caller, but nobody awaits an automatic retry.
+   */
+  onRetryFailed?: (error: unknown) => void;
 }
 
 export interface DurableAutosave<T> {
@@ -136,9 +141,11 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
 
   const run = useCallback(
     async (draft: T, overrides: DurableAutosaveJob<T> = {}): Promise<DurableAutosaveResult> => {
-      const job = { draft, overrides };
       const save = overrides.save ?? optionsRef.current.save;
       const matchesServer = overrides.matchesServer ?? optionsRef.current.matchesServer;
+      // A retry uses the functions this draft was queued with, not the latest
+      // ones: the editor may have moved on to another record since.
+      const job = { draft, overrides: { ...overrides, save, matchesServer } };
       const id = ++runId.current;
       const latest = () => mounted.current && runId.current === id;
       pendingJob.current = job;
@@ -211,6 +218,7 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
         return "sent";
       }
       const result = await run(job.draft, job.overrides);
+      if (result.kind === "failed") job.overrides.onRetryFailed?.(result.error);
       return result.kind === "saved" ? "sent" : result.kind === "waiting" ? "pending" : "rejected";
     },
   });

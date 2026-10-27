@@ -24,6 +24,8 @@ const mockIssuesApi = vi.hoisted(() => ({
 
 const markdownEditorMockState = vi.hoisted(() => ({
   emitMountEmptyChange: false,
+  /** Typed into the editor on mount, for forms the test cannot type into. */
+  emitMountValue: null as string | null,
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -93,6 +95,10 @@ vi.mock("./MarkdownEditor", async () => {
       contentClassName?: string;
     }) => {
       React.useEffect(() => {
+        if (markdownEditorMockState.emitMountValue !== null) {
+          onChange?.(markdownEditorMockState.emitMountValue);
+          return;
+        }
         if (!markdownEditorMockState.emitMountEmptyChange) return;
         onChange?.("");
       }, []);
@@ -294,6 +300,7 @@ describe("IssueDocumentsSection", () => {
     window.localStorage.clear();
     vi.clearAllMocks();
     markdownEditorMockState.emitMountEmptyChange = false;
+    markdownEditorMockState.emitMountValue = null;
     mockSession.unreachable = false;
   });
 
@@ -980,6 +987,62 @@ describe("IssueDocumentsSection", () => {
     }));
     expect(container.textContent).not.toContain("Out of date");
     expect(window.localStorage.getItem(`paperclip:document-draft:v2:user-1:${issue.id}:plan`)).toBeNull();
+
+    await act(async () => {
+      root.unmount();
+    });
+    queryClient.clear();
+  });
+
+  it("treats a 409 on a new document whose saved copy is ours as created", async () => {
+    const { ApiError } = await import("../api/client");
+    const issue = createIssue();
+    // An earlier create landed but its response was lost; the key now exists.
+    const saved = createIssueDocument({ key: "notes", title: null, body: "Notes body", latestRevisionId: "revision-1" });
+    mockIssuesApi.listDocuments.mockResolvedValueOnce([]).mockResolvedValue([saved]);
+    mockIssuesApi.upsertDocument.mockRejectedValue(
+      new ApiError("Document already exists", 409, { error: "Document already exists" }),
+    );
+    mockIssuesApi.getDocument.mockResolvedValue(saved);
+    markdownEditorMockState.emitMountValue = "Notes body";
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDocumentsSection issue={issue} canDeleteDocuments={false} />
+        </QueryClientProvider>,
+      );
+    });
+    await flush();
+
+    const newDocument = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("New document"))!;
+    await act(async () => {
+      newDocument.click();
+    });
+    const keyInput = container.querySelector<HTMLInputElement>('input[placeholder="Document key"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(keyInput, "notes");
+      keyInput.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const create = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create document"))!;
+    await act(async () => {
+      create.click();
+    });
+    await flush();
+    await flush();
+
+    expect(mockIssuesApi.upsertDocument).toHaveBeenCalledWith(issue.id, "notes", expect.objectContaining({
+      body: "Notes body",
+      baseRevisionId: null,
+    }));
+    expect(mockIssuesApi.getDocument).toHaveBeenCalledWith(issue.id, "notes");
+    // The form closes as for any created document; no conflict, no error.
+    expect(container.querySelector('input[placeholder="Document key"]')).toBeNull();
+    expect(container.textContent).not.toContain("Out of date");
+    expect(container.textContent).not.toContain("already exists");
 
     await act(async () => {
       root.unmount();
