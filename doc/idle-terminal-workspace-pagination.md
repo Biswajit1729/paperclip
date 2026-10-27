@@ -1,4 +1,4 @@
-# Terminal workspace recovery pagination
+# Terminal workspace scan and retry deadline precision
 
 Terminal workspace maintenance already uses the shared delivery coordinator and
 retains deadlines only for outstanding work. Its bounded scan must progress past
@@ -40,3 +40,29 @@ Review follow-up reproduced the missing-schema failure against a newly created,
 unmigrated disposable database. The setup repair migrates that same database
 inside the suite; the full workspace-service selection then runs without manual
 schema preparation. The production cursor implementation is unchanged.
+
+## Preserve one retry deadline through early inspection
+
+Nested-clone migration and isolated-source rehoming kept a retry guard and a
+separate advertised scheduler deadline. Each value called the clock separately.
+When the clock advanced between those calls, an early inspection copied the
+earlier guard back into the advertised deadline. CI observed a one-millisecond
+backward change in an otherwise unchanged retry.
+
+Each path now computes one retry timestamp and stores that value in all of its
+retry and scheduling state. The cadence, cleanup eligibility, quiet conditions,
+rotation, and wake contract do not change. No new timer, queue, or table is added.
+
+The existing nested-clone regression and the isolated-rehome dry-run case now
+use a clock that advances one millisecond per read. Both failed before the fix
+with the same one-millisecond drift. Both exact-deadline assertions remain. The
+complete migration suites passed all 49 cases afterward, using real PostgreSQL
+and Git, including preserved files/history and interrupted migration recovery.
+The complete workspace-service and terminal-worker suites passed another 87
+cases; server typechecking passed. The two focused pre-fix failures used a name
+filter intentionally; the reported final 136 cases are four complete suites
+without skips. Validated external test database hooks keep each migration suite
+on its own disposable database and retain the existing embedded fixture fallback.
+
+These are local correctness and scheduling results, not deployed host-sleep or
+external-wake proof. Remote acceptance must be checked at the published head.
