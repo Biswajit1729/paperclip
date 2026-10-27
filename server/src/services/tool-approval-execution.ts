@@ -3,7 +3,7 @@ import { toolActionRequests, toolInvocations, type Db } from "@paperclipai/db";
 import type { ToolRedactedValueSummary } from "@paperclipai/shared";
 import { notifyToolReviewChange } from "./tool-review-work-notifications.js";
 
-export type ToolTestApprovalClaim = { actionRequestId: string; invocationId: string; claimedAt: Date };
+export type ToolApprovalClaim = { actionRequestId: string; invocationId: string; claimedAt: Date };
 export type ToolTestOutcome = {
   status: "succeeded" | "failed" | "timed_out" | "rate_limited";
   result?: ToolRedactedValueSummary;
@@ -11,7 +11,7 @@ export type ToolTestOutcome = {
   errorMessage?: string;
 };
 
-export async function claimToolTestApproval(db: Db, actionRequestId: string, invocationId: string): Promise<ToolTestApprovalClaim | null> {
+export async function claimToolTestApproval(db: Db, actionRequestId: string, invocationId: string): Promise<ToolApprovalClaim | null> {
   return db.transaction(async tx => {
     const [invocation] = await tx.select().from(toolInvocations)
       .where(eq(toolInvocations.id, invocationId)).for("update");
@@ -37,7 +37,7 @@ export async function claimToolTestApproval(db: Db, actionRequestId: string, inv
 }
 
 /** Return only this still-undispatched claim to its existing approval queue. */
-export async function releaseToolTestApproval(db: Db, claim: ToolTestApprovalClaim) {
+export async function releaseToolApproval(db: Db, claim: ToolApprovalClaim) {
   return db.transaction(async tx => {
     const [invocation] = await tx.select().from(toolInvocations)
       .where(eq(toolInvocations.id, claim.invocationId)).for("update");
@@ -54,7 +54,7 @@ export async function releaseToolTestApproval(db: Db, claim: ToolTestApprovalCla
   });
 }
 
-export async function startToolTestInvocation(db: Db, invocationId: string, claim?: ToolTestApprovalClaim) {
+export async function startToolInvocation(db: Db, invocationId: string, claim?: ToolApprovalClaim) {
   const now = new Date();
   if (!claim) {
     await db.update(toolInvocations).set({ status: "executing", startedAt: now, updatedAt: now })
@@ -62,19 +62,20 @@ export async function startToolTestInvocation(db: Db, invocationId: string, clai
     return true;
   }
   return db.transaction(async tx => {
-    const [invocation] = await tx.select({ status: toolInvocations.status }).from(toolInvocations)
+    const [invocation] = await tx.select().from(toolInvocations)
       .where(eq(toolInvocations.id, invocationId)).for("update");
     const [request] = await tx.select().from(toolActionRequests)
       .where(eq(toolActionRequests.id, claim.actionRequestId)).for("update");
-    if (invocation?.status !== "awaiting_approval" || request?.status !== "executing" ||
+    if (invocationId !== claim.invocationId || invocation?.status !== "awaiting_approval" || invocation.startedAt !== null ||
+      request?.status !== "executing" || request.invocationId !== invocationId || request.companyId !== invocation.companyId ||
       request.updatedAt.getTime() !== claim.claimedAt.getTime()) return false;
-    await tx.update(toolInvocations).set({ status: "executing", startedAt: now, updatedAt: now })
+    await tx.update(toolInvocations).set({ status: "executing", approvalState: "approved", startedAt: now, updatedAt: now })
       .where(eq(toolInvocations.id, invocationId));
     return true;
   });
 }
 
-export async function persistToolTestOutcome(db: Db, invocationId: string, outcome: ToolTestOutcome, claim?: ToolTestApprovalClaim) {
+export async function persistToolTestOutcome(db: Db, invocationId: string, outcome: ToolTestOutcome, claim?: ToolApprovalClaim) {
   const now = new Date();
   const values = { status: outcome.status, ...(outcome.result ? {
     resultHash: outcome.result.sha256 ?? null, resultSummary: outcome.result,
