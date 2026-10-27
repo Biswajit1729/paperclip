@@ -9,6 +9,7 @@ export function registerDeadlineWork(
     next: () => Promise<number | null>;
     canRun: () => boolean;
     retryMs: number;
+    onSettled?: (hints?: ReadonlySet<string>) => void;
     // Optional batching latency for notifications; already-known deadlines still preempt it.
     notificationCoalesceMs?: number;
     // Optional minimum spacing between scans, including known future deadlines.
@@ -22,7 +23,7 @@ export function registerDeadlineWork(
   const worker = coordinator.register(queue, {
     retryMs: task.retryMs,
     pausePassiveMaintenance: true,
-    onSettled: () => { requested++; },
+    onSettled: hints => { requested++; task.onSettled?.(hints); },
     run: async signal => {
       if (!task.canRun()) { requested++; next = null; return; }
       if (Date.now() < earliest) { next = earliest; return; }

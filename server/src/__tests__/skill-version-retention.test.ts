@@ -1,3 +1,16 @@
+import { prepareAgentHireApproval } from "../services/agent-hiring.js";
+import { notifyRetainedNativeSessionCleanup } from "../services/retained-native-session-cleanup-notifications.js";
+import { setTimeout as realDelay } from "node:timers/promises";
+import { createAgentLifecycle } from "../services/agent-lifecycle.js";
+import { sql } from "drizzle-orm";
+import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
+import { registerSkillVersionRetentionWork } from "../services/skill-version-retention-work.js";
+import { notifySkillVersionRetention } from "../services/skill-version-retention-notifications.js";
+import { notifyInstructionCollection } from "../services/instruction-collection-notifications.js";
+import { notifyNativeEnvironmentSettlement } from "../services/native-environment-settlement-notifications.js";
+import { idleWorkSnapshot } from "../services/task-admission.js";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+import { applyPendingMigrations } from "@paperclipai/db";
 import { touchSkillVersionCache } from "../services/skill-version-cache.js";
 import { randomUUID } from "node:crypto";
 import os from "node:os";
@@ -24,7 +37,8 @@ import {
   skillVersionRetentionService,
 } from "../services/skill-version-retention.ts";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_SKILL_RETENTION_TEST_DATABASE_URL");
+const embeddedPostgresSupport = external ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
@@ -54,16 +68,25 @@ describeEmbeddedPostgres("skill version snapshot retention", () => {
   let paperclipHome: string | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-skill-version-retention-");
+    if (!external) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-skill-version-retention-");
+    if (external) await applyPendingMigrations(external);
     oldPaperclipHome = process.env.PAPERCLIP_HOME;
     oldPaperclipInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
     paperclipHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skill-version-retention-home-"));
     process.env.PAPERCLIP_HOME = paperclipHome;
     process.env.PAPERCLIP_INSTANCE_ID = "default";
-    db = createDb(tempDb.connectionString);
+    db = createDb(external ?? tempDb!.connectionString, { maxConnections: 6, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
   }, 20_000);
 
+  let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
+  let worker: ReturnType<typeof registerSkillVersionRetentionWork> | undefined;
+  let admitted = true;
   afterEach(async () => {
+    worker?.unsubscribe();
+    await coordinator?.stop();
+    await worker?.dispose();
+    worker = undefined; coordinator = undefined; admitted = true;
+    vi.useRealTimers();
     vi.restoreAllMocks();
     await db.delete(heartbeatRuns);
     await db.delete(agents);
@@ -82,6 +105,7 @@ describeEmbeddedPostgres("skill version snapshot retention", () => {
     if (oldPaperclipInstanceId === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
     else process.env.PAPERCLIP_INSTANCE_ID = oldPaperclipInstanceId;
     if (paperclipHome) await fs.rm(paperclipHome, { recursive: true, force: true });
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
   });
 
@@ -130,6 +154,275 @@ describeEmbeddedPostgres("skill version snapshot retention", () => {
     if (/^[a-f0-9-]{36}$/.test(name)) await touchSkillVersionCache(companyId, skillId, name, when.getTime());
     return dir;
   }
+
+  async function startRetention(graceMs = 20_000, service = skillVersionRetentionService(db, { graceMs })) {
+    await Promise.all(Array.from({ length: 6 }, () => db.execute(sql`select 1`)));
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"], shouldAdvanceTime: true });
+    coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => admitted, canReconcile: () => true,
+      onError: error => { throw error; } });
+    worker = registerSkillVersionRetentionWork(coordinator, service, () => admitted);
+    await worker.ready;
+    return service;
+  }
+  async function settled(deadline: number | null = null) {
+    await vi.waitFor(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(idleWorkSnapshot().active).toBe(0);
+      expect(coordinator!.nextWakeAt()).toBe(deadline);
+    }, { timeout: 10_000 });
+  }
+  async function quiet(ms = 3 * HOUR_MS) {
+    const reads = vi.spyOn(db, "select"), transactions = vi.spyOn(db, "transaction"), directories = vi.spyOn(fs, "opendir");
+    await vi.advanceTimersByTimeAsync(ms);
+    expect(reads).not.toHaveBeenCalled(); expect(transactions).not.toHaveBeenCalled(); expect(directories).not.toHaveBeenCalled();
+    reads.mockRestore(); transactions.mockRestore(); directories.mockRestore();
+  }
+
+  it("disarms after empty reconstruction without hourly SQL or directory reads", async () => {
+    await startRetention(); await settled(); await quiet();
+  });
+
+  it("keeps only permanent pins quiet with completed run history", async () => {
+    const companyId = await createCompany();
+    const { skillId, versionIds } = await createSkill(companyId, 2);
+    await writeSnapshot(companyId, skillId, versionIds[0]!);
+    await writeSnapshot(companyId, skillId, versionIds[1]!);
+    const [agent] = await db.insert(agents).values({ companyId, name: "Finished", adapterType: "codex_local" }).returning();
+    await db.insert(heartbeatRuns).values({ companyId, agentId: agent!.id, invocationSource: "on_demand", status: "succeeded",
+      finishedAt: new Date(), contextSnapshot: { skillVersions: { old: versionIds[0] } } });
+    await startRetention(); await settled();
+    expect(await exists(path.join(resolveCompanySkillVersionsRoot(companyId), skillId, versionIds[0]!))).toBe(false);
+    expect(await exists(path.join(resolveCompanySkillVersionsRoot(companyId), skillId, versionIds[1]!))).toBe(true);
+    await quiet();
+  });
+
+  it("wakes ordinary materialization and re-use at the saved access grace deadline", async () => {
+    const companyId = await createCompany();
+    const { skillId, key, versionIds } = await createSkill(companyId, 2);
+    await startRetention(); await settled(); await quiet();
+    const [entry] = await companySkillService(db).listRuntimeSkillEntries(companyId, {
+      onlyKeys: new Set([key]), versionSelections: new Map([[key, versionIds[0]!]]) });
+    expect(entry!.sourceStatus).toBe("available");
+    const marker = path.join(path.dirname(path.dirname(resolveCompanySkillVersionsRoot(companyId))), companyId,
+      "__version_access__", skillId, `${versionIds[0]}.json`);
+    const accessed = JSON.parse(await fs.readFile(marker, "utf8")).lastUsedAt as number;
+    await settled(accessed + 20_000);
+    await vi.advanceTimersByTimeAsync(5000);
+    await touchSkillVersionCache(companyId, skillId, versionIds[0]!);
+    const reused = JSON.parse(await fs.readFile(marker, "utf8")).lastUsedAt as number;
+    await settled(reused + 20_000);
+    await vi.advanceTimersByTimeAsync(reused + 20_000 - Date.now());
+    await settled(); expect(await exists(entry!.source)).toBe(false); await quiet();
+  });
+
+  it("releases current-version protection only after the real version transaction commits", async () => {
+    const companyId = await createCompany();
+    const { skillId, versionIds } = await createSkill(companyId, 1);
+    const directory = await writeSnapshot(companyId, skillId, versionIds[0]!);
+    await startRetention(); await settled(); await quiet();
+    const inventory = [{ path: "SKILL.md", kind: "skill" as const, content: "---\nname: next\n---\n# Next" }];
+    await expect(db.transaction(async tx => {
+      await companySkillService(db).createVersion(companyId, skillId, {}, null,
+        { database: tx, fileInventory: inventory, skipInventoryRefresh: true });
+      await vi.advanceTimersByTimeAsync(60_000); expect(await exists(directory)).toBe(true);
+      throw new Error("rollback");
+    })).rejects.toThrow("rollback");
+    await settled(); await quiet(); expect(await exists(directory)).toBe(true);
+    await db.transaction(async tx => {
+      await companySkillService(db).createVersion(companyId, skillId, {}, null,
+        { database: tx, fileInventory: inventory, skipInventoryRefresh: true });
+      await vi.advanceTimersByTimeAsync(60_000); expect(await exists(directory)).toBe(true);
+    });
+    await settled(); expect(await exists(directory)).toBe(false); await quiet();
+  });
+
+  it.each([notifyInstructionCollection, notifyNativeEnvironmentSettlement, notifyRetainedNativeSessionCleanup])("releases a captured run pin on its existing settlement notification %$", async notify => {
+    const companyId = await createCompany();
+    const { skillId, versionIds } = await createSkill(companyId, 2);
+    const directory = await writeSnapshot(companyId, skillId, versionIds[0]!);
+    const [agent] = await db.insert(agents).values({ companyId, name: "Running", adapterType: "codex_local" }).returning();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent!.id, invocationSource: "on_demand", status: "running",
+      contextSnapshot: { skillVersions: { selected: versionIds[0] } } }).returning();
+    await startRetention(); await settled(); await quiet(); expect(await exists(directory)).toBe(true);
+    await db.transaction(async tx => {
+      await notify(tx, { companyId, runId: run!.id });
+      await tx.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, run!.id));
+    });
+    await settled(); expect(await exists(directory)).toBe(false); await quiet();
+  });
+
+  it("retains the first cache change during drain and resumes without passive inspection", async () => {
+    const companyId = await createCompany();
+    const { skillId, versionIds } = await createSkill(companyId, 2);
+    await startRetention(); await settled(); admitted = false;
+    const directory = await writeSnapshot(companyId, skillId, versionIds[0]!);
+    await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(1000); expect(idleWorkSnapshot().active).toBe(0); });
+    await quiet(60_000); expect(await exists(directory)).toBe(true);
+    admitted = true; await settled(); expect(await exists(directory)).toBe(false); await quiet();
+  });
+
+  it("retains changes arriving during a page", async () => {
+    const companyId = await createCompany();
+    const { skillId, versionIds } = await createSkill(companyId, 2);
+    const service = skillVersionRetentionService(db, { graceMs: 0 });
+    const prune = service.pruneCompany;
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const began = vi.fn();
+    service.pruneCompany = async (...args) => { const result = await prune(...args); began(); await held; return result; };
+    const starting = startRetention(0, service);
+    await vi.waitFor(() => expect(began).toHaveBeenCalledOnce());
+    const directory = await writeSnapshot(companyId, skillId, versionIds[0]!);
+    release(); await starting; await settled(); expect(await exists(directory)).toBe(false);
+    await quiet();
+  });
+
+  it.each(["configuration", "approval"])("wakes when agent %s removes a permanent pin", async mode => {
+    const companyId = await createCompany();
+    const { skillId, key, versionIds } = await createSkill(companyId, 2);
+    const directory = await writeSnapshot(companyId, skillId, versionIds[0]!);
+    const [agent] = await db.insert(agents).values({ companyId, name: "Pinned", adapterType: "codex_local",
+      adapterConfig: { paperclipSkillSync: { desiredSkills: [{ key, versionId: versionIds[0] }] } } }).returning();
+    await startRetention(); await settled(); await quiet(); expect(await exists(directory)).toBe(true);
+    const patch = { adapterConfig: { paperclipSkillSync: { desiredSkills: [] } } };
+    if (mode === "configuration") await createAgentLifecycle(db).updateConfiguration(agent!.id, patch);
+    else await db.transaction(async tx => {
+      const approved = await prepareAgentHireApproval(tx as unknown as typeof db, agent!, patch);
+      await tx.update(agents).set(approved).where(eq(agents.id, agent!.id));
+    });
+    await settled(); expect(await exists(directory)).toBe(false); await quiet();
+  });
+
+  it("reconstructs saved staging grace on restart and stays quiet after removal", async () => {
+    const companyId = await createCompany();
+    const { skillId, versionIds } = await createSkill(companyId, 1);
+    const staging = await writeSnapshot(companyId, skillId, `.${versionIds[0]}-abc123`, 0);
+    const deadline = (await fs.stat(staging)).mtimeMs + 20_000;
+    await startRetention(); await settled(deadline);
+    worker!.unsubscribe(); await coordinator!.stop(); await worker!.dispose();
+    vi.useRealTimers();
+    await startRetention(); await settled(deadline);
+    await vi.advanceTimersByTimeAsync(deadline - Date.now()); await settled();
+    expect(await exists(staging)).toBe(false); await quiet();
+  });
+
+  it("uses the saved terminal controller deadline and preserves the database clock fence", async () => {
+    const companyId = await createCompany();
+    const { skillId, versionIds } = await createSkill(companyId, 2);
+    const directory = await writeSnapshot(companyId, skillId, versionIds[0]!);
+    const [agent] = await db.insert(agents).values({ companyId, name: "Lease", adapterType: "codex_local" }).returning();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent!.id, status: "succeeded", finishedAt: new Date(),
+      contextSnapshot: { skillVersions: { selected: versionIds[0] } },
+      controllerLeaseExpiresAt: sql`date_trunc('milliseconds', clock_timestamp()) + interval '3 seconds'` }).returning();
+    const deadline = run!.controllerLeaseExpiresAt!.getTime();
+    const service = skillVersionRetentionService(db, { graceMs: 0 });
+    expect((await service.pruneCompany(companyId)).nextRunAt).toBe(deadline);
+    await service.dispose();
+    await startRetention(0); await settled(deadline);
+    await vi.advanceTimersByTimeAsync(deadline - Date.now());
+    await vi.waitFor(() => expect(coordinator!.nextWakeAt()).toBeGreaterThan(deadline));
+    expect(await exists(directory)).toBe(true);
+    await realDelay(3100);
+    await vi.advanceTimersByTimeAsync(2000); await settled();
+    expect(await exists(directory)).toBe(false); await quiet();
+  });
+
+  it("retains only a concrete failed company for retry while healthy companies settle", async () => {
+    const companyId = await createCompany(), healthyId = await createCompany();
+    const failedSkill = await createSkill(companyId, 2), healthySkill = await createSkill(healthyId, 2);
+    const failedDir = await writeSnapshot(companyId, failedSkill.skillId, failedSkill.versionIds[0]!);
+    const healthyDir = await writeSnapshot(healthyId, healthySkill.skillId, healthySkill.versionIds[0]!);
+    const service = skillVersionRetentionService(db, { graceMs: 0 }), prune = service.pruneCompany;
+    let failed = true;
+    service.pruneCompany = vi.fn(async (...args) => {
+      if (args[0] === companyId && failed) throw new Error("inspection unavailable");
+      return prune(...args);
+    });
+    await startRetention(0, service);
+    await vi.waitFor(() => expect(coordinator!.nextWakeAt()).not.toBeNull());
+    const retryAt = coordinator!.nextWakeAt()!;
+    expect(await exists(healthyDir)).toBe(false); expect(await exists(failedDir)).toBe(true);
+    await quiet(5000); expect(service.pruneCompany).toHaveBeenCalledTimes(2);
+    failed = false; await vi.advanceTimersByTimeAsync(retryAt - Date.now()); await settled();
+    expect(await exists(failedDir)).toBe(false); await quiet();
+  });
+
+  it("continues directory pages without evicting another company's iterator", async () => {
+    const ids: string[] = [];
+    for (let index = 0; index < 18; index++) {
+      const companyId = await createCompany(); ids.push(companyId);
+      const root = path.join(resolveCompanySkillVersionsRoot(companyId), randomUUID());
+      await fs.mkdir(root, { recursive: true });
+      for (let entry = 0; entry < 55; entry++) await fs.mkdir(path.join(root, `operator-${entry}`));
+    }
+    const opened = vi.spyOn(fs, "opendir");
+    await startRetention(); await settled();
+    for (const id of ids) expect(opened.mock.calls.filter(([directory]) => directory === resolveCompanySkillVersionsRoot(id))).toHaveLength(1);
+    opened.mockRestore(); await quiet();
+  });
+
+  it("wakes ordinary skill deletion and removes its unpinned orphan caches", async () => {
+    const companyId = await createCompany();
+    const { skillId, versionIds } = await createSkill(companyId, 1);
+    const directory = await writeSnapshot(companyId, skillId, versionIds[0]!);
+    await startRetention(); await settled(); await quiet();
+    await companySkillService(db).deleteSkill(companyId, skillId);
+    await settled(); expect(await exists(directory)).toBe(false); await quiet();
+  });
+
+  it("observes abandoned staging after a failed materialization flight", async () => {
+    const companyId = await createCompany();
+    const { skillId, versionIds } = await createSkill(companyId, 1);
+    await startRetention(); await settled(); await quiet();
+    let staging = "";
+    await expect(runVersionSnapshotFlight(path.join(resolveCompanySkillVersionsRoot(companyId), skillId, versionIds[0]!), async () => {
+      staging = await writeSnapshot(companyId, skillId, `.${versionIds[0]}-abc123`, 0);
+      throw new Error("interrupted publication");
+    })).rejects.toThrow("interrupted publication");
+    const deadline = (await fs.stat(staging)).mtimeMs + 20_000;
+    await settled(deadline); await vi.advanceTimersByTimeAsync(deadline - Date.now()); await settled();
+    expect(await exists(staging)).toBe(false); await quiet();
+  });
+
+  it("retries incomplete pins only for the affected company and disarms after terminal settlement", async () => {
+    const companyId = await createCompany();
+    const { skillId, versionIds } = await createSkill(companyId, 2);
+    const directory = await writeSnapshot(companyId, skillId, versionIds[0]!);
+    const [agent] = await db.insert(agents).values({ companyId, name: "Unknown pins", adapterType: "codex_local" }).returning();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent!.id, status: "running", contextSnapshot: null }).returning();
+    await startRetention(); expect(await exists(directory)).toBe(true);
+    expect(coordinator!.nextWakeAt()).toBeGreaterThan(Date.now()); await quiet(5000);
+    await db.transaction(async tx => {
+      await notifyInstructionCollection(tx, { companyId, runId: run!.id });
+      await tx.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, run!.id));
+    });
+    await settled(); expect(await exists(directory)).toBe(false); await quiet();
+  });
+
+  it("reconstructs beyond one company page without repeating settled companies", async () => {
+    for (let index = 0; index < 55; index++) await createCompany();
+    const service = skillVersionRetentionService(db);
+    const listed = vi.spyOn(service, "listCompanies"), pruned = vi.spyOn(service, "pruneCompany");
+    await startRetention(20_000, service); await settled();
+    expect(listed).toHaveBeenCalledTimes(2); expect(pruned).toHaveBeenCalledTimes(55);
+    expect(new Set(pruned.mock.calls.map(([id]) => id)).size).toBe(55); await quiet();
+  });
+
+  it("waits for an admitted page before disposing its scan on shutdown", async () => {
+    const companyId = await createCompany();
+    const { skillId, versionIds } = await createSkill(companyId, 1);
+    await writeSnapshot(companyId, skillId, versionIds[0]!);
+    const service = skillVersionRetentionService(db), prune = service.pruneCompany;
+    const release = Promise.withResolvers<void>(), began = Promise.withResolvers<void>();
+    service.pruneCompany = async (...args) => { began.resolve(); await release.promise; return prune(...args); };
+    const disposed = vi.spyOn(service, "dispose");
+    const starting = startRetention(20_000, service); await began.promise;
+    worker!.unsubscribe();
+    const stopping = coordinator!.stop().then(() => worker!.dispose());
+    await realDelay(30); expect(disposed).not.toHaveBeenCalled();
+    release.resolve(); await starting; await stopping;
+    expect(disposed).toHaveBeenCalledOnce(); expect(coordinator!.nextWakeAt()).toBeNull();
+  });
 
   it("keeps current, pinned, live-run, newest, and recent versions and removes superseded ones", async () => {
     const companyId = await createCompany();

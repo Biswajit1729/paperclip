@@ -1,0 +1,185 @@
+# Skill-version snapshot retention
+
+Parent: slice 63, PR #17876, at
+`31c12f1d68ff4a51e06fc2be2abf2c2aee9f9d3a`. Pinned integrated master:
+`8548173fc9efdc0fa07644fb92dcc0b6851a95e5`.
+
+This slice is implemented and locally verified. Remote review and CI are pending.
+It does not qualify deployed host or database suspension.
+
+## Existing obligation
+
+`skill-version-retention.ts` removes materialized filesystem caches, never the
+version rows. Startup waits 60 seconds, then an independent hourly interval
+selects companies and inspects their version directories. One-second timers
+continue a truncated pass. The code protects current versions, configured newest
+versions, agent pins, captured run pins, and recent access. It validates restorable
+bytes and rechecks mutable pins under the existing cache advisory lock before
+atomic rename. Trash cleanup occurs after releasing that lock.
+
+The cache directories, access-marker timestamps, version inventories, agent
+configuration, run context, native finalizations, and environment leases already
+persist the necessary facts. No per-worker table or persistent queue is needed.
+
+## Implemented lifecycle
+
+- Reconstruct once at startup/resume using bounded company and directory pages.
+- Wake the affected company when cache publication/access changes, skill versions
+  or permanent pins change, or run/finalization/environment ownership changes.
+- Schedule access or staging grace expiry from its saved timestamp. Reconstruct
+  terminal controller-lease expiry from its saved deadline.
+- Retry concrete failed inspection, lock contention, incomplete pins, and failed
+  trash removal in the affected company. Unknown directories and permanently
+  unrestorable immutable snapshots remain protected without a blanket scan.
+- Leave current/newest/agent-pinned and fully settled retained history quiet when
+  no timed or uncertain obligation remains.
+- Preserve dirty requests through drain and changes during a page. Close cache
+  directory iterators only after admitted work has stopped.
+
+The existing scanner holds directory iterators between pages. It caps each page
+at 50 inspected entries/removals, limits live scans to 16, and expires abandoned
+iterators after five minutes. Starting every company's cursor in a fair round-robin
+worker could exceed that cap, evict iterators, and restart large directories from
+the beginning. Preserve the existing single active company continuation and bounded
+company page before introducing cross-company cursor concurrency. A due-company
+queue and per-company deadlines can remain in memory; startup reconstruction owns
+recovery of that scheduling state.
+
+## Producer audit
+
+| State change | Owning boundary to use |
+| --- | --- |
+| Materialization success or interrupted staging | `runVersionSnapshotFlight` completion, including failure |
+| Reuse of a materialized version | `touchSkillVersionCache` atomic marker replacement |
+| New version/current/newest selection | `companySkillService.createVersion` inside its caller-owned or local transaction |
+| Failed fork cleanup and skill deletion | Existing company-skill deletion transactions |
+| Agent pin edit, hire approval replay, setup completion | Existing agent-configuration and hire transaction hooks |
+| Agent/company deletion | Existing instruction-collection invalidation before cascades |
+| Legacy/native run terminalization | Existing instruction-collection producer fanout; see slice 42 audit |
+| Native finalization ownership/phase | Existing finalization notification boundary |
+| Environment cleanup/export settlement | Existing native-environment-settlement and retained-session notification boundaries; reused-task prior-owner retirement uses `writeEnvironmentCleanup` |
+| Terminal controller lease expiry | Saved lease deadline; no write is required at expiration |
+
+Before retiring the interval, verify direct terminal, finalization, lease, and pin
+writers against these boundaries. In particular, a terminal run can still hold
+pins while finalization or cleanup is unfinished. Terminal presentation is not
+permission to delete a cache. Pin protection and immutable-byte validation remain
+with the existing cache/retention service. Notification helpers only carry a
+company scope; startup only wires the coordinator.
+
+Supported writers are the existing service/API owners in one server process.
+Filesystem writes from unrelated processes and raw SQL from independent replicas
+need an explicit ingress contract. Startup reconstruction does not establish live
+cross-process delivery. Keep Cloud sleep-safety and alarm coverage unchanged.
+
+## Acceptance required
+
+- Existing cache rehydration, pin, lock, symlink, staging, orphan, and bounded-page
+  cases pass against isolated real PostgreSQL databases.
+- No repeated worker SQL or filesystem scan after empty reconstruction or a pass
+  containing only permanent pins/completed history.
+- Ordinary materialization and version/pin edits wake a quiet worker. Outer
+  commit wakes it; rollback does not strand an intent.
+- Saved access/staging/lease deadlines are honored. Fresh access replaces an old
+  deadline; a pin added before rename prevents removal.
+- Terminal ownership and environment settlement release caches only after their
+  existing durable predicates permit deletion.
+- Unknown pins/contention/I/O failure retain scope and recovery. Other companies
+  do not require an instance-wide recurring scan.
+- Bounded continuation crosses company pages and directory pages without losing
+  earlier grace deadlines or repeatedly evicting live iterators.
+- Drain/resume, a write during a page, held startup work, disabled configuration,
+  and shutdown preserve ownership and readiness.
+
+No host suspension, Cloud wake, or fleet-cost claim follows from these local tests.
+
+## Implementation and writer coverage
+
+`skill-version-retention-work.ts` owns company discovery, one active directory
+cursor, dirty company hints, scoped failures, and the earliest observed deadline.
+It registers through `registerDeadlineWork`. The helper now forwards committed
+scope hints through an optional `onSettled` callback. Existing consumers omit
+that callback and retain their behavior. The coordinator still owns transaction
+reconciliation, admission, overlap prevention, timers, and shutdown joining.
+The worker stores no provider protocol and performs no SQL in `next`.
+
+The cache owner returns per-page deadlines with its existing prune result. The
+worker retains their minimum across directory pages. Only terminal, finished
+runs with a database-live controller lease contribute a lease deadline. Current,
+newest, and agent-pinned versions suppress that deadline. PostgreSQL still owns
+the lease predicate. If the application clock reaches the saved timestamp before
+the database clock, the same concrete lease is rechecked after one second; the
+worker never treats application time as proof of release.
+
+The producer audit covered every production writer of `currentVersionId`, agent
+adapter configuration, `nativeRunFinalizations`, and `environmentLeases`:
+
+- `createVersion`, `cleanupFailedFork`, and `deleteSkills` signal in the transaction
+  that changes version/current protection. Caller-owned transactions remain owners.
+- Agent configuration and hire-approval replay compare normalized desired skill
+  entries. Setup completion also signals because it replaces a draft agent row.
+  Plugin-managed edits use the canonical agent configuration path. Other agent
+  writers change lifecycle, budgets, identity, or metadata and do not remove pins.
+- `notifyInstructionCollection` covers legacy/native terminalization and agent or
+  company deletion. `notifyNativeEnvironmentSettlement` includes the finalization
+  fanout and environment cleanup writes. `notifyRetainedNativeSessionCleanup`
+  covers stop/absence receipts that can release a retained run without an ordinary
+  environment release. Each carries only company scope to this worker.
+- The direct finalization writers outside those fanouts create or maintain an
+  uncommitted/terminal-failure row, change failure detail, or clear an owner only
+  without a committed result. They do not satisfy the committed finalization
+  predicate that releases a captured pin. A later committed transition uses the
+  existing finalization notification boundary.
+- Environment runtime release/destroy and lease cleanup use `environmentService`
+  or `writeEnvironmentCleanup`. Reused provider-task completion also releases prior
+  retained owners; that update now uses the same transaction boundary. Direct
+  credential/project-auth, cleanup-attempt, identity, and recovery-evidence metadata
+  updates do not change this service's ownership predicate. Removing the completed
+  workspace-export marker from an active, unreleased lease still leaves its lease
+  pin; its later release uses the ordinary cleanup boundary.
+- Filesystem publication/reuse signals are local callbacks, including a rejected
+  snapshot flight. They do not invent a database transaction around filesystem I/O.
+
+Startup registers the worker only when retention is enabled. Its first promise
+is tracked as background work without delaying HTTP readiness. Shutdown removes
+the cache subscription, stops and joins the delivery coordinator, then closes
+retained directory iterators. No additional SQL table or migration is introduced.
+
+## Local verification and failure record
+
+At the slice-64 working tree on parent `31c12f1d68ff4a51e06fc2be2abf2c2aee9f9d3a`:
+
+- 91 tests pass in the full retention, immutable cache, and environment-task suites.
+  Retention/cache cases use separate guarded external PostgreSQL databases with
+  migrations applied. The environment-task suite uses its existing controlled
+  plugin boundary. No test is skipped in this acceptance run.
+- 95 startup cases pass, including disabled registration and a held reconstruction
+  that remains tracked while readiness is available.
+- 51 existing native-environment and retained-session cleanup lifecycle cases pass
+  against two additional isolated PostgreSQL databases after the notification fanout
+  changes. The later task-owner retirement change is covered in the 91-case run.
+- Server TypeScript checking and the full server build pass. Repository-wide
+  tests/typecheck/build have not been rerun for this slice.
+
+The first acceptance run exposed three external-database fixture accesses that
+still read the embedded database object. The fixture now resolves both clients
+from the same selected external URL, and the full suite passes. The first startup
+run asserted that all unrelated mock workers had no errors; their pre-existing
+minimal DB doubles cannot run five unrelated workers. The assertion now checks
+this worker's error queue and readiness/active-work behavior. No production
+fallback or timeout was weakened for either harness correction.
+
+Evidence includes empty and permanently protected history quiet for three former
+hourly periods; ordinary materialization/access/version creation/deletion and agent
+pin mutation; outer commit/rollback; all three settlement fanouts; saved access,
+staging, and controller deadlines; database clock fencing; restart; scoped failure
+and incomplete-pin recovery; 55-company discovery and 18 live directory-page
+continuations; a change during a held page; drain/resume; and shutdown joining.
+Existing cache cases retain byte restoration, symlink, late-pin, lock-contention,
+legacy manifest, native-finalization, and interrupted-trash protection coverage.
+
+The related in-flight [PR #17907](https://github.com/paperclipai/paperclip/pull/17907)
+adds keepalive for an actively held skill-cache advisory-lock transaction. That is
+an independent lock-liveness repair. This slice preserves that lock boundary and
+does not duplicate its implementation. An active-operation keepalive is distinct
+from the hourly idle discovery removed here.

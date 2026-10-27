@@ -1,3 +1,4 @@
+import { notifySkillVersionRetention } from "./skill-version-retention-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { ensureSkillCacheDirectory, touchSkillVersionCache, withSkillVersionCacheLock } from "./skill-version-cache.js";
 import { verifyExistingBundledSkillRelease } from "./bundled-skill-release-validation.js";
@@ -3684,6 +3685,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     );
     const previousVersion = options.fileInventory === undefined ? await getCurrentVersion(skill) : null;
     const persist = async (tx: DbOrTransaction) => {
+      await notifySkillVersionRetention(tx, companyId);
       await tx.execute(sql`
         select ${companySkills.id}
         from ${companySkills}
@@ -3993,6 +3995,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
 
   async function cleanupFailedFork(companyId: string, sourceSkillId: string, forkSkillId: string, forkDir: string) {
     await db.transaction(async (tx) => {
+      await notifySkillVersionRetention(tx, companyId);
       await tx
         .update(companySkills)
         .set({ currentVersionId: null, updatedAt: new Date() })
@@ -7350,6 +7353,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
       }
       try {
         return await db.transaction(async tx => {
+          if (initial.length) await notifySkillVersionRetention(tx, companyId);
           await beforeDelete?.(tx);
           const deleted: CompanySkill[] = [];
           for (const before of initial) {
