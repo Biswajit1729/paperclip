@@ -171,3 +171,33 @@ its environment-settlement case failed before the fix. All 84 startup cases and
 typechecking and the full build. Full local test:run remains unqualified for the
 previously recorded embedded-PostgreSQL capacity reason; remote checks remain
 required. No provider resource debt was dropped and no deployed-sleep claim is made.
+
+## Narrow cleanup candidate reads
+
+Review finding `PRRT_kwDORclPyM6wgKt1` correctly identified broad JSON reads in
+the candidate selector. Startup, notification reload, and the checks before and
+after settlement selected complete `runnerProfileJson` and `resultJson` values,
+although disposition needs only `nativeWorkspaceSync` and `workspaceExportRetry`.
+The selector now projects those two nested values in SQL, preserving nulls and
+the existing disposition contract. The actual settlement callback already uses
+`getRunWorkspaceSettlement`, whose SQL has the same narrow projection; it was
+inspected and did not require another change. No provider policy, retry deadline,
+lease predicate, notification, or stored run record changes.
+
+A real PostgreSQL regression seeds four finalized runs with large unrelated saved
+inputs/output plus destroy, keep-running, stop-and-retain, and invalid workspace
+references. Candidate discovery and the checks before/after a controlled release
+returned 7,208,692 response-value bytes before the fix and failed the 16 KiB bound.
+The same test now passes that bound, still selects only explicit destruction for
+a failed retained lease, preserves the conservative invalid-reference fallback,
+and verifies that the saved input/output remains intact. All 21 cases in the
+complete environment-settlement lifecycle suite pass, including actual release,
+keep-running retention, export retries, per-lease deadlines, restart, outer
+transactions, drain, and shutdown. Logs: `/tmp/sleep-environment-projection-red.log`
+and `/tmp/sleep-environment-projection-green.log` with matching status files.
+
+The capture measures returned values at the postgres-js boundary, before Drizzle
+decoding. It does not measure wire bytes or PostgreSQL storage/CPU savings: JSON
+extraction still runs in PostgreSQL. This is evidence of reduced response payload
+and application decoding work, not deployed suspension or fleet-cost savings.
+Workspace verification and fresh PR checks remain separate gates.

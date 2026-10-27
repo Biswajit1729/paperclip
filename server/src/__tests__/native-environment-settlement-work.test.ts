@@ -10,6 +10,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { agents, companies, completionContracts, createDb, environmentLeases, environments, heartbeatRuns, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { environmentRuntimeService, type EnvironmentDriver } from "../services/environment-runtime.js";
@@ -140,6 +141,49 @@ describe("native environment release scheduling", () => {
     return environmentService(writer).acquireLease({ companyId, environmentId, heartbeatRunId: binding.runId,
       issueId: binding.issueId, leasePolicy: "ephemeral", provider: "local", providerLeaseId: randomUUID() });
   }
+  it("discovers and rechecks cleanup without loading unrelated saved run payloads", async () => {
+    const payload = "unrelated saved run data ".repeat(24_000);
+    const fixtures = [];
+    for (const disposition of ["destroy", "keep_running", "stop_and_retain", "invalid"] as const) {
+      const binding = await committed();
+      const run = await read(binding.runId);
+      await db.update(heartbeatRuns).set({
+        runnerProfileJson: { ...run.runnerProfileJson, savedInputs: payload, nativeWorkspaceSync: {
+          schema: disposition === "invalid" ? "unknown" : "paperclip.native-workspace-sync/v3", state: "finalized",
+          descriptorSha256: "a".repeat(64), baselineSha256: "b".repeat(64), finalHostSha256: "c".repeat(64),
+          workspaceId: randomUUID(), leaseId: randomUUID(), providerLeaseId: "saved", remoteCwd: "/workspace",
+          resourceDisposition: disposition === "invalid" ? "destroy" : disposition,
+        } },
+        resultJson: { ...run.resultJson, savedOutput: payload, workspaceExportRetry: { pending: true } },
+      }).where(eq(heartbeatRuns.id, binding.runId));
+      const acquired = await lease(binding);
+      await environmentService(db).releaseLease(acquired.id, "retained", { cleanupStatus: "failed" });
+      fixtures.push(binding);
+    }
+    const events: Record<string, unknown>[] = [];
+    const now = Date.now();
+    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    installDatabaseResponseCapture(db, { nativeRunFinalizations, heartbeatRuns, environmentLeases }, capture);
+    const settle = vi.fn(async () => {});
+    const work = nativeEnvironmentSettlementWork(db, settle);
+    try {
+      const entries = await work.load({ companyId });
+      // Only explicit destruction can recover a failed retained lease, even
+      // with an export retry. Unknown workspace references stay conservative.
+      expect(entries.map(entry => entry.id)).toEqual([fixtures[0].runId]);
+      expect(await work.check(entries[0])).toMatchObject({ id: fixtures[0].runId });
+      expect(settle).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ runId: fixtures[0].runId, succeeded: true }));
+      capture.flush();
+      const reads = events.filter(event => event.table === "native_run_finalizations" && event.operation === "select");
+      expect(reads.length).toBeGreaterThan(0);
+      expect(reads.reduce((calls, event) => calls + Number(event.calls), 0)).toBeGreaterThanOrEqual(3);
+      expect(reads.reduce((bytes, event) => bytes + Number(event.responseValueBytes), 0)).toBeLessThan(16_384);
+    } finally { capture.flush(); }
+    const stored = await read(fixtures[0].runId);
+    expect(stored.runnerProfileJson?.savedInputs).toBe(payload);
+    expect(stored.resultJson?.savedOutput).toBe(payload);
+  });
+
   it("stays quiet with no release debt and wakes on a lease committed after finalization", async () => {
     const binding = await committed(); await start(); await quiet();
     const acquired = await lease(binding); await flush();

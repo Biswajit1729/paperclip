@@ -27,7 +27,10 @@ export function nativeEnvironmentSettlementWork(db: Db, settle: (input: Settleme
   function candidates(scope?: NativeEnvironmentSettlementScope, after?: string) {
     return db.select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
       issueId: nativeRunFinalizations.issueId, phase: nativeRunFinalizations.phase,
-      runnerProfileJson: heartbeatRuns.runnerProfileJson, resultJson: heartbeatRuns.resultJson,
+      runnerProfileJson: sql<Run["runnerProfileJson"]>`case when ${heartbeatRuns.runnerProfileJson} is null then null
+        else jsonb_build_object('nativeWorkspaceSync', ${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync') end`,
+      resultJson: sql<Run["resultJson"]>`case when ${heartbeatRuns.resultJson} is null then null
+        else jsonb_build_object('workspaceExportRetry', ${heartbeatRuns.resultJson}->'workspaceExportRetry') end`,
     }).from(nativeRunFinalizations)
       .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.id, nativeRunFinalizations.runId),
         eq(heartbeatRuns.companyId, nativeRunFinalizations.companyId), eq(heartbeatRuns.nativeIssueId, nativeRunFinalizations.issueId)))
