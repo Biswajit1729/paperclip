@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import { activityLog, agents, agentWakeupRequests, caseEvents, caseHandoffs, cases, companies, environmentLeases, heartbeatRuns, issueComments, issues, nativeRunFinalizations } from "@paperclipai/db";
-import { eq, inArray } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { runningProcesses } from "../../adapters/index.js";
 import {
@@ -171,6 +171,79 @@ describe.skipIf(!runControlPostgresSupport.supported)("heartbeat run-control dat
     expect(await createHeartbeatRunControl(db, deps).cancelRunInternal(
       run.id, undefined, { expectedStatus: "scheduled_retry" },
     )).toMatchObject({ status: "cancelled" });
+  });
+
+  it.each([["40P01", 3], ["XX000", 1]] as const)("bounds cancellation transaction attempts for PostgreSQL %s", async (code, attempts) => {
+    const { company, agent } = await fixture();
+    const run = await liveRun(company.id, agent.id);
+    const [issue] = await db.insert(issues).values({ companyId: company.id, title: "Cancellation failure", status: "in_progress",
+      assigneeAgentId: agent.id, executionRunId: run.id }).returning();
+    await db.update(heartbeatRuns).set({ issueId: issue.id, contextSnapshot: { issueId: issue.id } }).where(eq(heartbeatRuns.id, run.id));
+    await db.execute(sql`create sequence run_control_cancel_attempts`);
+    await db.execute(sql.raw(`create function run_control_cancel_fault() returns trigger language plpgsql as $$
+      begin
+        if new.result_json->'executionCancellation'->>'state' = 'requested' then
+          perform nextval('run_control_cancel_attempts');
+          raise exception using errcode = '${code}', message = 'Synthetic cancellation transaction failure';
+        end if;
+        return new;
+      end $$`));
+    await db.execute(sql`create trigger run_control_cancel_fault before update on heartbeat_runs
+      for each row execute function run_control_cancel_fault()`);
+    const deps = callbacks(db);
+    try {
+      await expect(createHeartbeatRunControl(db, deps).cancelRunInternal(run.id, "Operator Stop", {
+        resultJson: { cancelledByActorType: "user", cancelledByUserId: "operator" },
+      })).rejects.toMatchObject({ cause: { code } });
+      const [counter] = await db.execute<{ count: number }>(sql`select last_value::int as count from run_control_cancel_attempts`);
+      expect(counter.count).toBe(attempts);
+      expect(await deps.getRun(run.id)).toMatchObject({ status: "running", resultJson: null });
+      expect(terminateLocalService).not.toHaveBeenCalled();
+      expect(deps.appendRunEvent).not.toHaveBeenCalled();
+    } finally {
+      await db.execute(sql`drop trigger run_control_cancel_fault on heartbeat_runs`);
+      await db.execute(sql`drop function run_control_cancel_fault()`);
+      await db.execute(sql`drop sequence run_control_cancel_attempts`);
+    }
+  });
+
+  it("finishes operator Stop after a concurrent run writer causes a transaction deadlock", async () => {
+    const { company, agent } = await fixture();
+    const run = await liveRun(company.id, agent.id);
+    const [issue] = await db.insert(issues).values({ companyId: company.id, title: "Stop contention", status: "in_progress",
+      assigneeAgentId: agent.id, executionRunId: run.id, checkoutRunId: run.id }).returning();
+    await db.update(heartbeatRuns).set({ issueId: issue.id, contextSnapshot: { issueId: issue.id } }).where(eq(heartbeatRuns.id, run.id));
+    let enter!: () => void, release!: () => void;
+    const entered = new Promise<void>(resolve => { enter = resolve; });
+    const released = new Promise<void>(resolve => { release = resolve; });
+    let blockerPid = 0;
+    const writer = db.transaction(async tx => {
+      // Make Stop's default detector see the cycle first, so this reproduces
+      // the API-side victim observed in CI rather than a random victim.
+      await tx.execute(sql`set local deadlock_timeout = '10s'`);
+      const [backend] = await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`);
+      blockerPid = backend.pid;
+      await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)).for("update");
+      enter(); await released;
+      await tx.update(issues).set({ updatedAt: new Date() }).where(eq(issues.id, issue.id));
+    });
+    await entered;
+    const deps = callbacks(db);
+    const stopping = createHeartbeatRunControl(db, deps).cancelRunInternal(run.id, "Operator Stop", {
+      resultJson: { cancelledByActorType: "user", cancelledByUserId: "operator" },
+    }).then(value => ({ value, error: undefined }), error => ({ value: undefined, error }));
+    try {
+      await vi.waitFor(async () => {
+        const waiting = await db.execute(sql`select pid from pg_stat_activity
+          where ${blockerPid} = any(pg_blocking_pids(pid)) and wait_event_type = 'Lock'`);
+        expect(waiting.length).toBeGreaterThan(0);
+      }, { timeout: 5000 });
+    } finally { release(); }
+    await writer;
+    const result = await stopping;
+    expect(result.error).toBeUndefined();
+    expect(result.value).toMatchObject({ status: "cancelled" });
+    expect(await deps.getRun(run.id)).toMatchObject({ status: "cancelled" });
   });
 
   it.each(["queued", "running"] as const)("preserves case intent when a guarded Stop loses to %s promotion", async status => {
