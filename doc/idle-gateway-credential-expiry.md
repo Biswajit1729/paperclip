@@ -39,13 +39,23 @@ enabled, committed changes and actual expiry times replace the recurring cleanup
 call. With heartbeat scheduling disabled, the existing startup-only cleanup is
 preserved. Tool action-review recovery is a separate obligation and is unchanged.
 
-Existing token deletion is bounded to 500 rows per pass. A remaining overdue
-expiry schedules another pass after 30 seconds. Failed reconciliation also
+Token and session deletion are each bounded to 500 rows per pass. Session
+selection orders by expiry and rechecks expiry when deleting the selected IDs.
+A remaining overdue expiry schedules another pass after 30 seconds. Failed reconciliation also
 retries at that bound. No unfinished reconciliation or future expiry means no
 recurring SQL. A generation retains writes arriving during reconciliation.
 Startup restores deadlines; drain retains first writes without passive SQL;
 resume completes overdue cleanup. The coordinator owns shutdown and waits for
 in-flight work.
+
+Sequential committed writes are coalesced for up to 30 seconds after a
+successful cleanup pass, matching the former heartbeat cleanup cadence. A
+previously loaded expiry can preempt that window. A newly reported credential
+may physically remain until that bounded follow-up; authentication still rejects
+it immediately at expiry. A successful pass with no future expiry and no new
+notifications creates no timer. This uses the shared optional notification
+coalescing capability, promoted from the later plugin/decision recovery slices;
+workers that omit it retain their existing behavior.
 
 ## Evidence and limits
 
@@ -80,3 +90,24 @@ producer signals must use the same token eligibility as cleanup: run-token idle
 markers must not schedule the operator-token expiry worker. Keep the run-liveness
 reaper with its own owner and retain both regression suites. A conflict-free
 text merge alone does not prove this integration.
+
+## Notification amplification review repair (2026-10-27)
+
+Ten sequential real session/token creation transactions reproduced ten extra
+instance-wide cleanup passes. With coalescing they cause one follow-up pass.
+A separate 501-session fixture reproduced the unbounded delete, then passed
+with 500 removed initially and the remaining overdue row removed at the saved
+30-second retry. A still-valid session survives both passes. The tests also
+preserve an already loaded expiry only 500 milliseconds away and verify that a
+new one-second session is rejected while physical cleanup waits for coalescing.
+
+The initial full run exposed four outer-transaction tests whose fake-clock wait
+expected the intent hold to release before the new coalescing follow-up. Their
+settlement helper now advances the clock through that window while preserving
+the original commit/rollback assertions. The complete gateway expiry, gateway
+acceptance, custom-image deadline, and startup suites pass: 147 tests in four
+files. Server typechecking also passes on the owning branch. This is local
+behavioral evidence; combined-stack and fresh remote checks remain required.
+The full local test:run remains unverified because of embedded PostgreSQL
+startup/capacity limits; the two real gateway suites used separate migrated,
+task-owned disposable PostgreSQL databases.
