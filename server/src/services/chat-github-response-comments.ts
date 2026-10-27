@@ -1,3 +1,4 @@
+import { readGitHubResponseRun, responseRunColumns } from "./chat-channels/github/response-run-state.js";
 import { and, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
 import {
   chatActions, chatConversations, chatDeliveries, chatEndpoints,
@@ -28,50 +29,6 @@ type Api = { request<T>(path: string, options?: { method?: string; body?: unknow
 type Lease = { commit<T>(write: (tx: Transaction) => Promise<T>): Promise<T> };
 type Source = GitHubResponseSource;
 type Comment = { id: number; body?: string; html_url: string; user?: { login?: string } };
-const responseRunColumns = {
-  id: heartbeatRuns.id,
-  companyId: heartbeatRuns.companyId,
-  agentId: heartbeatRuns.agentId,
-  responsibleUserId: heartbeatRuns.responsibleUserId,
-  activeIdentityContextId: heartbeatRuns.activeIdentityContextId,
-  nativeIssueId: heartbeatRuns.nativeIssueId,
-  issueId: heartbeatRuns.issueId,
-  status: heartbeatRuns.status,
-  updatedAt: heartbeatRuns.updatedAt,
-  // Terminal execution can precede native presentation commit. Until its
-  // durable decision exists, missing output is undecided rather than failure.
-  nativePresentationPending: sql<boolean>`coalesce(
-    ${heartbeatRuns.status} = 'succeeded'
-    and ${heartbeatRuns.runtimeMode} = 'native'
-    and (${heartbeatRuns.nativePhase} is distinct from 'committed'
-      or ${heartbeatRuns.resultJson}->'presentationDecision'->>'schema' is distinct from 'paperclip.run_presentation_decision.v1'
-      or coalesce(${heartbeatRuns.resultJson}->'presentationDecision'->>'commentAction', '') not in ('none', 'create', 'reuse')),
-    false
-  )`,
-  // Project only the server-committed no-publication decision, never the
-  // potentially large native result or model-authored summary.
-  passiveResponseWait: sql<boolean>`coalesce(
-    ${heartbeatRuns.status} = 'succeeded'
-    and ${heartbeatRuns.runtimeMode} = 'native'
-    and ${heartbeatRuns.nativePhase} = 'committed'
-    and ${heartbeatRuns.resultJson}->>'finalizationPhase' = 'committed'
-    and ${heartbeatRuns.resultJson}->>'finalizationReasonCode' = 'external_chat_response_waiting'
-    and ${heartbeatRuns.resultJson}->'nativeResult'->>'schema' = 'paperclip.run_result.v1'
-    and ${heartbeatRuns.resultJson}->'nativeResult'->>'reportedWorkDisposition' = 'yielded'
-    and ${heartbeatRuns.resultJson}->'nativeResult'->'continuation'->>'kind' = 'response_wake'
-    and ${heartbeatRuns.resultJson}->'presentationDecision'->>'schema' = 'paperclip.run_presentation_decision.v1'
-    and ${heartbeatRuns.resultJson}->'presentationDecision'->>'chosenSource' = 'none'
-    and ${heartbeatRuns.resultJson}->'presentationDecision'->>'commentAction' = 'none'
-    and ${heartbeatRuns.resultJson}->'presentationDecision'->'reasonCodes' @> '["yielded_control_plane_wait"]'::jsonb,
-    false
-  )`,
-  contextSnapshot: sql<Record<string, unknown>>`jsonb_build_object(
-    'issueId', ${heartbeatRuns.contextSnapshot}->'issueId',
-    'taskId', ${heartbeatRuns.contextSnapshot}->'taskId',
-    'wakeCommentId', ${heartbeatRuns.contextSnapshot}->'wakeCommentId',
-    'wakeCommentIds', ${heartbeatRuns.contextSnapshot}->'wakeCommentIds'
-  )`,
-};
 const generation = (endpoint: Source["endpoint"]) => (endpoint.setup as { runtimeGeneration?: number }).runtimeGeneration ?? 0;
 const stoppedAcknowledgement = Symbol("stopped GitHub acknowledgement");
 const actionKey = (deliveryId: string) => `github_response:${deliveryId}`;
@@ -252,22 +209,11 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
       let preserveFinal = false;
       if (finalBody === undefined) {
         const existing = await stageResponse(db, source);
-        const [requestRun] = await db.select({ runId: heartbeatRuns.id }).from(heartbeatRuns).innerJoin(chatMessageLinks, and(
-          eq(chatMessageLinks.companyId, source.endpoint.companyId), eq(chatMessageLinks.endpointId, source.endpoint.id),
-          eq(chatMessageLinks.deliveryId, deliveryId), eq(chatMessageLinks.direction, "inbound"),
-          or(sql`${chatMessageLinks.commentId}::text = ${heartbeatRuns.contextSnapshot}->>'wakeCommentId'`,
-            sql`coalesce(${heartbeatRuns.contextSnapshot}->'wakeCommentIds', '[]'::jsonb) ? ${chatMessageLinks.commentId}::text`),
-        )).where(and(eq(heartbeatRuns.companyId, source.endpoint.companyId), eq(heartbeatRuns.agentId, source.endpoint.assignedAgentId),
-          sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${source.conversation.issueId}`))
-          .orderBy(desc(heartbeatRuns.createdAt)).limit(1);
-        const [latestRun] = await db.select(responseRunColumns).from(heartbeatRuns).where(and(
-          eq(heartbeatRuns.companyId, source.endpoint.companyId), eq(heartbeatRuns.agentId, source.endpoint.assignedAgentId),
-          sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${source.conversation.issueId}`,
-        )).orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1);
-        const originMessageId = latestRun?.activeIdentityContextId ? await chatRunSourceMessageId(db, latestRun,
-          { allowLegacyWakeComment: true, provider: "github" }) : null;
-        const ownsLatestRequest = !!latestRun && (requestRun?.runId === latestRun.id ||
-          (!!source.sourceMessageId && originMessageId === source.sourceMessageId));
+        const { latestRun, ownsLatestRequest } = await readGitHubResponseRun(db, {
+          companyId: source.endpoint.companyId, endpointId: source.endpoint.id,
+          agentId: source.endpoint.assignedAgentId, issueId: source.conversation.issueId,
+          deliveryId, sourceMessageId: source.sourceMessageId,
+        });
         requestRunning = ownsLatestRequest && latestRun?.status === "running";
         const terminal = latestRun && ["succeeded", "failed", "interrupted", "timed_out", "cancelled"].includes(latestRun.status);
         const run = terminal && (ownsLatestRequest || source.issueStatus === "blocked") ? latestRun : null;

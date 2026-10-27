@@ -1,3 +1,4 @@
+import { recordRunPresentationDecision } from "../services/heartbeat/run-completion.js";
 import { environmentService } from "../services/environments.js";
 import { createAdmissionTransactionScope, createWakeAdmissionWriter } from "../modules/wake-queue/adapters/postgres.js";
 import { chatFailedRetryNoticeWork } from "../services/chat-failed-retry-notice-work.js";
@@ -4351,6 +4352,54 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect([...f.responseComments.values()][0].body).toContain("without publishing a final response");
       expect([...f.responseComments.values()][0].body).toContain("paperclip-response-state:final");
       expect(f.responseWrites.map(write => write.method)).toEqual(["POST", "PATCH"]);
+    });
+    it("parks a GitHub acknowledgement until native presentation commits", async () => {
+      const f = await toolReplyFixture();
+      const [action] = await db.select().from(chatActions).where(and(
+        eq(chatActions.endpointId, f.endpoint.id), eq(chatActions.kind, "github_response_comment")));
+      await db.update(chatActions).set({ status: "received", result: null }).where(eq(chatActions.id, action.id));
+      await db.update(heartbeatRuns).set({ status: "succeeded", nativePhase: "committed", resultJson: {} })
+        .where(eq(heartbeatRuns.id, f.run.id));
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
+        onError: error => errors.push(error) });
+      const decision = { schema: "paperclip.run_presentation_decision.v1" as const,
+        commentAction: "none" as const, chosenSource: "none" as const, reasonCodes: ["no_final_response"] };
+      const commit = (database: typeof db) => recordRunPresentationDecision(database, {
+        companyId: f.companyId, runId: f.run.id, issueId: f.conversation.issueId!, decision,
+      });
+      try {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+        await f.service.registerGitHubAcknowledgementWork(coordinator, () => true).ready;
+        const quiet = async () => {
+          await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(10);
+            expect(coordinator.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0); });
+          const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction");
+          try {
+            await vi.advanceTimersByTimeAsync(120_000);
+            expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
+          } finally { reads.mockRestore(); writes.mockRestore(); }
+        };
+        await quiet();
+        expect(f.responseWrites).toHaveLength(1);
+        await expect(db.transaction(async tx => {
+          await commit(tx as unknown as typeof db);
+          expect((await readHeartbeatRunsById(f.run.id))[0].resultJson?.presentationDecision).toBeUndefined();
+          throw new Error("rollback presentation");
+        })).rejects.toThrow("rollback presentation");
+        await quiet();
+        expect(f.responseWrites).toHaveLength(1);
+        await commit(db);
+        await vi.waitFor(async () => {
+          await vi.advanceTimersByTimeAsync(10);
+          expect((await db.select().from(chatActions).where(eq(chatActions.id, action.id)))[0])
+            .toMatchObject({ status: "processed", result: { final: true } });
+        }, { timeout: 10_000 });
+        expect(f.responseWrites.map(write => write.method)).toEqual(["POST", "PATCH"]);
+        expect(f.responseWrites[1].body).toContain("without publishing a final response");
+        await quiet();
+        expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); vi.useRealTimers(); }
     });
     it("does not let an unsettled GitHub fallback block a later board message", async () => {
       const f = await toolReplyFixture();
