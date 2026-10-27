@@ -1105,17 +1105,18 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       secretsTmpDir,
       "master.key",
     );
-    if (externalTestDatabaseUrl) {
-      db = createDb(externalTestDatabaseUrl);
-    } else {
-      tempDb = await startEmbeddedPostgresTestDatabase(
-        "paperclip-chat-channels-",
-      );
-      db = createDb(tempDb.connectionString);
+    if (!externalTestDatabaseUrl) {
+      tempDb = await startEmbeddedPostgresTestDatabase("paperclip-chat-channels-");
     }
+    // Scheduler tests advance virtual time while PostgreSQL uses real I/O.
+    // Do not expire or time out its connections on those virtual clock jumps.
+    db = createDb(externalTestDatabaseUrl ?? tempDb!.connectionString, {
+      idleTimeoutSeconds: 0, connectTimeoutSeconds: 0, maxLifetimeSeconds: 0,
+    });
   }, 90_000);
 
   afterAll(async () => {
+    await db?.$client.end();
     await tempDb?.cleanup();
     if (previousKeyFile === undefined)
       delete process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
