@@ -1189,14 +1189,17 @@ describe("startServer feedback export wiring", () => {
     }
   });
 
-  it.each(["retained cleanup", "workspace finalization"] as const)("becomes ready while %s is held but joins it at shutdown", async owner => {
+  it.each(["retained cleanup", "workspace finalization", "native result commit"] as const)("becomes ready while %s is held but joins it at shutdown", async owner => {
     loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: true }));
     let releaseCleanup!: () => void;
     const ready = new Promise<void>(resolve => { releaseCleanup = resolve; });
     const stop = vi.fn();
     const register = owner === "retained cleanup" ? heartbeatServiceMock.registerRetainedNativeSessionCleanupWork
-      : heartbeatServiceMock.registerNativeWorkspaceFinalizationWork;
-    register.mockReturnValueOnce({ ready, stop });
+      : owner === "workspace finalization" ? heartbeatServiceMock.registerNativeWorkspaceFinalizationWork
+      : heartbeatServiceMock.registerNativeResultCommitWork;
+    if (owner === "native result commit") heartbeatServiceMock.registerNativeResultCommitWork.mockReturnValueOnce({ ready });
+    else (owner === "retained cleanup" ? heartbeatServiceMock.registerRetainedNativeSessionCleanupWork
+      : heartbeatServiceMock.registerNativeWorkspaceFinalizationWork).mockReturnValueOnce({ ready, stop });
     const timer = vi.spyOn(globalThis, "setInterval").mockImplementation(() => 1 as unknown as ReturnType<typeof setInterval>);
     let started = false;
     const starting = startServer().then(server => { started = true; return server; });
@@ -1211,7 +1214,7 @@ describe("startServer feedback export wiring", () => {
       const server = await starting;
       stopping = server.shutdown().then(() => { stopped = true; });
       await settleStartupHousekeeping();
-      expect(stop).toHaveBeenCalledOnce();
+      if (owner !== "native result commit") expect(stop).toHaveBeenCalledOnce();
       expect(stopped).toBe(false);
     } finally {
       releaseCleanup();
