@@ -35,11 +35,19 @@ heartbeat scheduling is enabled. The public combined sweep retains its default
 recovery behavior for existing callers.
 
 Each pass honors the existing configured batch size (default 100, finite values
-clamped to at least one integer). Its timestamp/ID cursor advances past failed or
-invalid candidates and wraps at the end. Failed rows retain their obligation.
-Rows without a saved decider are not executed under invented authority. A missing
-option produces an error. Both cases remain visible as unfinished work and retain
-retry scheduling rather than starving later candidates or being discarded.
+clamped to at least one integer). Its timestamp/ID cursor advances past failed
+candidates within a frozen final timestamp/ID. Newer due claims wait for the next
+rotation, so a continuous stream cannot postpone an earlier failure forever.
+Both cursor positions retain PostgreSQL precision. Genuine execution or settlement
+failures retain their retry obligation.
+
+A missing saved decider or chosen option is a deterministic malformed outcome.
+Recovery rechecks it under a row lock, records an audited failed outcome (partial
+if a completed effect receipt exists), and preserves all effect receipts. It
+creates no authority and executes no effect for the malformed claim. The failure
+reason and continuation obligation are saved in the same transaction as the audit.
+An audit or settlement failure rolls back and leaves the claim pending. A claim
+repaired before the lock is acquired remains eligible for normal recovery.
 
 The decision service re-reads current status before recovery. Foreground and
 recovery execution share the existing per-decision flight scoped to the DB owner.
@@ -101,8 +109,10 @@ microsecond timestamp ahead of a valid claim. With a one-row page, the original
 Date cursor selected the invalid claim again and starved the valid effect. That
 regression failed before repair. Recovery now retains the timestamp as database
 text for cursor comparisons, leaving business grace deadlines unchanged. The
-invalid claim remains durable debt and is revisited after paging wraps; the valid
-claim progresses without repeating its completed effect.
+unresolved claim remains durable debt and is revisited after paging wraps; the
+valid claim progresses without repeating its completed effect. The regression
+now holds a candidate unresolved through the dispatch callback, because known
+malformed claims receive a durable failed outcome as described above.
 All 18 effect-recovery lifecycle cases and server typechecking pass after repair.
 
 ### Foreground join test timing
@@ -133,3 +143,38 @@ and startup suites passed, followed by server typechecking. Evidence:
 and `/tmp/sleep-effect-join-root-types.log` with their status files. The initial
 failure and mutation failure are expected evidence, not passing runs. Remaining
 review findings and fresh stack CI remain separate acceptance requirements.
+
+
+### Recovery review repairs (October 26)
+
+Two regressions failed before repair: an old failure was not revisited while newer
+due claims kept each page full, and creating an open decision caused an unnecessary
+effect-recovery scan. Frozen rotation boundaries now preserve both retry fairness
+and forward progress. Creation still signals its continuation/expiry consumers;
+the effect queue is signaled by the existing claim/settlement write boundary.
+
+Four malformed-outcome cases also failed before repair. Recovery now records
+`effectRecoveryError` and a `decision.recovery_failed` activity atomically. Live
+activity publication follows commit. Existing completed effect receipts remain
+unchanged, and the normal continuation owner delivers the result. A real audit
+insert failure leaves both status and audit uncommitted, then later recovery
+settles successfully. A real PostgreSQL row-lock test repairs a claim while
+settlement waits; the locked recheck leaves that claim running, and its valid
+effect executes once on the next pass.
+
+The shared execution flight now loads the current claim and derives recovery
+authority together. Recovery no longer performs a redundant full-row lookup
+before entering the flight. Foreground overlap, current membership checks,
+per-effect locks, continuation behavior, and the resumption count are preserved.
+Only the two known malformed states are terminalized; other failures retain their
+existing retry policy. No schema, queue, or external-wake contract is added.
+
+All 24 recovery lifecycle cases and server typechecking pass. Controlled failures
+and final evidence are retained in `/tmp/sleep-effect-fairness-red.log`,
+`/tmp/sleep-effect-invalid-red.log`, `/tmp/sleep-effect-owner-tests.log`, and
+`/tmp/sleep-effect-owner-types.log`. Broader stack and remote acceptance remain
+separate requirements; these results do not prove host suspension.
+
+The owning branch also passes all 129 cases across the four complete recovery,
+decision-service, expiry, and startup suites. Database-backed suites use separate
+migrated disposable databases. See `/tmp/sleep-effect-review-owner-acceptance.log`.
