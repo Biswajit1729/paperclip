@@ -73,3 +73,44 @@ The ten-minute policy is unchanged. Active provider execution, unknown external
 outcomes, and other worker obligations still prevent unsafe sleep. No Cloud
 eligibility or external-alarm coverage changes here. Worker quiet is not evidence
 of whole-instance or database suspension.
+
+## Sequential-write cost correction (October 27)
+
+Review found that sequential tenant writes could each request a global
+interruption pass, even when no execution was stale. A real-SQL regression
+created ten tool review requests through the gateway and allowed each preceding
+pass to finish. It measured 11 stale-claim scans including startup. Concurrent
+notification coalescing alone did not cover this sequence.
+
+The worker now uses the existing deadline helper's 30-second notification
+coalescing window, matching the former default maintenance cadence. The same
+regression measures one startup scan and one follow-up scan for those ten
+requests, then no worker SQL through an additional idle hour. A loaded stale
+claim deadline only 500 milliseconds away still preempts the window and
+quarantines the unknown outcome without invoking the provider. Foreground
+execution and result settlement remain immediate. Newly discovered work can
+wait up to this window; the ten-minute stale-claim policy is unchanged.
+
+This is the bounded-frequency alternative raised in review. Discovery is still
+instance-wide, and real stale backlogs still drain through the existing pages.
+It does not claim company-isolated scans or constant cost for a real backlog.
+No notification and no saved execution deadline means no periodic scan. No new
+table, index, or scheduler is added. Startup, drain, retry and shutdown retain
+the existing owners.
+
+The first full verification passed 175 cases and failed three fake-clock waits:
+settlement writes leave a notification pending for its coalesced follow-up, so
+waiting for the idle hold without advancing that armed deadline cannot finish.
+An initial shared clock adjustment then advanced an unrelated five-second
+expiry test too far (177 passed, one failed). The adjustment is now confined to
+the interruption tests. It lets real SQL finish and advances only to an actually
+armed short follow-up. The imminent-deadline test checks quarantine before that
+30-second window and separately waits for eventual quiet. Product assertions
+were retained.
+
+The final complete gateway-service and startup-wiring suites pass all 178 cases
+without skips, and server typechecking passes, on owner source based on
+`e255d8eff3363cf0bb63541bdc7ef055d4321f83`. The attempted third test selector
+`deadline-work.test.ts` did not exist at this owner; no separate helper-suite
+pass is claimed. The shared helper is exercised by the full gateway suites.
+Fresh combined-source checks and remote review remain required.
