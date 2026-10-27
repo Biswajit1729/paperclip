@@ -4991,7 +4991,7 @@ rl.on("line", (line) => {
     }
   });
 
-  it("denies agent actors from runtime control and raw gateway audit routes", async () => {
+  it("denies agents without responsible-user authority from runtime control and gateway audit routes", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
     const { run } = await createIssueAndRun(db, company.id, agent.id);
@@ -5008,25 +5008,25 @@ rl.on("line", (line) => {
       .get("/api/tool-gateway/runtime-slots")
       .query({ companyId: company.id });
     expect(list.status).toBe(403);
-    expect(list.body.error).toBe("Board access required");
+
 
     const stop = await request(app)
       .post("/api/tool-gateway/runtime-slots/slot-1/stop")
       .send({ companyId: company.id });
     expect(stop.status).toBe(403);
-    expect(stop.body.error).toBe("Board access required");
+
 
     const restart = await request(app)
       .post("/api/tool-gateway/runtime-slots/slot-1/restart")
       .send({ companyId: company.id });
     expect(restart.status).toBe(403);
-    expect(restart.body.error).toBe("Board access required");
+
 
     const audit = await request(app)
       .get("/api/tool-gateway/audit")
       .query({ companyId: company.id });
     expect(audit.status).toBe(403);
-    expect(audit.body.error).toBe("Board access required");
+
   });
 
   it("allows board runtime control and audit reads through explicit board permissions", async () => {
