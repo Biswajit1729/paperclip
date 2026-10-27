@@ -47,6 +47,7 @@ import { initializeRunIdentity, reserveSteeredIdentity, reconcileSteeredIdentity
 import { issueService } from "../services/issues.js";
 import { approvalService } from "../services/approvals.js";
 import { commitToolActionReview } from "../services/tool-action-review.js";
+import { claimToolTestApproval, releaseToolTestApproval, startToolTestInvocation } from "../services/tool-test-approval.js";
 import { materializeNativeInteractionResponses } from "../services/native-runtime/native-interaction-bridge.js";
 import { toolActionDeliveryService } from "../services/tool-action-delivery.js";
 import { secretService } from "../services/secrets.js";
@@ -1025,6 +1026,78 @@ describeEmbeddedPostgres("tool gateway service", () => {
         const reads = vi.spyOn(db, "select");
         await settle(60 * 60_000); expect(reads).not.toHaveBeenCalled(); reads.mockRestore();
         draining = false; await settle(); await executed(pending); await quiet();
+      });
+
+      it.each(["foreground", "recovery"] as const)("retries a Test-tab %s approval after a real pre-dispatch database timeout", async mode => {
+        const remoteCall = providerFixture(); remoteCall.release();
+        const { pending } = await testRequest(remoteCall.provider); await approve(pending);
+        const preparationDb = createDb(externalDatabaseUrl ?? tempDb!.connectionString, {
+          maxConnections: 1, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0,
+        });
+        const preparingGateway = createTestToolGatewayService(preparationDb, { remoteHttpRequest: remoteCall.provider });
+        let unlock!: () => void, locked!: () => void;
+        const gate = new Promise<void>(resolve => { unlock = resolve; });
+        const acquired = new Promise<void>(resolve => { locked = resolve; });
+        const lock = db.transaction(async tx => {
+          await tx.execute(sql`lock table tool_policies in access exclusive mode`);
+          locked(); await gate;
+        });
+        await acquired;
+        try {
+          await preparationDb.execute(sql`set lock_timeout = '2s'`);
+          const attempting = mode === "foreground"
+            ? preparingGateway.approveActionRequest({ companyId: fixture.company.id, actionRequestId: pending.id, actor: { userId: "board" } })
+            : preparingGateway.recoverApprovedActionReviews(fixture.company.id);
+          // Observe the real committed claim while its subsequent policy read
+          // is blocked. Provider execution has not started.
+          void attempting.catch(() => undefined);
+          await vi.waitFor(async () => {
+            expect((await db.select().from(toolActionRequests).where(eq(toolActionRequests.id, pending.id)))[0].status).toBe("executing");
+          });
+          if (mode === "foreground") await expect(attempting).rejects.toMatchObject({ cause: { code: "55P03" } });
+          else expect(await attempting).toEqual({ scanned: 1, retry: true });
+          expect((await db.select().from(toolActionRequests).where(eq(toolActionRequests.id, pending.id)))[0])
+            .toMatchObject({ status: "approved", signedArguments: pending.signedArguments });
+          expect((await db.select().from(toolInvocations).where(eq(toolInvocations.id, pending.invocationId)))[0])
+            .toMatchObject({ status: "awaiting_approval", startedAt: null });
+          expect(remoteCall.provider).not.toHaveBeenCalled();
+        } finally { unlock(); await lock; await preparationDb.$client.end({ timeout: 1 }); }
+        await startRecovery(); await settle(); await executed(pending); await quiet();
+        expect(remoteCall.provider).toHaveBeenCalledOnce();
+      }, 15_000);
+
+      it.each(["started", "reclaimed", "mismatched", "prior_dispatch"] as const)("refuses to release a Test-tab preparation claim with %s ownership evidence", async state => {
+        const remoteCall = providerFixture(); remoteCall.release();
+        const { pending } = await testRequest(remoteCall.provider); await approve(pending);
+        const claim = await claimToolTestApproval(db, pending.id, pending.invocationId);
+        expect(claim).not.toBeNull();
+        if (state === "started") expect(await startToolTestInvocation(db, pending.invocationId, claim!)).toBe(true);
+        if (state === "reclaimed") await db.update(toolActionRequests)
+          .set({ updatedAt: new Date(claim!.claimedAt.getTime() + 1000) }).where(eq(toolActionRequests.id, pending.id));
+        if (state === "prior_dispatch") await db.update(toolInvocations)
+          .set({ startedAt: new Date() }).where(eq(toolInvocations.id, pending.invocationId));
+        const beforeRequest = (await db.select().from(toolActionRequests).where(eq(toolActionRequests.id, pending.id)))[0];
+        const beforeInvocation = (await db.select().from(toolInvocations).where(eq(toolInvocations.id, pending.invocationId)))[0];
+        expect(await releaseToolTestApproval(db, state === "mismatched" ? { ...claim!, invocationId: randomUUID() } : claim!)).toBe(false);
+        expect((await db.select().from(toolActionRequests).where(eq(toolActionRequests.id, pending.id)))[0]).toEqual(beforeRequest);
+        expect((await db.select().from(toolInvocations).where(eq(toolInvocations.id, pending.invocationId)))[0]).toEqual(beforeInvocation);
+        expect(remoteCall.provider).not.toHaveBeenCalled();
+      });
+
+      it("rolls a Test-tab preparation release back with its transaction and invalidates the released claim", async () => {
+        const remoteCall = providerFixture(); remoteCall.release();
+        const { pending } = await testRequest(remoteCall.provider); await approve(pending);
+        const claim = await claimToolTestApproval(db, pending.id, pending.invocationId);
+        expect(claim).not.toBeNull();
+        await expect(db.transaction(async tx => {
+          expect(await releaseToolTestApproval(tx as unknown as typeof db, claim!)).toBe(true);
+          throw new Error("release rollback");
+        })).rejects.toThrow("release rollback");
+        expect((await db.select().from(toolActionRequests).where(eq(toolActionRequests.id, pending.id)))[0].status).toBe("executing");
+        expect(await releaseToolTestApproval(db, claim!)).toBe(true);
+        expect(await startToolTestInvocation(db, pending.invocationId, claim!)).toBe(false);
+        await startRecovery(); await settle(); await executed(pending); await quiet();
+        expect(remoteCall.provider).toHaveBeenCalledOnce();
       });
 
       it.each(["foreground", "recovery"] as const)("claims a Test-tab action once when %s wins", async winner => {
