@@ -51110,6 +51110,18 @@
           "primaryKey": false,
           "notNull": false
         },
+        "git_authorization_grant_id": {
+          "name": "git_authorization_grant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "git_authorized_by_user_id": {
+          "name": "git_authorized_by_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "pause_reason": {
           "name": "pause_reason",
           "type": "text",
@@ -51247,6 +51259,19 @@
             "id"
           ],
           "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "projects_git_authorization_grant_id_connection_grants_id_fk": {
+          "name": "projects_git_authorization_grant_id_connection_grants_id_fk",
+          "tableFrom": "projects",
+          "tableTo": "connection_grants",
+          "columnsFrom": [
+            "git_authorization_grant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
           "onUpdate": "no action"
         }
       },
@@ -56434,44 +56459,6 @@
           ],
           "isUnique": false,
           "where": "\"tool_action_requests\".\"status\" = 'pending'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "tool_action_requests_executing_deadline_idx": {
-          "name": "tool_action_requests_executing_deadline_idx",
-          "columns": [
-            {
-              "expression": "updated_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"tool_action_requests\".\"status\" = 'executing'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "tool_action_requests_approved_idx": {
-          "name": "tool_action_requests_approved_idx",
-          "columns": [
-            {
-              "expression": "id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"tool_action_requests\".\"status\" = 'approved'",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -64106,6 +64093,6 @@
     "tables": {},
     "columns": {}
   },
-  "id": "ce9f6a62-5259-4041-b313-9de9484154f7",
-  "prevId": "f00ffc99-8611-486f-a74a-c6b1e753204d"
+  "id": "fcbc38bf-2056-4469-bcec-0afc8a34501a",
+  "prevId": "85a48c59-df4c-45a8-b38c-f4ae2e1cf4ef"
 }
