@@ -8107,25 +8107,6 @@ export function createToolGatewayService(
         session,
         tool,
       );
-      const currentAccess = await policyService.admitInvocation(
-        policyInputForTool({
-          session,
-          tool,
-          parameters: signedPayload.arguments,
-          consumeRateLimit: false,
-        }),
-        invocation.id,
-        claim,
-      );
-      if (
-        !currentAccess.allowed &&
-        currentAccess.decision !== "require_approval"
-      )
-        throw new ToolGatewayHttpError(
-          403,
-          currentAccess.explanation,
-          currentAccess.reasonCode,
-        );
       if (
         !approvalSnapshotsMatch(
           signedPayload.approvalSnapshot,
@@ -8184,6 +8165,27 @@ export function createToolGatewayService(
         sensitiveMode: "redact",
         promptInjectionMode: "ignore",
       })).summary;
+      // Validate the signed and managed payload before consuming admission.
+      // Historical payload drift belongs to the expiry owner above.
+      const currentAccess = await policyService.admitInvocation(
+        policyInputForTool({
+          session,
+          tool,
+          parameters: signedPayload.arguments,
+          consumeRateLimit: false,
+        }),
+        invocation.id,
+        claim,
+      );
+      if (
+        !currentAccess.allowed &&
+        currentAccess.decision !== "require_approval"
+      )
+        throw new ToolGatewayHttpError(
+          403,
+          currentAccess.explanation,
+          currentAccess.reasonCode,
+        );
       // Final recheck at the last DB write before dispatch: tool and snapshot
       // resolution above involve network calls, so re-verify the issue is still
       // open now that only the provider call remains. A close that commits after
