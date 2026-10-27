@@ -151,11 +151,12 @@ export type SkillVersionPruneResult = {
   skipped: Record<string, number>;
   cursor: CompanyCursor | null;
   nextRunAt: number | null;
+  interrupted: boolean;
 };
 function emptyResult(): SkillVersionPruneResult {
   return { checked: 0, candidates: 0, candidateBytes: 0, reclaimedBytes: 0,
     removed: 0, removedOrphans: 0, removedStaging: 0, kept: 0,
-    skippedRecent: 0, failed: 0, truncated: false, skipped: {}, cursor: null, nextRunAt: null };
+    skippedRecent: 0, failed: 0, truncated: false, skipped: {}, cursor: null, nextRunAt: null, interrupted: false };
 }
 
 type Candidate = { parent: string; skillId: string; name: string; unsafe?: boolean; discoveryOnly?: boolean };
@@ -249,10 +250,15 @@ export function skillVersionRetentionService(db: Db, defaults: SkillVersionPrune
     const graceMs = Math.max(0, options.graceMs ?? defaults.graceMs ?? SKILL_VERSION_RETENTION_DEFAULT_GRACE_MS);
     const maxRemovals = Math.min(50, Math.max(0, options.maxRemovals ?? defaults.maxRemovals ?? SKILL_VERSION_RETENTION_DEFAULT_MAX_REMOVALS));
     const maxEntries = Math.min(maxRemovals, Math.max(1, options.maxEntries ?? defaults.maxEntries ?? 50));
-    const shouldContinue = options.shouldContinue ?? defaults.shouldContinue ?? (() => true);
+    const canContinue = options.shouldContinue ?? defaults.shouldContinue ?? (() => true);
     const dryRun = options.dryRun ?? defaults.dryRun ?? false;
     const now = (options.now ?? new Date()).getTime();
     const result = emptyResult();
+    const shouldContinue = () => {
+      const allowed = canContinue();
+      if (!allowed) result.interrupted = true;
+      return allowed;
+    };
     const schedule = (at: number) => { result.nextRunAt = Math.min(result.nextRunAt ?? Infinity, at); };
     const skip = (reason: string) => {
       result.skipped[reason] = (result.skipped[reason] ?? 0) + 1;
@@ -453,6 +459,7 @@ export function skillVersionRetentionService(db: Db, defaults: SkillVersionPrune
       const result = await pruneCompany(company.id, { ...options, cursor: cursor?.companyId === company.id ? cursor : null,
         maxEntries: maxEntries - totals.checked, maxRemovals: maxRemovals - totals.candidates, shouldContinue });
       totals.companies++;
+      totals.interrupted ||= result.interrupted;
       if (result.nextRunAt !== null) totals.nextRunAt = Math.min(totals.nextRunAt ?? Infinity, result.nextRunAt);
       for (const key of ["checked", "candidates", "candidateBytes", "reclaimedBytes", "removed", "removedOrphans", "removedStaging", "kept", "skippedRecent", "failed"] as const) totals[key] += result[key];
       for (const [reason, count] of Object.entries(result.skipped)) totals.skipped[reason] = (totals.skipped[reason] ?? 0) + count;
@@ -471,5 +478,5 @@ export function skillVersionRetentionService(db: Db, defaults: SkillVersionPrune
     return db.select({ id: companies.id }).from(companies)
       .where(after ? gt(companies.id, after) : undefined).orderBy(asc(companies.id)).limit(51);
   }
-  return { pruneCompany, tick, listCompanies, dispose };
+  return { pruneCompany, tick, listCompanies, dispose, dryRun: defaults.dryRun ?? false };
 }

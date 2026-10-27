@@ -1,3 +1,4 @@
+import { logger } from "../middleware/logger.js";
 import { prepareAgentHireApproval } from "../services/agent-hiring.js";
 import { notifyRetainedNativeSessionCleanup } from "../services/retained-native-session-cleanup-notifications.js";
 import { setTimeout as realDelay } from "node:timers/promises";
@@ -406,6 +407,42 @@ describeEmbeddedPostgres("skill version snapshot retention", () => {
     await startRetention(20_000, service); await settled();
     expect(listed).toHaveBeenCalledTimes(2); expect(pruned).toHaveBeenCalledTimes(55);
     expect(new Set(pruned.mock.calls.map(([id]) => id)).size).toBe(55); await quiet();
+  });
+
+  it.each(["inspection", "rename"])("restarts a company page interrupted during %s so cleanup is not forgotten", async stage => {
+    const companyId = await createCompany();
+    const { skillId, versionIds } = await createSkill(companyId, 2);
+    const directory = await writeSnapshot(companyId, skillId, versionIds[0]!);
+    for (let index = 0; index < 60; index++) await fs.mkdir(path.join(path.dirname(directory), `operator-${index}`));
+    let paused = false;
+    const list = fs.readdir, rename = fs.rename;
+    const reading = vi.spyOn(fs, "readdir").mockImplementation(async (...args) => {
+      const entries = await list(...args);
+      if (stage === "inspection" && !paused && args[0] === directory) { paused = true; admitted = false; }
+      return entries;
+    });
+    const renaming = vi.spyOn(fs, "rename").mockImplementation(async (...args) => {
+      await rename(...args);
+      if (stage === "rename" && !paused && args[0] === directory) { paused = true; admitted = false; }
+    });
+    await startRetention(0);
+    await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(1000); expect(paused).toBe(true); });
+    reading.mockRestore(); renaming.mockRestore(); admitted = true;
+    await settled(); expect(await exists(directory)).toBe(false);
+    expect((await fs.readdir(path.dirname(directory))).filter(name => name.startsWith(".trash-"))).toEqual([]);
+    await quiet();
+  });
+
+  it("reports dry-run candidates and bytes while keeping the cache intact", async () => {
+    const companyId = await createCompany();
+    const { skillId, versionIds } = await createSkill(companyId, 2);
+    const directory = await writeSnapshot(companyId, skillId, versionIds[0]!);
+    const reported = vi.spyOn(logger, "info");
+    await startRetention(0, skillVersionRetentionService(db, { dryRun: true, graceMs: 0 })); await settled();
+    expect(reported.mock.calls).toEqual(expect.arrayContaining([[expect.objectContaining({ companyId,
+      candidates: 1, candidateBytes: expect.any(Number), dryRun: true }), "skill version snapshot retention"]]));
+    const report = reported.mock.calls.find(([value]) => value && typeof value === "object" && "candidateBytes" in value)![0] as { candidateBytes: number };
+    expect(report.candidateBytes).toBeGreaterThan(0); expect(await exists(directory)).toBe(true); await quiet();
   });
 
   it("waits for an admitted page before disposing its scan on shutdown", async () => {

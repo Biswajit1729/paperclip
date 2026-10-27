@@ -62,12 +62,20 @@ export function registerSkillVersionRetentionWork(
           const result = await service.pruneCompany(company.id, {
             cursor: company.cursor, maxEntries: 50 - inspected, shouldContinue: admitted,
           });
+          if (result.checked > 0 || result.failed > 0 || Object.keys(result.skipped).length > 0) {
+            logger.info({ ...result, companyId: company.id, dryRun: service.dryRun }, "skill version snapshot retention");
+          }
           inspected += result.checked;
           companies++;
           if (result.nextRunAt !== null) company.nextRunAt = Math.min(company.nextRunAt ?? Infinity, result.nextRunAt);
           company.cursor = result.cursor;
           failures.delete(company.id);
-          if (!admitted()) return;
+          if (result.interrupted || !admitted()) {
+            company.cursor = null;
+            company.nextRunAt = null;
+            continuationAt = Date.now() + 1000;
+            return;
+          }
           if (result.truncated) break;
           if (company.nextRunAt !== null) deadlines.set(company.id, company.nextRunAt);
           active = null;
