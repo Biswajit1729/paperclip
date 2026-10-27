@@ -63,7 +63,8 @@ function changed(spoolRoot: string, runId: string) {
   for (const listener of spoolListeners) listener(path.resolve(spoolRoot), runId);
 }
 
-/** Atomic part write: temp file in the same dir, then rename over the target. */
+/** Atomic part write: temp file in the same dir, then rename over the target.
+ * Run-backed uploads record ledger activity before calling this filesystem owner. */
 export async function writeImportTransferPart(
   spoolRoot: string,
   runId: string,

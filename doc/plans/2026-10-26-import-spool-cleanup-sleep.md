@@ -54,7 +54,7 @@ premature cleanup. The insert allocates its UUID before registering intent in
 the existing idempotency transaction. Methods covered are:
 
 - `resumeOrCreate` when it inserts; returning an existing row makes no change.
-- `recordManifest`, `start`, `attachCompany`, and `completePart` (activity deadlines).
+- `recordManifest`, `start`, `attachCompany`, `notePartUploadActivity`, and `completePart` (activity deadlines).
 - `claimApply`, `releaseApplyClaim`, `complete`, `fail`, and `cancel` (eligibility).
 - `cancelIfIdle` (deletion claim).
 - `recoverStrandedApplyingRuns` (one startup-wide invalidation).
@@ -150,3 +150,26 @@ The assertion that files survive a persistent outage remains unchanged.
 PR: [#17835](https://github.com/paperclipai/paperclip/pull/17835).
 Remote acceptance and workspace checks remain tracked in that PR; these repairs
 do not resolve other stack findings.
+
+## Upload activity ordering
+
+A later review found that the successful file-write hint can arrive before
+`completePart` refreshes the ledger timestamp. An already-old running upload
+could then lose its newly verified bytes to cleanup. A real route regression
+held the part receipt until the actual cleanup claim ran: the upload returned
+410 instead of 200 before the repair.
+
+The route now calls the ledger owner's `notePartUploadActivity` after validating
+the part's length and hash, and before writing its bytes. This uses the same
+transaction notification helper and the same pending/running state guard. It
+refreshes activity without recording a receipt for bytes not yet written. The
+idle cancellation compare-and-set then misses if upload activity wins. If
+cancellation already won, the update cannot revive the run; the existing 410
+and stray-file cleanup path remains. Applying and failed states are not revived.
+The extra activity write is explicit per verified upload; it is not a new table,
+queue, or distributed lock. A failed filesystem write keeps a concrete grace
+period before cleanup and still emits its filesystem hint.
+
+All 52 owning tests pass after this repair. The new route test requires HTTP 200,
+exact file bytes, and the committed part receipt under the controlled race.
+Earlier review repairs and repeatable fixture evidence remain valid.

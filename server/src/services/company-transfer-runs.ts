@@ -270,6 +270,15 @@ export const companyTransferRunService = {
       .where(eq(companyTransferRuns.id, runId)));
   },
 
+  /** Refresh activity before writing verified part bytes. The guarded update
+   * serializes with idle cancellation without recording a receipt for a file
+   * that may still fail to write. It cannot revive a cancelled or applying run. */
+  async notePartUploadActivity(db: Db, runId: string): Promise<void> {
+    await writeTransferRun(db, runId, async tx => tx.update(companyTransferRuns)
+      .set({ updatedAt: new Date() })
+      .where(and(eq(companyTransferRuns.id, runId), inArray(companyTransferRuns.status, PART_UPLOAD_STATUSES))));
+  },
+
   /**
    * Record one finished container part. Appends atomically in SQL and is
    * idempotent: re-completing an already recorded part leaves the ledger

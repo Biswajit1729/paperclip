@@ -900,6 +900,27 @@ describeEmbeddedPostgres("company import transfer routes", () => {
     expect(malformed.status).toBe(404);
   });
 
+  it("preserves a verified upload when cleanup runs before its part receipt commits", async () => {
+    const zip = buildFixtureZip();
+    const { body, slices } = declareTransfer(zip, Math.ceil(zip.length / 2));
+    const created = await request(app).post("/api/companies/import/transfers").send(body);
+    const transferId = created.body.transferId as string;
+    await db.update(companyTransferRuns).set({ updatedAt: new Date(Date.now() - 25 * 3600_000) })
+      .where(eq(companyTransferRuns.id, transferId));
+    const record = companyTransferRunService.completePart.bind(companyTransferRunService);
+    const interleave = vi.spyOn(companyTransferRunService, "completePart").mockImplementationOnce(async (...args) => {
+      // The file is already renamed, but the part receipt and its activity
+      // timestamp have not committed. Exercise the real deletion claim here.
+      await sweepAbandonedImportTransferSpools(db, spoolRoot);
+      return record(...args);
+    });
+    try {
+      expect((await putPart(transferId, 0, slices[0]!)).status).toBe(200);
+      expect(await fs.readFile(path.join(spoolRoot, transferId, "part-0"))).toEqual(slices[0]);
+      expect((await companyTransferRunService.getRun(db, transferId))!.completedParts).toEqual(["part-0"]);
+    } finally { interleave.mockRestore(); }
+  });
+
   it("sweeps abandoned spools and cancels their open runs", async () => {
     const zip = buildFixtureZip();
     const { body, slices } = declareTransfer(zip, Math.ceil(zip.length / 2));
