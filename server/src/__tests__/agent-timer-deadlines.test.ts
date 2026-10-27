@@ -81,9 +81,9 @@ describe.skipIf(!support.supported)("agent timer owned deadlines", () => {
     });
     return { company, agent, queue, scheduling, enqueueWakeup, deps };
   }
-  async function start(f: Awaited<ReturnType<typeof fixture>>) {
+  async function start(f: Awaited<ReturnType<typeof fixture>>, retryMs = 1000) {
     coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
-    const workers = registerScheduledWork(coordinator, { retryMs: 1000, canRun: () => true,
+    const workers = registerScheduledWork(coordinator, { retryMs, canRun: () => true,
       tickAgentTimers: signal => f.scheduling.tickAgentTimers(new Date(), () => !signal.aborted && readTaskDrain(new Date()) === null),
       nextAgentTimerAt: () => f.scheduling.nextAgentTimerAt(),
       tickIssueMonitors: async () => {}, nextIssueMonitorAt: async () => null,
@@ -99,6 +99,37 @@ describe.skipIf(!support.supported)("agent timer owned deadlines", () => {
       expect(select).not.toHaveBeenCalled(); expect(execute).not.toHaveBeenCalled(); expect(transaction).not.toHaveBeenCalled();
     } finally { select.mockRestore(); execute.mockRestore(); transaction.mockRestore(); }
   }
+
+  it("preserves the instance scan floor for short intervals and repeated policy writes", async () => {
+    const policy = { enabled: true, intervalSec: 1 };
+    const f = await fixture(policy);
+    const tick = vi.spyOn(f.scheduling, "tickAgentTimers");
+    const inspect = vi.spyOn(f.scheduling, "nextAgentTimerAt");
+    const beforeStart = Date.now();
+    await start(f, 30_000);
+    expect(tick).toHaveBeenCalledOnce();
+    expect(inspect).toHaveBeenCalledOnce();
+    const firstScan = coordinator!.nextWakeAt()!;
+    expect(firstScan).toBeGreaterThanOrEqual(beforeStart + 30_000);
+    const initialEnqueues = f.enqueueWakeup.mock.calls.length;
+    for (let update = 0; update < 10; update++) {
+      await agentService(db).update(f.agent.id, { runtimeConfig: { heartbeat: policy } });
+      await vi.advanceTimersByTimeAsync(1000);
+    }
+    expect(tick).toHaveBeenCalledOnce();
+    expect(inspect).toHaveBeenCalledOnce();
+    expect(f.enqueueWakeup).toHaveBeenCalledTimes(initialEnqueues);
+    // These are real owner methods and real SQL; a due interval eventually runs.
+    await vi.advanceTimersByTimeAsync(Math.max(0, firstScan - Date.now()));
+    await vi.waitFor(() => expect(f.enqueueWakeup).toHaveBeenCalledTimes(initialEnqueues + 1));
+    await vi.waitFor(() => expect(coordinator!.nextWakeAt()).toBeGreaterThanOrEqual(firstScan + 30_000));
+    expect(tick).toHaveBeenCalledTimes(2);
+    expect(inspect).toHaveBeenCalledTimes(2);
+    await agentService(db).update(f.agent.id, { runtimeConfig: { heartbeat: { ...policy, enabled: false } } });
+    await vi.advanceTimersByTimeAsync(31_000);
+    await quiet();
+    expect(f.enqueueWakeup).toHaveBeenCalledTimes(initialEnqueues + 1);
+  });
 
   it("derives a real interval deadline from the last checked heartbeat", async () => {
     const f = await fixture();

@@ -35,6 +35,7 @@ export function registerScheduledWork(
     canRun: () => options.canRun() && readTaskDrain(new Date()) === null,
     retryMs: options.retryMs,
     notificationCoalesceMs: options.retryMs,
+    minimumSpacingMs: options.retryMs,
   });
   return { routines, monitors, timers };
 }
