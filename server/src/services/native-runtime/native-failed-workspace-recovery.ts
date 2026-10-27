@@ -1,5 +1,4 @@
 import type { CancelledWorkspacePreservationScope } from "../cancelled-workspace-preservation-notifications.js";
-import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { registerScopedDeadlineWork } from "../scoped-deadline-work.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
