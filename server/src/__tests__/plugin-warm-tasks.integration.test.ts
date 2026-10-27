@@ -3,7 +3,7 @@ import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { agents, companies, createDb, environmentLeases, environments, heartbeatRuns, issues, plugins, projects } from "@paperclipai/db";
+import { agents, companies, createDb, applyPendingMigrations, environmentLeases, environments, heartbeatRuns, issues, plugins, projects } from "@paperclipai/db";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import * as orphanCleanup from "../services/sandbox-orphan-cleanup-spool.js";
 import { resolvePluginTaskResume } from "../services/environment-task-runtime.js";
@@ -14,7 +14,7 @@ const external=resolveExternalTestDatabaseUrl("PAPERCLIP_PLUGIN_WARM_TASKS_TEST_
 const support=external ? {supported:true} : await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("retained Codex plugin task leases",()=>{
  let db:ReturnType<typeof createDb>,stop:()=>Promise<void>;
- beforeAll(async()=>{if(external){db=createDb(external);stop=()=>db.$client.end({timeout:1});return;}const started=await startEmbeddedPostgresTestDatabase("plugin-warm-tasks");db=createDb(started.connectionString);stop=started.stop;});
+ beforeAll(async()=>{if(external){await applyPendingMigrations(external);db=createDb(external);stop=()=>db.$client.end({timeout:1});return;}const started=await startEmbeddedPostgresTestDatabase("plugin-warm-tasks");db=createDb(started.connectionString);stop=started.stop;});
  afterAll(async()=>{await stop?.();});
  async function fixture(initialProjects:string[]=[],initialExpiry?:string,deadline?:Date){
   const companyId=randomUUID(),agentId=randomUUID(),issueId=randomUUID(),environmentId=randomUUID(),pluginId=randomUUID();

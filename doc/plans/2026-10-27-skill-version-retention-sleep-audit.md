@@ -298,3 +298,29 @@ passes 215 cases with no skipped cases; server typechecking passes, including th
 required company scope on every cleanup writer. The startup fixtures include the
 new explicit grace-duration contract. Fresh remote CI, Greptile, Ponytail and the
 security scan remain required after publication.
+
+## Follow-up: overdue company eligibility and fresh test databases
+
+A real PostgreSQL and filesystem regression with 410 directory entries reproduced
+a thirty-second pause between continuation pages while a different company's
+grace deadline was overdue. Due deadlines now become ready company work: their
+old timestamps leave the deadline maps and their fresh-scan floor is cleared.
+The dirty company remains owed a scan even while another company owns the active
+cursor. Future directory hints and failure backoffs remain intact. The same
+regression passes with all directory-page gaps below three seconds.
+
+The external retained-plugin-task fixture now applies pending migrations before
+opening its client. All nineteen cases passed against a newly created, blank
+dedicated test database. The previous fixture correction assumed a migrated
+local database; it did not establish this fresh-database path.
+
+All 216 cases across the five full retention/cache/startup/environment/session
+suites pass, along with server typechecking and build. The new pagination test
+and both interruption cases also pass together. One earlier child integration
+run passed 203 cases and failed because the rename-interruption hook had not
+fired before its test timeout. Both interruption cases passed unchanged on the
+owning branch before this fix, and again in the full 216-case selection. That
+first timing failure remains recorded; these passes are not evidence that it
+never happened. An initial consumer command used incorrect filenames and an
+incorrect cache database override and was interrupted; it is not acceptance.
+Fresh remote CI and automated reviews remain required after publishing.

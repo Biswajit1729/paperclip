@@ -574,6 +574,26 @@ describeEmbeddedPostgres("skill version snapshot retention", () => {
     expect(await exists(directory)).toBe(false); await quiet();
   });
 
+  it("keeps directory pages moving while another company's grace deadline is due", async () => {
+    const dueCompany = await createCompany(), pagedCompany = await createCompany();
+    const dueSkill = await createSkill(dueCompany, 2), pagedSkill = await createSkill(pagedCompany, 1);
+    const expiring = await writeSnapshot(dueCompany, dueSkill.skillId, dueSkill.versionIds[0]!, 0);
+    const parent = path.join(resolveCompanySkillVersionsRoot(pagedCompany), pagedSkill.skillId);
+    await fs.mkdir(parent, { recursive: true });
+    for (let index = 0; index < 410; index++) await fs.mkdir(path.join(parent, `operator-${index}`));
+    const service = skillVersionRetentionService(db, { graceMs: 5000 });
+    vi.spyOn(service, "listCompanies").mockResolvedValue([{ id: dueCompany }, { id: pagedCompany }]);
+    const prune = service.pruneCompany, pageTimes: number[] = [];
+    service.pruneCompany = async (id, options) => {
+      if (id === pagedCompany) pageTimes.push(Date.now());
+      return prune(id, options);
+    };
+    await startRetention(5000, service); await settled();
+    expect(pageTimes.length).toBeGreaterThan(5);
+    expect(Math.max(...pageTimes.slice(1).map((at, index) => at - pageTimes[index]!))).toBeLessThan(3000);
+    expect(await exists(expiring)).toBe(false); await quiet();
+  });
+
   it("waits for an admitted page before disposing its scan on shutdown", async () => {
     const companyId = await createCompany();
     const { skillId, versionIds } = await createSkill(companyId, 1);
