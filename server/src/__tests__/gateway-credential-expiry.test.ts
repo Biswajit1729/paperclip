@@ -60,8 +60,15 @@ describe.skipIf(!supported)("gateway credential expiry", () => {
   async function settle(ms = 60_000) {
     await vi.advanceTimersByTimeAsync(ms);
     if (!draining) await vi.waitFor(async () => {
-      // SQL may finish after the clock jump and arm a coalesced follow-up pass.
-      if (idleWorkSnapshot().active > 0) await vi.advanceTimersByTimeAsync(30_000);
+      // Let real SQL settle before advancing only to an actually armed follow-up.
+      // Repeated blind clock jumps can expire the future credential under test.
+      if (idleWorkSnapshot().active > 0) {
+        await db.execute(sql`select pg_sleep(0.01)`);
+        const next = coordinator!.nextWakeAt();
+        if (next !== null && next <= Date.now() + 30_000) {
+          await vi.advanceTimersByTimeAsync(Math.max(0, next - Date.now()));
+        }
+      }
       expect(idleWorkSnapshot().active).toBe(0);
     }, { timeout: 5000 });
   }
