@@ -75,6 +75,21 @@ describePostgres("already available connection requests", () => {
     } finally { unsubscribe(); }
   });
 
+  it("notifies terminal confirmation recovery after existing-access retirement commits", async () => {
+    const f = await seed();
+    const notified = vi.fn();
+    const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.chatTerminalConfirmations, notified);
+    try {
+      await db.transaction(async tx => {
+        expect(await satisfiedConnectionIntentService(tx as unknown as typeof db).sweepPending()).toMatchObject({ satisfied: 1 });
+        expect(notified).not.toHaveBeenCalled();
+        expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, f.intent.id)))[0].status).toBe("pending");
+      });
+      expect(notified).toHaveBeenCalledOnce();
+      expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, f.intent.id)))[0].status).toBe("expired");
+    } finally { unsubscribe(); }
+  });
+
   it("settles a published Slack card when existing access retires the connection request", async () => {
     const f = await seed();
     const endpointId = randomUUID();
