@@ -1831,8 +1831,12 @@ async function startServerWithDatabaseTeardown(
       // drain/shutdown without making HTTP readiness wait for that callback.
       trackHeartbeatSchedulerWork(worker.ready);
     }
-    if (config.heartbeatSchedulerEnabled) await heartbeat.registerExternalConversationSettlementWork(deliveryWork,
-      () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready;
+    if (config.heartbeatSchedulerEnabled) {
+      const worker = heartbeat.registerExternalConversationSettlementWork(deliveryWork,
+        () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby());
+      // Endpoint/task locks must not gate HTTP readiness; shutdown still joins.
+      trackHeartbeatSchedulerWork(worker.ready);
+    }
     if (config.heartbeatSchedulerEnabled) {
       const worker = heartbeat.registerNativeRecoveryNoticeWork(deliveryWork,
         () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby());
