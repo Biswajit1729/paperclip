@@ -361,3 +361,47 @@ Evidence: /tmp/sleep49-backlog.log.
 
 Full local tests are running. Remote CI/review, earlier stack findings and master
 reconciliation remain open. No merge or whole-instance sleep is claimed.
+
+## Concurrent approval links and resolution
+
+Review finding `PRRT_kwDORclPyM6wgKOl` identified a missed-wake race in the
+approval producer. Resolution could discover no links, a concurrent link could
+commit and wake recovery while the approval was still pending, and resolution
+could then commit without any task-scoped notification. Parking pending responses
+without polling makes that ordering observable as an indefinitely missing reply.
+
+The existing approval notification owner now locks the company-scoped approval
+row `FOR UPDATE` before discovering linked tasks. Existing `issue_approvals`
+foreign-key checks hold `KEY SHARE` on that same row until their outer transaction
+settles. If linking wins, resolution waits and then discovers the committed link.
+If resolution wins, linking waits and its own task wake observes the committed
+decision. Both cases use the existing transaction signal and durable records.
+There is no new table, timer, wrapper at each caller, or company-wide discovery.
+This adds one primary-key lookup/row lock to approval-identity mutations; task-only
+link notifications and unlinked approval creation keep their existing cost.
+
+The writer audit covers single/bulk issue linking and the gateway's separate
+formal-approval link insertion, all using the existing immediate foreign key.
+Approval decisions, cancellation, revision/resubmission, and budget resolution
+already supply the approval identity through this owner. Hire decisions retain
+company-before-approval ordering; budget decisions retain their accounting
+transaction. Unlink carries the removed task identity explicitly. The lock stays
+owned by the outer transaction, and errors retain rollback/normal error handling.
+This contract uses the application's read-committed write transactions and
+integrated writer notifications; independent SQL writers remain unsupported.
+Changing or deferring the link foreign key requires revisiting this contract.
+
+Four real PostgreSQL regressions force both transaction orderings for single and
+bulk link APIs. They observe task-scoped settled notifications by reading the
+committed approval/link state. A controlled table lock pauses resolution after
+its link discovery without replacing either service or database. Before the fix,
+both resolver-first cases observed only `pending`; both linker-first cases passed.
+After the fix all four see a wake with `approved`. Six existing cases additionally
+prove actual worker publication after approve/reject/cancel/unlink and nested
+rollback/outer-commit behavior. All 286 tests across six complete affected suites
+passed, including budgets, queue seeding, retention and approval API consumers;
+server typechecking passed. Evidence: `/tmp/sleep-approval-links-{red,green}.log`,
+`/tmp/sleep-approval-links-owning-tests.log`, and
+`/tmp/sleep-approval-links-root-types.log` with matching status files. Integrated
+stack verification and fresh remote acceptance are still required. This is a
+producer-correctness fix, not deployed host-sleep qualification.
