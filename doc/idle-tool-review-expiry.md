@@ -107,16 +107,16 @@ The grouped startup inventory remains unchanged. Existing company signals,
 authority checks, expiry settlement, paging, backoff, and sleep gates remain
 owned by their existing services.
 
-The additive company-expiry index is migration `0380_tool_review_company_expiry`.
+The additive company-expiry index is migration `0382_tool_review_company_expiry`.
 It builds the index concurrently and idempotently through the existing top-level
-migration executor. It was initially numbered 0402 to avoid existing allocations.
-That passed per-branch numbering and schema checks, but CI correctly rejected
-later PRs whose migrations then preceded their target branch's 0402. The fix
-renumbers this unmerged index migration to 0380 and shifts the stack's former
-0380 through 0401 migrations forward by one, preserving their SQL bytes. It
-updates filename references, journal tags and indices, and generates snapshots
-in the corrected dependency order. The moved journal timestamp is placed after
-0379 and before the next migration; other timestamps remain unchanged.
+migration executor. Initially reserving number 0402 passed per-branch checks but
+caused CI to reject descendants whose migrations preceded their target branch.
+A local 0380 correction fixed that ordering, but master had meanwhile added its
+own 0378 and 0379 migrations. The integrated stack preserves master's history,
+renumbers its unmerged migrations after 0379 in PR dependency order, and preserves
+every migration's SQL bytes. Exact filename references and journal tags/indices
+follow the new names. Stack journal timestamps remain ordered after master's
+latest entry. Each generated snapshot includes both master and that PR's schema.
 
 Each PR must pass the exact target-branch migration-order gate, in addition to
 the existing numbering, safety, five-snapshot retention, and schema-drift checks.
@@ -145,3 +145,11 @@ Server typechecking passes. Combined-stack migration upgrades, full build, and
 fresh remote checks remain required. Full local test:run is still unverified
 because of embedded PostgreSQL startup/capacity limits; real gateway suites used
 isolated, migrated test databases in the task-owned PostgreSQL instance.
+
+
+A later review found an unbound `query` name in the SQL-capture assertion.
+The due-row predicate short-circuited before that expression in the passing
+fixture, and server typechecking excludes test sources. The assertion now
+independently requires both the due expiry scan and the non-null deadline lookup
+through each captured `read.query`. The earlier passing run did not detect this
+name error; acceptance must include the service suite with both assertions.
