@@ -231,3 +231,26 @@ claim validation fixed it. Typechecking then exposed root-client-only signatures
 which were narrowed to their actual database capabilities. The final complete
 suites and TypeScript check pass; stack integration and current-head CI remain
 separate gates. This proves worker and admission behavior, not deployed host sleep.
+
+
+## Managed-argument expiry ordering
+
+Latest-head CI exposed a preparation-order regression in
+`tool-gateway.test.ts`: a valid historical Shopify approval whose managed UCP
+arguments were obsolete became `failed` instead of `expired`. The new consuming
+admission compared the current invocation identity before the existing managed
+argument expiry owner ran. It prevented dispatch, but bypassed the correct saved
+expiry outcome.
+
+Approved execution now verifies target/signed/managed arguments and content
+before consuming admission. Exact claim fencing, fresh policy checks, atomic
+rate receipts, and the final issue-open check remain before dispatch. No check
+was removed and stale payloads are not permitted to execute.
+
+The existing regression reproduced the CI failure on this owner in
+`/tmp/sleep-approved-managed-expiry-red.log`. All 92 gateway acceptance cases
+pass after the ordering change (`/tmp/sleep-approved-managed-expiry-full.log`),
+including the historical approval's expired request, failed invocation with
+`approvalState: expired`, and zero provider requests. Server typecheck passes
+in `/tmp/sleep-approved-managed-expiry-types.log`. Latest-head remote CI and
+combined-stack acceptance still need their own results.
