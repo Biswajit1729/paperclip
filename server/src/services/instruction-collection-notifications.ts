@@ -4,6 +4,6 @@ import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notificatio
 export type InstructionCollectionScope = { companyId: string; runId?: string };
 
 export async function notifyInstructionCollection(transaction: object, scope?: InstructionCollectionScope) {
-  await notifySkillVersionRetention(transaction, scope?.companyId);
+  if (scope) await notifySkillVersionRetention(transaction, scope.companyId);
   await notifyDeliveryWork(transaction, DELIVERY_QUEUES.instructionCollection, scope ? JSON.stringify(scope) : "*");
 }

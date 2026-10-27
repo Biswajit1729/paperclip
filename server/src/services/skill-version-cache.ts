@@ -71,7 +71,7 @@ export async function touchSkillVersionCache(companyId: string, skillId: string,
   try {
     await fs.writeFile(temporary, JSON.stringify({ version: 1, lastUsedAt: now }), { flag: "wx", mode: 0o600 });
     await fs.rename(temporary, access);
-    noteSkillVersionCacheChange(directory);
+    noteSkillVersionCacheChange(directory, { source: "access", occurredAt: now });
   } finally { await fs.rm(temporary, { force: true }); }
 }
 

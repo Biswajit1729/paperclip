@@ -8,7 +8,7 @@ import { onSkillVersionCacheChange } from "./skill-version-retention-notificatio
 import type { skillVersionRetentionService, SkillVersionPruneResult } from "./skill-version-retention.js";
 
 type RetentionService = ReturnType<typeof skillVersionRetentionService>;
-type ActiveCompany = { id: string; cursor: SkillVersionPruneResult["cursor"]; nextRunAt: number | null; uncertain: boolean; observed: boolean };
+type ActiveCompany = { id: string; cursor: SkillVersionPruneResult["cursor"]; nextRunAt: number | null };
 
 export function registerSkillVersionRetentionWork(
   coordinator: ReturnType<typeof createDeliveryWorkCoordinator>,
@@ -20,15 +20,24 @@ export function registerSkillVersionRetentionWork(
   const deadlines = new Map<string, number>();
   const failures = new Map<string, number>();
   const freshScanAfter = new Map<string, number>();
+  const cacheChanges = new Map<string, Map<string, number>>();
+  const cacheDeadline = (id: string) => {
+    let next = Infinity;
+    for (const at of cacheChanges.get(id)?.values() ?? []) next = Math.min(next, at);
+    return next;
+  };
+  let discoveryAfter = 0, discoveryLoading = false, discoveryAgain = false;
   let discovery: { after?: string; retryAt: number } | null = { retryAt: 0 };
   let active: ActiveCompany | null = null;
   let continuationAt = 0;
   const readyAt = (id: string) => Math.max(failures.get(id) ?? 0,
-    (deadlines.get(id) ?? Infinity) <= Date.now() ? 0 : freshScanAfter.get(id) ?? 0);
+    Math.min(deadlines.get(id) ?? Infinity, cacheDeadline(id)) <= Date.now() ? 0 : freshScanAfter.get(id) ?? 0);
   const changed = (hints?: ReadonlySet<string>) => {
     for (const hint of hints ?? ["*"]) {
-      if (hint === "*") discovery = { retryAt: 0 };
-      else dirty.add(hint);
+      if (hint === "*") {
+        if (!discovery) discovery = { retryAt: discoveryAfter };
+        else if (discoveryLoading || discovery.after !== undefined) discoveryAgain = true;
+      } else dirty.add(hint);
     }
   };
   const worker = registerDeadlineWork(coordinator, DELIVERY_QUEUES.skillVersionRetention, {
@@ -40,26 +49,36 @@ export function registerSkillVersionRetentionWork(
       const admitted = () => !signal.aborted && canRun();
       for (const [id, at] of freshScanAfter) if (at <= Date.now()) freshScanAfter.delete(id);
       for (const [id, at] of deadlines) if (at <= Date.now()) dirty.add(id);
+      for (const id of cacheChanges.keys()) if (cacheDeadline(id) <= Date.now()) dirty.add(id);
       let inspected = 0;
       let companies = 0;
       const scope = discovery;
       if (scope && scope.retryAt <= Date.now() && admitted()) {
+        discoveryLoading = true;
         try {
           const rows = await service.listCompanies(scope.after);
           for (const row of rows) dirty.add(row.id);
-          if (discovery === scope) discovery = rows.length === 51 ? { after: rows.at(-1)!.id, retryAt: 0 } : null;
+          if (discovery === scope) {
+            if (rows.length === 51) discovery = { after: rows.at(-1)!.id, retryAt: 0 };
+            else {
+              discoveryAfter = Date.now() + 30_000;
+              discovery = discoveryAgain ? { retryAt: discoveryAfter } : null;
+              discoveryAgain = false;
+            }
+          }
         } catch (err) {
           if (discovery === scope) scope.retryAt = Date.now() + 30_000;
           logger.warn({ err }, "skill cache retention company discovery failed");
-        }
+        } finally { discoveryLoading = false; }
       }
       while (companies < 50 && inspected < 50 && admitted()) {
         if (!active) {
           const id = [...dirty].find(id => readyAt(id) <= Date.now());
           if (!id) break;
           dirty.delete(id);
-          active = { id, cursor: null, nextRunAt: null, uncertain: false, observed: false };
+          active = { id, cursor: null, nextRunAt: null };
           deadlines.delete(id);
+          cacheChanges.delete(id);
         }
         const company = active;
         try {
@@ -69,9 +88,6 @@ export function registerSkillVersionRetentionWork(
           if (result.checked > 0 || result.failed > 0 || Object.keys(result.skipped).length > 0) {
             logger.info({ ...result, companyId: company.id, dryRun: service.dryRun }, "skill version snapshot retention");
           }
-          company.observed ||= result.candidates > 0 || result.kept > 0 || result.skippedRecent > 0 || Object.keys(result.skipped).length > 0;
-          company.uncertain ||= result.failed > 0 || ["cache_busy", "scan_busy", "unknown_run_pins", "unavailable_pins", "unsafe_or_unavailable", "cache_changed"]
-            .some(reason => result.skipped[reason] > 0);
           inspected += result.checked;
           companies++;
           if (result.nextRunAt !== null) company.nextRunAt = Math.min(company.nextRunAt ?? Infinity, result.nextRunAt);
@@ -84,7 +100,7 @@ export function registerSkillVersionRetentionWork(
             return;
           }
           if (result.truncated) break;
-          if (company.observed && !company.uncertain) freshScanAfter.set(company.id, Date.now() + 30_000);
+          freshScanAfter.set(company.id, Date.now() + 30_000);
           if (company.nextRunAt !== null) deadlines.set(company.id, company.nextRunAt);
           active = null;
         } catch (err) {
@@ -103,14 +119,18 @@ export function registerSkillVersionRetentionWork(
       if (discovery) take(Math.max(continuationAt, discovery.retryAt));
       if (active) take(continuationAt);
       for (const id of dirty) take(Math.max(continuationAt, readyAt(id)));
-      for (const at of deadlines.values()) take(at);
+      for (const [id, at] of deadlines) take(Math.max(at, failures.get(id) ?? 0));
+      for (const id of cacheChanges.keys()) take(Math.max(cacheDeadline(id), failures.get(id) ?? 0));
       return next;
     },
   });
-  const unsubscribe = onSkillVersionCacheChange((cacheRoot, companyId) => {
-    if (cacheRoot !== root) return;
-    dirty.add(companyId);
+  const unsubscribe = onSkillVersionCacheChange(change => {
+    if (change.root !== root) return;
+    let entries = cacheChanges.get(change.companyId);
+    if (!entries) { entries = new Map(); cacheChanges.set(change.companyId, entries); }
+    entries.set(change.directory, change.occurredAt + service.graceMs);
+    if (change.source === "publication") dirty.add(change.companyId);
     worker.wake();
   });
-  return { ...worker, unsubscribe, dispose: () => { unsubscribe(); return service.dispose(); } };
+  return { ...worker, unsubscribe, dispose: () => { unsubscribe(); cacheChanges.clear(); return service.dispose(); } };
 }

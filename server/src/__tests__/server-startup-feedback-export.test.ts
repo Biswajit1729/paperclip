@@ -554,7 +554,7 @@ vi.mock("../services/native-runtime/native-harness-backup-expiration.js", () => 
 vi.mock("../services/skill-version-retention.js", () => ({
   skillVersionRetentionService: vi.fn(() => ({
     listCompanies: vi.fn(async () => []), pruneCompany: vi.fn(async () => ({ checked: 0, truncated: false, nextRunAt: null })),
-    dispose: vi.fn(async () => {}),
+    dispose: vi.fn(async () => {}), graceMs: 60 * 60_000,
   })),
 }));
 
@@ -626,7 +626,7 @@ describe("startServer feedback export wiring", () => {
     const pending = Promise.withResolvers<Array<{ id: string }>>();
     const list = vi.fn(() => pending.promise);
     vi.mocked(skillVersionRetentionService).mockReturnValueOnce({ listCompanies: list,
-      pruneCompany: vi.fn(), dispose: vi.fn(async () => {}) } as never);
+      pruneCompany: vi.fn(), dispose: vi.fn(async () => {}), graceMs: 60 * 60_000 } as never);
     try {
       await startServer(); await settleStartupHousekeeping();
       expect(list).toHaveBeenCalledOnce(); expect(getStartupRecoveryState().phase).toBe("ready");
