@@ -20,6 +20,7 @@ import {
   companies,
   companyMemberships,
   createDb,
+  applyPendingMigrations,
   environmentLeases,
   heartbeatRunEvents,
   heartbeatRuns,
@@ -54,7 +55,10 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    if (externalTestDatabaseUrl) db = createDb(externalTestDatabaseUrl);
+    if (externalTestDatabaseUrl) {
+      await applyPendingMigrations(externalTestDatabaseUrl);
+      db = createDb(externalTestDatabaseUrl);
+    }
     else {
       tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-scheduled-retry-routes-");
       db = createDb(tempDb.connectionString);

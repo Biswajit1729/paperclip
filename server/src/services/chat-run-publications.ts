@@ -37,6 +37,7 @@ import { hasChatRunOwnedProviderInteraction } from "./chat-interaction-arbitrati
 import { CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON } from "./heartbeat-run-summary.js";
 import { resolveChatOriginPublicationBindings } from "./issues.js";
 import { boundRunIssueIdSql } from "./run-task-binding.js";
+import { chatRunMilestoneSource } from "./chat-run-milestone-candidates.js";
 import { authorizeNativeChatReviewPresentation } from "./native-runtime/native-chat-review-presentation.js";
 
 type SafeRunMilestone =
@@ -404,7 +405,7 @@ function lifecycleMilestonePages(db: Db, since: Date, scope?: ChatRunMilestoneSc
         conversationId: chatConversations.id,
         agentName: agents.name,
       })
-      .from(heartbeatRuns)
+      .from(chatRunMilestoneSource(since))
       .innerJoin(
         chatConversations,
         and(
