@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { activityLog, agents, authUsers, companies, companyMemberships, createDb, decisionEffectExecutions,
+import { activityLog, agents, applyPendingMigrations, authUsers, companies, companyMemberships, createDb, decisionEffectExecutions,
   decisions, decisionRetention, decisionTargetIssues, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { decisionService } from "../services/decisions.js";
+import { decisionEffectRecoveryService } from "../services/decision-effect-recovery.js";
 import { registerDecisionEffectRecoveryWork } from "../services/decision-effect-recovery-work.js";
 import { registerDecisionContinuationWork } from "../services/decision-continuation-work.js";
 import { writeDecisionChange } from "../services/decision-work-notifications.js";
@@ -28,7 +29,8 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
   const service = () => decisionService(db, { wakeOriginAgent: wake });
 
   beforeAll(async () => {
-    if (!externalUrl) temporary = await startEmbeddedPostgresTestDatabase("decision-effects-");
+    if (externalUrl) await applyPendingMigrations(externalUrl);
+    else temporary = await startEmbeddedPostgresTestDatabase("decision-effects-");
     db = createDb(externalUrl ?? temporary!.connectionString, { maxConnections: 6, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
   }, 30_000);
   beforeEach(async () => {
@@ -107,6 +109,40 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
   it("stays quiet with open decisions and delivered history after a real decision", async () => {
     await start(); await quiet(); const row = await create(); await quiet();
     await decide(row.id); await quiet(); expect(await comments()).toHaveLength(1); expect(wake).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not inspect effect recovery when an open decision is created", async () => {
+    await start(); await quiet();
+    const sweeps = vi.mocked(recovery.recoverEffects); sweeps.mockClear();
+    await create(); await quiet();
+    expect(sweeps).not.toHaveBeenCalled();
+  });
+
+  it("retries an old failure while newer due claims keep filling pages", async () => {
+    const failed = await create(), healthy = await create();
+    const at = Date.now() - 600_000;
+    await claim(failed.id, new Date(at)); await claim(healthy.id, new Date(at + 1));
+    // Preserve PostgreSQL precision at both ends of the first rotation.
+    await db.execute(sql`update decisions set updated_at = updated_at + interval '456 microseconds'
+      where id in (${failed.id}, ${healthy.id})`);
+    const failure = new Error("temporary recovery failure");
+    const attempts: string[] = [];
+    const scan = decisionEffectRecoveryService(db, async id => {
+      attempts.push(id);
+      if (id === failed.id) throw failure;
+      await db.update(decisions).set({ executionStatus: "succeeded" }).where(eq(decisions.id, id));
+      return true;
+    });
+    await expect(scan.sweep(new Date(), 1)).rejects.toBe(failure);
+    const added: string[] = [];
+    for (let index = 0; index < 7; index++) {
+      const row = await create(); added.push(row.id); await claim(row.id, new Date(at + index + 2));
+      try { await scan.sweep(new Date(), 1); } catch (error) { expect(error).toBe(failure); }
+    }
+    expect(attempts).toHaveLength(8);
+    expect(attempts.slice(0, 6)).toEqual([failed.id, healthy.id, failed.id, added[0], added[1], failed.id]);
+    expect(new Set(attempts.filter(id => id !== failed.id)).size).toBe(5);
+    expect((await service().get(failed.id))?.executionStatus).toBe("running");
   });
 
   it("reactivates from the actual claim and recovers a failed settlement without repeating the effect", async () => {
@@ -244,46 +280,125 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     expect(await service().sweepExpired()).toEqual({ expired: 0, resumed: 1 }); expect(await comments()).toHaveLength(1);
   });
 
-  it("pages past invalid legacy claims without inventing authority or losing their debt", async () => {
+  it.each(["missing_decider", "missing_option"] as const)("settles %s as durable failure and then becomes quiet", async reason => {
+    const row = await create(); await claim(row.id, new Date(Date.now() - 120_000));
+    await db.update(decisions).set(reason === "missing_decider" ? { decidedByUserId: null } : { chosenOptionId: "missing" })
+      .where(eq(decisions.id, row.id));
+    expect(await service().recoverEffects()).toEqual({ resumed: 1 });
+    expect(await service().get(row.id)).toMatchObject({ executionStatus: "failed", metadata: {
+      effectRecoveryError: reason, continuationPending: false,
+    } });
+    expect(await comments()).toHaveLength(0);
+    expect(await db.select().from(decisionEffectExecutions)).toHaveLength(0);
+    const audit = await db.select().from(activityLog).where(eq(activityLog.action, "decision.recovery_failed"));
+    expect(audit).toHaveLength(1);
+    expect(audit[0]).toMatchObject({ companyId, actorType: "system", actorId: "decision-executor",
+      entityId: row.id, details: { reason } });
+    expect(wake).toHaveBeenCalledTimes(1);
+    await start(); await quiet();
+    expect(wake).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves completed effect receipts when a malformed outcome settles as partial", async () => {
+    const row = await create(); await claim(row.id, new Date(Date.now() - 120_000));
+    await db.update(decisions).set({ chosenOptionId: "missing" }).where(eq(decisions.id, row.id));
+    const [receipt] = await db.insert(decisionEffectExecutions).values({ decisionId: row.id, effectIndex: 0,
+      effectType: "comment_on_issue", targetIssueId: targetId, status: "executed", result: { preserved: true }, executedAt: new Date() }).returning();
+    expect(await service().recoverEffects()).toEqual({ resumed: 1 });
+    expect((await service().get(row.id))?.executionStatus).toBe("partial");
+    expect(await db.select().from(decisionEffectExecutions)).toEqual([receipt]);
+    expect(await comments()).toHaveLength(0);
+    expect(wake).toHaveBeenCalledTimes(1);
+    await start(); await quiet();
+  });
+
+  it("keeps malformed claims pending when their failure audit cannot commit", async () => {
+    const row = await create(); await claim(row.id, new Date(Date.now() - 120_000));
+    await db.update(decisions).set({ decidedByUserId: null }).where(eq(decisions.id, row.id));
+    await db.execute(sql`create function decision_recovery_audit_fail() returns trigger language plpgsql as $$ begin
+      if NEW.action = 'decision.recovery_failed' then raise exception 'recovery audit unavailable'; end if;
+      return NEW; end $$`);
+    await db.execute(sql`create trigger decision_recovery_audit_fail before insert on activity_log
+      for each row execute function decision_recovery_audit_fail()`);
+    try {
+      await expect(service().recoverEffects()).rejects.toMatchObject({ cause: { message: "recovery audit unavailable" } });
+      expect((await service().get(row.id))?.executionStatus).toBe("running");
+      expect(await db.select().from(activityLog).where(eq(activityLog.action, "decision.recovery_failed"))).toHaveLength(0);
+      expect(wake).not.toHaveBeenCalled();
+    } finally {
+      await db.execute(sql`drop trigger decision_recovery_audit_fail on activity_log`);
+      await db.execute(sql`drop function decision_recovery_audit_fail()`);
+    }
+    expect(await service().recoverEffects()).toEqual({ resumed: 1 });
+    expect((await service().get(row.id))?.executionStatus).toBe("failed");
+    expect(wake).toHaveBeenCalledTimes(1);
+    await start(); await quiet();
+  });
+
+  it("rechecks a malformed claim under lock before settling a concurrently repaired outcome", async () => {
+    const row = await create(); const at = new Date(Date.now() - 120_000); await claim(row.id, at);
+    await db.update(decisions).set({ chosenOptionId: "missing" }).where(eq(decisions.id, row.id));
+    let release!: () => void, locked!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const acquired = new Promise<void>(resolve => { locked = resolve; });
+    const repair = db.transaction(async tx => {
+      await tx.select({ id: decisions.id }).from(decisions).where(eq(decisions.id, row.id)).for("update");
+      locked(); await gate;
+      await tx.update(decisions).set({ chosenOptionId: "yes", updatedAt: at }).where(eq(decisions.id, row.id));
+    });
+    const previousDebug = db.$client.options.debug;
+    let attempts = 0;
+    let pending: ReturnType<ReturnType<typeof decisionService>["recoverEffects"]> | undefined;
+    try {
+      await acquired;
+      db.$client.options.debug = (_connection, query, parameters) => {
+        if (query.includes("for update") && parameters.includes(row.id)) attempts++;
+      };
+      pending = service().recoverEffects();
+      await vi.waitFor(() => expect(attempts).toBe(1));
+      release(); await repair;
+      expect(await pending).toEqual({ resumed: 0 });
+      expect(await service().get(row.id)).toMatchObject({ executionStatus: "running", chosenOptionId: "yes" });
+      expect(await db.select().from(activityLog).where(eq(activityLog.action, "decision.recovery_failed"))).toHaveLength(0);
+      expect(wake).not.toHaveBeenCalled();
+      expect(await service().recoverEffects()).toEqual({ resumed: 1 });
+      expect(await comments()).toHaveLength(1); expect(wake).toHaveBeenCalledTimes(1);
+    } finally {
+      release(); await Promise.allSettled([repair, pending]); db.$client.options.debug = previousDebug;
+    }
+    await start(); await quiet();
+  });
+
+  it("settles invalid legacy claims without inventing authority or blocking later effects", async () => {
     vi.stubEnv("PAPERCLIP_DECISIONS_SWEEP_BATCH_SIZE", "1");
     const invalid = await create(), valid = await create();
     await claim(invalid.id, new Date(Date.now() - 180_000)); await claim(valid.id, new Date(Date.now() - 120_000));
     await db.update(decisions).set({ decidedByUserId: null }).where(eq(decisions.id, invalid.id));
     const recovery = service();
-    expect(await recovery.recoverEffects()).toEqual({ resumed: 0 }); expect(await recovery.nextEffectRecoveryAt()).not.toBeNull();
-    expect(await recovery.recoverEffects()).toEqual({ resumed: 1 }); expect(await comments()).toHaveLength(1);
-    expect((await recovery.get(invalid.id))?.executionStatus).toBe("running");
-    expect(await recovery.nextEffectRecoveryAt()).not.toBeNull();
-  });
-
-  it("pages past invalid claims using database timestamp precision", async () => {
-    vi.stubEnv("PAPERCLIP_DECISIONS_SWEEP_BATCH_SIZE", "1");
-    const invalid = await create(), valid = await create();
-    await claim(invalid.id); await claim(valid.id, new Date(Date.now() - 120_000));
-    await db.execute(sql`update decisions set decided_by_user_id = null,
-      updated_at = date_trunc('milliseconds', now() - interval '3 minutes') + interval '456 microseconds'
-      where id = ${invalid.id}`);
-    const recovery = service();
-    expect(await recovery.recoverEffects()).toEqual({ resumed: 0 });
     expect(await recovery.recoverEffects()).toEqual({ resumed: 1 });
-    expect(await comments()).toHaveLength(1);
-    expect((await recovery.get(invalid.id))?.executionStatus).toBe("running");
-    expect(await recovery.nextEffectRecoveryAt()).not.toBeNull();
-    expect(await recovery.recoverEffects()).toEqual({ resumed: 0 });
-    expect(await recovery.recoverEffects()).toEqual({ resumed: 0 });
-    expect(await comments()).toHaveLength(1);
+    expect(await comments()).toHaveLength(0);
+    expect(await recovery.recoverEffects()).toEqual({ resumed: 1 }); expect(await comments()).toHaveLength(1);
+    expect((await recovery.get(invalid.id))?.executionStatus).toBe("failed");
+    expect(await recovery.nextEffectRecoveryAt()).toBeNull();
   });
 
-  it("advances past malformed claims and retries them on a later pass", async () => {
-    vi.stubEnv("PAPERCLIP_DECISIONS_SWEEP_BATCH_SIZE", "1");
-    const invalid = await create(), valid = await create();
-    await claim(invalid.id, new Date(Date.now() - 180_000)); await claim(valid.id, new Date(Date.now() - 120_000));
-    await db.update(decisions).set({ chosenOptionId: "missing" }).where(eq(decisions.id, invalid.id));
-    const recovery = service();
-    await expect(recovery.recoverEffects()).rejects.toThrow("Stored decision outcome is invalid");
-    expect(await recovery.recoverEffects()).toEqual({ resumed: 1 }); expect(await comments()).toHaveLength(1);
-    await recovery.recoverEffects();
-    await expect(recovery.recoverEffects()).rejects.toThrow("Stored decision outcome is invalid");
+  it("pages past unresolved claims using database timestamp precision", async () => {
+    const pending = await create(), valid = await create();
+    await claim(pending.id); await claim(valid.id, new Date(Date.now() - 120_000));
+    await db.execute(sql`update decisions set updated_at = date_trunc('milliseconds', now() - interval '3 minutes')
+      + interval '456 microseconds' where id = ${pending.id}`);
+    const scan = decisionEffectRecoveryService(db, async id => {
+      if (id === pending.id) return false;
+      await decide(id); return true;
+    });
+    expect(await scan.sweep(new Date(), 1)).toEqual({ resumed: 0 });
+    expect(await scan.sweep(new Date(), 1)).toEqual({ resumed: 1 });
+    expect(await comments()).toHaveLength(1);
+    expect((await service().get(pending.id))?.executionStatus).toBe("running");
+    expect(await scan.next()).not.toBeNull();
+    expect(await scan.sweep(new Date(), 1)).toEqual({ resumed: 0 });
+    expect(await scan.sweep(new Date(), 1)).toEqual({ resumed: 0 });
+    expect(await comments()).toHaveLength(1);
   });
 
   it.each([false, true])("preserves archive recovery semantics with prior committed archive: %s", async committed => {
