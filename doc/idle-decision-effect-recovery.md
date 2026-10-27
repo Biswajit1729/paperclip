@@ -12,13 +12,20 @@ The existing decision row is durable truth. A row with `status = decided` and
 supported; invalid or negative values retain the existing default. Reads do not
 move the timestamp. Open decisions and completed history create no recovery debt.
 
-The existing `notifyDecisionChange` helper adds the recovery topic. Creation,
-bundle creation, foreground running claims, effect completion, archive completion
-and failure, cancellation, dismissal, expiry, and continuation acknowledgements
-already pass through that boundary. Notifications are awaited before writes in
-the existing transaction. Outer commit activates work; rollback does not publish
-a claim. The additional topic does not wrap provider work or agent wakes in SQL
-transactions and does not introduce a new queue table.
+The existing `writeDecisionChange` transaction boundary signals effect recovery
+for running claims, effect/archive settlement, cancellation, dismissal and expiry.
+The generic `notifyDecisionChange` helper signals continuation and expiry only;
+open-decision creation does not owe effect recovery. Notifications are awaited
+before writes. Outer commit activates work; rollback does not publish a claim.
+The additional topic does not wrap provider work or agent wakes in SQL transactions
+and does not introduce a new queue table.
+
+Committed notification bursts coalesce for up to one second after a successful
+pass. This bounds sequential tenant writes to at most one notification-driven
+global pass per window, rather than only coalescing overlapping scans. A saved
+recovery deadline can preempt that window. New obligations discovered by a signal
+can wait up to one second; foreground effects still execute immediately. The
+window alone never schedules work when there is no notification or saved debt.
 
 The supported writer model is the application DB signal owner and its child pools.
 Independent SQL clients and multiple active writers need a separate notification
@@ -178,3 +185,21 @@ separate requirements; these results do not prove host suspension.
 The owning branch also passes all 129 cases across the four complete recovery,
 decision-service, expiry, and startup suites. Database-backed suites use separate
 migrated disposable databases. See `/tmp/sleep-effect-review-owner-acceptance.log`.
+
+
+### Bounded notification review repair
+
+Ten sequential real cancellation transactions reproduced ten extra recovery
+scans. After enabling the existing shared notification-coalescing capability,
+the same transactions cause one follow-up scan and then return to SQL quiet.
+A separate real-database case preserves an already loaded deadline 500 milliseconds
+away. The initial deadline fixture observed the scheduler while its SQL pass was
+still active; waiting for that read removed the fixture race before the baseline
+was recorded. The cancellation amplification still failed before the production fix.
+
+All 131 tests in the four complete recovery, decision-service, expiry and startup
+suites pass at the owning branch, as does server typechecking. The helper's optional
+coalescing capability is promoted from the later plugin scheduling slice into this
+PR; consumers that omit it keep their previous behavior. The integrated stack is
+verified separately before publication. The original full-suite and external-wake
+limitations remain.
