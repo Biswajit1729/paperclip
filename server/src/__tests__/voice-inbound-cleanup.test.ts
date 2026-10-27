@@ -96,7 +96,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
   it("backfills only provable legacy termination and preserves rejected cleanup debt", async () => {
     const confirmed = await admission({ state: "ended" });
     const uncertain = await admission({ state: "ended", approvedByUserId: randomUUID(), callerAuthority: "member" });
-    const migration = await readFile(new URL("../../../packages/db/src/migrations/0391_lying_trish_tilby.sql", import.meta.url), "utf8");
+    const migration = await readFile(new URL("../../../packages/db/src/migrations/0392_lying_trish_tilby.sql", import.meta.url), "utf8");
     const backfill = migration.split("--> statement-breakpoint").at(-1)!;
     await db.execute(sql.raw(backfill)); await db.execute(sql.raw(backfill));
     expect((await db.select().from(chatVoiceInboundCalls).where(eq(chatVoiceInboundCalls.id, confirmed.id)))[0].cleanupConfirmedAt).not.toBeNull();
