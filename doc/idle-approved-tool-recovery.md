@@ -115,3 +115,36 @@ checks supplement the earlier execution, transaction, and paging evidence above.
 After company scoping, the complete gateway-service and startup selection passes
 149 tests against a disposable PostgreSQL database, and server typecheck passes.
 Stack integration, workspace checks, and fresh remote CI remain separate gates.
+
+## Preparation failures retain an approved Test-tab action
+
+A real PostgreSQL policy-read timeout reproduced a permanent-failure bug after
+claiming a Test-tab action: the provider had never been called, but both request
+and invocation were saved as failed, so approved recovery could not retry them.
+
+The preparation boundary now distinguishes explicit validation/access rejections
+from unexpected dependency errors and transient HTTP errors. The existing
+`tool-test-approval` owner releases only its exact claim: invocation and request
+are locked in the established order, their link/company/claim timestamp must
+match, and the invocation must still await approval with no recorded start.
+The request returns to `approved` with a transaction-aware notification. Signed
+arguments and the human approval remain unchanged; the error propagates so the
+existing recovery worker retains its retry obligation.
+
+This boundary ends before `runTestToolInvocation`. Provider dispatch and outcome
+persistence keep their existing conservative no-replay behavior. A changed claim,
+started invocation or prior-dispatch evidence cannot be released by this path.
+If the requeue transaction itself fails, the error propagates and no terminal
+failure is fabricated; existing interrupted-execution reconciliation remains the
+fallback. This change does not infer replay safety from a failed requeue.
+
+Before the fix, both foreground and recovery timeout regressions failed. They
+now observe the committed claim under a real PostgreSQL table lock, wait for
+`55P03`, verify unchanged approval and no provider call, then prove automatic
+recovery invokes the provider once and becomes quiet. Additional real-row cases
+cover changed ownership, mismatched invocation, a started call, prior-dispatch
+history, and outer-transaction rollback. A released claim cannot start execution.
+All 117 gateway-service cases pass on the owning slice, including existing target
+invalidation, provider-outcome persistence failures and unknown-outcome no-replay
+cases. Integrated consumer checks, workspace verification and remote PR gates
+must still be recorded after propagation.
