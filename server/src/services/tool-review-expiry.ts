@@ -18,12 +18,15 @@ export function toolReviewExpiryService(db: Db, onExpired: (input: {
     sweep,
     sweepForCompany: (companyId: string) => sweep(new Date(), companyId, 1),
     async deadlines(companyId?: string) {
-      const rows = await db.select({ companyId: toolActionRequests.companyId,
-        at: sql<string | Date>`min(${toolActionRequests.expiresAt})` })
-        .from(toolActionRequests).where(and(eq(toolActionRequests.status, "pending"),
-          isNotNull(toolActionRequests.expiresAt),
-          companyId === undefined ? undefined : eq(toolActionRequests.companyId, companyId)))
-        .groupBy(toolActionRequests.companyId);
+      const pendingExpiry = and(eq(toolActionRequests.status, "pending"), isNotNull(toolActionRequests.expiresAt));
+      const rows = companyId === undefined
+        ? await db.select({ companyId: toolActionRequests.companyId,
+          at: sql<string | Date>`min(${toolActionRequests.expiresAt})` })
+          .from(toolActionRequests).where(pendingExpiry).groupBy(toolActionRequests.companyId)
+        : await db.select({ companyId: toolActionRequests.companyId,
+          at: sql<Date>`${toolActionRequests.expiresAt}` })
+          .from(toolActionRequests).where(and(pendingExpiry, eq(toolActionRequests.companyId, companyId)))
+          .orderBy(asc(toolActionRequests.expiresAt)).limit(1);
       return rows.map(row => ({ companyId: row.companyId, dueAt: new Date(row.at).getTime() }));
     },
   };
