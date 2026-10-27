@@ -48,8 +48,19 @@ export function registerSkillVersionRetentionWork(
     run: async signal => {
       const admitted = () => !signal.aborted && canRun();
       for (const [id, at] of freshScanAfter) if (at <= Date.now()) freshScanAfter.delete(id);
-      for (const [id, at] of deadlines) if (at <= Date.now()) dirty.add(id);
-      for (const id of cacheChanges.keys()) if (cacheDeadline(id) <= Date.now()) dirty.add(id);
+      for (const [id, at] of deadlines) if (at <= Date.now()) {
+        dirty.add(id);
+        freshScanAfter.delete(id);
+        deadlines.delete(id);
+      }
+      for (const [id, entries] of cacheChanges) {
+        for (const [directory, at] of entries) if (at <= Date.now()) {
+          dirty.add(id);
+          freshScanAfter.delete(id);
+          entries.delete(directory);
+        }
+        if (entries.size === 0) cacheChanges.delete(id);
+      }
       let inspected = 0;
       let companies = 0;
       const scope = discovery;
