@@ -127,3 +127,30 @@ below. No production timeout or quiet assertion was relaxed.
 The post-cleanup retry run passes all 48 shutdown/plugin cases (28 plugin and
 20 shutdown). Together with the unchanged consumer selection this covers 76
 unique cases. Server typecheck and build pass on the final round-two repair.
+
+
+## Reservation and unregister races
+
+A scheduled refresh can yield after selecting eligible jobs while a manual trigger
+reserves one of those jobs. Previously the stale scheduled attempt reused the
+same set entry, found the manual run under its row lock, and removed that entry.
+The manual provider call was still running but no longer consumed scheduler
+capacity. Dispatch now performs the synchronous reservation check and insertion
+at one boundary; callers cannot remove a reservation they did not create. Refresh
+also rechecks active and retained-settlement state after its database read.
+
+Unregister now preserves runs whose real result is retained for settlement. For
+other unfinished runs, it locks and rereads the current run before cancelling, so
+a completion committed since discovery cannot be overwritten. The existing job
+store still owns mutation notifications. Provider calls stay outside transactions;
+no new periodic work or durable storage is introduced.
+
+Real PostgreSQL regressions first reproduced both incorrect cancellation of saved
+success/failure results and loss of a manual reservation after a delayed query
+result. The corrected suite also checks concurrent completion during unregister,
+manual/scheduled capacity, retries without another provider call, drain/resume,
+startup, shutdown and quiet states. All 33 complete scheduler cases and server
+TypeScript checks pass on the owning slice. The first full run crossed the next
+hourly cron boundary during a retry fixture and legitimately produced extra runs;
+its fixed clock now isolates that test from wall-clock start time while preserving
+its assertions. Stack integration and latest-head CI are separate gates.
