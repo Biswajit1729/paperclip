@@ -6,6 +6,7 @@ import { notifyChatRunMilestones } from "../services/chat-run-milestone-notifica
 import { registerGitHubReviewProjectionWork } from "../services/chat-channels/github/review-projection-work.js";
 import { retainGitHubReviewReceipt } from "../services/chat-channels/github/task-preparation.js";
 import { settleUnrecoverableExecutions } from "../services/execution-recovery-resolution.js";
+import { recordRunPresentationDecision } from "../services/heartbeat/run-completion.js";
 import { environmentService } from "../services/environments.js";
 import { createAdmissionTransactionScope, createWakeAdmissionWriter } from "../modules/wake-queue/adapters/postgres.js";
 import { chatFailedRetryNoticeWork } from "../services/chat-failed-retry-notice-work.js";
@@ -4712,6 +4713,54 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect([...f.responseComments.values()][0].body).toContain("paperclip-response-state:final");
       expect(f.responseWrites.map(write => write.method)).toEqual(["POST", "PATCH"]);
     });
+    it("parks a GitHub acknowledgement until native presentation commits", async () => {
+      const f = await toolReplyFixture();
+      const [action] = await db.select().from(chatActions).where(and(
+        eq(chatActions.endpointId, f.endpoint.id), eq(chatActions.kind, "github_response_comment")));
+      await db.update(chatActions).set({ status: "received", result: null }).where(eq(chatActions.id, action.id));
+      await db.update(heartbeatRuns).set({ status: "succeeded", nativePhase: "committed", resultJson: {} })
+        .where(eq(heartbeatRuns.id, f.run.id));
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
+        onError: error => errors.push(error) });
+      const decision = { schema: "paperclip.run_presentation_decision.v1" as const,
+        commentAction: "none" as const, chosenSource: "none" as const, reasonCodes: ["no_final_response"] };
+      const commit = (database: typeof db) => recordRunPresentationDecision(database, {
+        companyId: f.companyId, runId: f.run.id, issueId: f.conversation.issueId!, decision,
+      });
+      try {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+        await f.service.registerGitHubAcknowledgementWork(coordinator, () => true).ready;
+        const quiet = async () => {
+          await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(10);
+            expect(coordinator.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0); });
+          const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction");
+          try {
+            await vi.advanceTimersByTimeAsync(120_000);
+            expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
+          } finally { reads.mockRestore(); writes.mockRestore(); }
+        };
+        await quiet();
+        expect(f.responseWrites).toHaveLength(1);
+        await expect(db.transaction(async tx => {
+          await commit(tx as unknown as typeof db);
+          expect((await readHeartbeatRunsById(f.run.id))[0].resultJson?.presentationDecision).toBeUndefined();
+          throw new Error("rollback presentation");
+        })).rejects.toThrow("rollback presentation");
+        await quiet();
+        expect(f.responseWrites).toHaveLength(1);
+        await commit(db);
+        await vi.waitFor(async () => {
+          await vi.advanceTimersByTimeAsync(10);
+          expect((await db.select().from(chatActions).where(eq(chatActions.id, action.id)))[0])
+            .toMatchObject({ status: "processed", result: { final: true } });
+        }, { timeout: 10_000 });
+        expect(f.responseWrites.map(write => write.method)).toEqual(["POST", "PATCH"]);
+        expect(f.responseWrites[1].body).toContain("without publishing a final response");
+        await quiet();
+        expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); vi.useRealTimers(); }
+    });
     it("does not let an unsettled GitHub fallback block a later board message", async () => {
       const f = await toolReplyFixture();
       await db.insert(chatActions).values({ companyId: f.companyId, endpointId: f.endpoint.id, conversationId: f.conversation.id,
@@ -9369,11 +9418,62 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         expect(posts(f)).toHaveLength(1);
         expect(new URLSearchParams(String(posts(f)[0]![1]!.body)).get("channel")).toBe(f.installerId);
       });
-      it("links the actor's own manager identity without requiring a connect command", async () => {
+      it("signals milestone eligibility around the real Slack account link and stays quiet on reconfirmation", async () => {
         const f = await managedFixture(); await f.provision();
         await db.delete(chatIdentityLinks).where(eq(chatIdentityLinks.endpointId, f.endpoint.id));
-        expect(await f.service.sendSlackTestMessage(f.endpoint.id, actor, { requestId: randomUUID() })).toMatchObject({ status: "sent" });
-        expect(await db.select().from(chatIdentityLinks).where(eq(chatIdentityLinks.endpointId, f.endpoint.id))).toEqual([expect.objectContaining({ paperclipUserId: actor.userId, status: "linked" })]);
+        const events: string[] = [];
+        const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.chatRunMilestones, (event, scopes) => {
+          if ([...scopes ?? []].some(scope => JSON.parse(scope).companyId === f.companyId)) events.push(event);
+        });
+        let release!: () => void, acquired!: () => void;
+        const gate = new Promise<void>(resolve => { release = resolve; });
+        const locked = new Promise<void>(resolve => { acquired = resolve; });
+        const lock = db.transaction(async tx => {
+          await tx.execute(sql`lock table chat_identity_links in share mode`);
+          acquired(); await gate;
+        });
+        await locked;
+        const linking = f.service.sendSlackTestMessage(f.endpoint.id, actor, { requestId: randomUUID() });
+        void linking.catch(() => undefined);
+        try {
+          try {
+            await vi.waitFor(async () => {
+              const [waiting] = await db.execute<{ count: number }>(sql`select count(*)::int as count from pg_stat_activity
+                where datname = current_database() and state = 'active' and wait_event_type = 'Lock'
+                  and query like 'insert into "chat_identity_links"%'`);
+              expect(waiting.count).toBeGreaterThan(0);
+            });
+            expect(events).toEqual(["intent"]);
+            expect(await db.select().from(chatIdentityLinks).where(eq(chatIdentityLinks.endpointId, f.endpoint.id))).toEqual([]);
+          } finally { release(); await lock; await linking; }
+          expect(events).toEqual(["intent", "settled"]);
+          expect(await db.select().from(chatIdentityLinks).where(eq(chatIdentityLinks.endpointId, f.endpoint.id)))
+            .toEqual([expect.objectContaining({ paperclipUserId: actor.userId, status: "linked" })]);
+          events.length = 0;
+          expect(await f.service.sendSlackTestMessage(f.endpoint.id, actor, { requestId: randomUUID() })).toMatchObject({ status: "sent" });
+          expect(events).toEqual([]);
+        } finally { unsubscribe(); }
+      });
+      it("settles a failed Slack account-link intent without committing identity or sending a test message", async () => {
+        const f = await managedFixture(); await f.provision();
+        await db.delete(chatIdentityLinks).where(eq(chatIdentityLinks.endpointId, f.endpoint.id));
+        f.provider.mockClear();
+        const events: string[] = [];
+        const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.chatRunMilestones, (event, scopes) => {
+          if ([...scopes ?? []].some(scope => JSON.parse(scope).companyId === f.companyId)) events.push(event);
+        });
+        await db.execute(sql`create function sleep_slack_link_failure() returns trigger language plpgsql as $$ begin raise exception 'link write unavailable'; end $$`);
+        await db.execute(sql`create trigger sleep_slack_link_failure before insert on chat_identity_links for each row execute function sleep_slack_link_failure()`);
+        try {
+          await expect(f.service.sendSlackTestMessage(f.endpoint.id, actor, { requestId: randomUUID() })).rejects.toThrow();
+          expect(events).toEqual(["intent", "settled"]);
+          expect(await db.select().from(chatIdentityLinks).where(eq(chatIdentityLinks.endpointId, f.endpoint.id))).toEqual([]);
+          expect(posts(f)).toHaveLength(0);
+        } finally {
+          unsubscribe();
+          await db.execute(sql`drop trigger sleep_slack_link_failure on chat_identity_links`);
+          await db.execute(sql`drop function sleep_slack_link_failure()`);
+        }
       });
       it("requires a private Slack challenge for an unknown account before linking and sending the test", async () => {
         const f = await managedFixture(); await f.provision();
@@ -66473,7 +66573,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     }
   });
 
-  it.each(["idle", "bounded pass", "requester merge"] as const)("reactivates denied retry notices when authority is restored during %s", async mode => {
+  it.each(["idle", "bounded pass", "requester merge", "agent resume"] as const)("reactivates denied retry notices when authority is restored during %s", async mode => {
     const context = await deferredFailedRetryNoticeFixture();
     const rejectedIds = mode === "bounded pass" ? Array.from({ length: 100 }, () => randomUUID()) : [];
     const errors: unknown[] = [];
@@ -66482,12 +66582,20 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     let held = false, release!: () => void;
     const pending = new Promise<void>(resolve => { release = resolve; });
     let ready: Promise<unknown> | undefined;
+    let lifecycle: ReturnType<typeof configureAgentLifecycle> | undefined;
     const reconcile = context.service.reconcileFailedRetryNotices.bind(context.service);
     const pass = vi.spyOn(context.service, "reconcileFailedRetryNotices");
     try {
       expect(await context.admit()).toMatchObject({ status: "deferred" });
       const [originalReceipt] = await readAgentWakeupRequestsById(context.retry.chatActionId!);
-      if (mode === "requester merge") {
+      if (mode === "agent resume") {
+        lifecycle = configureAgentLifecycle(db, { requiredPluginIds: async () => [],
+          runHost: async () => "complete", runPlugin: async () => "complete" });
+        await createAgentLifecycle(db).pauseAgent(context.fixture.assignedAgentId);
+        await lifecycle.process(context.fixture.assignedAgentId);
+        expect((await db.select().from(agents).where(eq(agents.id, context.fixture.assignedAgentId)))[0])
+          .toMatchObject({ status: "paused", lifecycleState: "paused" });
+      } else if (mode === "requester merge") {
         expect(originalReceipt.requestedByActorType).toBe("user");
         await db.update(agentWakeupRequests).set({ requestedByActorId: "another-requester" })
           .where(eq(agentWakeupRequests.id, originalReceipt.id));
@@ -66526,7 +66634,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         } finally { select.mockRestore(); transaction.mockRestore(); }
       }
       expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
-      if (mode === "requester merge") {
+      if (mode === "agent resume") {
+        await createAgentLifecycle(db).resumeAgent(context.fixture.assignedAgentId);
+        await lifecycle!.process(context.fixture.assignedAgentId);
+        expect((await db.select().from(agents).where(eq(agents.id, context.fixture.assignedAgentId)))[0])
+          .toMatchObject({ status: "idle", lifecycleState: "ready" });
+      } else if (mode === "requester merge") {
         await db.transaction(async tx => {
           await tx.execute(sql`select id from issues where id = ${context.issue.id} for update`);
           await createWakeAdmissionWriter().mergeIntoExistingDeferredWake(
@@ -66550,7 +66663,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       } finally { select.mockRestore(); transaction.mockRestore(); }
       expect(errors).toEqual([]);
     } finally {
-      release(); await ready; await coordinator.stop(); pass.mockRestore(); vi.useRealTimers();
+      release(); await ready; await lifecycle?.stop(); await coordinator.stop(); pass.mockRestore(); vi.useRealTimers();
       await context.service.shutdown();
       await db.delete(agentWakeupRequests).where(inArray(agentWakeupRequests.id,
         [...rejectedIds, context.retry.requestId!, context.retry.chatActionId!]));
