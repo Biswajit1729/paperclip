@@ -208,3 +208,26 @@ cases pass (706 targeted tests on this repair). Server typecheck and build pass.
 The full local test matrix was not rerun; prior remote Actions passed at
 f8ad26f0ff, which still had the security finding. Fresh remote checks/security
 review on the repaired head are required and are not inferred from those results.
+
+## GitHub health unit fixture after master integration (October 27)
+
+Fresh CI on #17649 failed server shard 12 in the new GitHub suspended-installation
+recovery test. Its minimal database fake only implemented reads and updates;
+health changes now go through the existing transactional write owner. The test
+therefore received `db.transaction is not a function` instead of its expected
+422 response and installation settings links. The same failure reproduced on
+this owning PR before correction.
+
+The unit test now substitutes the health-write collaborator while preserving
+all of its original error, message, connection-health, and URL assertions. This
+is the boundary of that error-projection fixture, not a change to production
+transactions or a substitute for transactional acceptance. The separate complete
+`tool-connection-health-work` suite still uses the real write owner and a fresh
+PostgreSQL database. Both complete files pass all 24 cases with no skips on owner
+source based on `d2068f59a30f6f33b4543a79b539016294cbfe15`.
+
+The failed CI job is
+[server shard 12](https://github.com/paperclipai/paperclip/actions/runs/40470614670/job/122077293740).
+Fresh remote CI is still required on the follow-up head. Other review findings
+on health scheduling remain separate; this fixture correction does not resolve
+them or claim deployed sleep.
