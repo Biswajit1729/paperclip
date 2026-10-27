@@ -59,7 +59,11 @@ describe.skipIf(!supported)("gateway credential expiry", () => {
   }
   async function settle(ms = 60_000) {
     await vi.advanceTimersByTimeAsync(ms);
-    if (!draining) await vi.waitFor(() => expect(idleWorkSnapshot().active).toBe(0), { timeout: 5000 });
+    if (!draining) await vi.waitFor(async () => {
+      // SQL may finish after the clock jump and arm a coalesced follow-up pass.
+      if (idleWorkSnapshot().active > 0) await vi.advanceTimersByTimeAsync(30_000);
+      expect(idleWorkSnapshot().active).toBe(0);
+    }, { timeout: 5000 });
   }
   async function quiet() {
     await settle(); expect(coordinator!.nextWakeAt()).toBeNull();
@@ -120,6 +124,81 @@ describe.skipIf(!supported)("gateway credential expiry", () => {
       expect(coordinator!.nextWakeAt()).toBe(await gateway.nextCredentialExpiryAt());
       await settle(5 * 60_000); await quiet();
     }
+  });
+
+  it("coalesces sequential credential writes within the former cleanup cadence", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"], shouldAdvanceTime: false });
+    const cleanup = vi.spyOn(gateway, "cleanupExpiredSessions");
+    const next = vi.spyOn(gateway, "nextCredentialExpiryAt");
+    await start();
+    const firstPassAt = Date.now();
+    for (let i = 0; i < 10; i++) {
+      if (i % 2 === 0) await session();
+      else await token(new Date(Date.now() + 5 * 60_000));
+      await vi.advanceTimersByTimeAsync(1);
+      // Let each old scan finish so this measures sequential writes, not overlapping calls.
+      await db.execute(sql`select pg_sleep(0.01)`);
+    }
+    expect(cleanup).toHaveBeenCalledTimes(1);
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(coordinator!.nextWakeAt()).toBe(firstPassAt + 30_000);
+    await vi.advanceTimersByTimeAsync(30_000);
+    await vi.waitFor(() => expect(next).toHaveBeenCalledTimes(2));
+    await db.execute(sql`select pg_sleep(0.01)`);
+    expect(cleanup).toHaveBeenCalledTimes(2);
+    expect(coordinator!.nextWakeAt()).toBeGreaterThan(Date.now());
+    await settle(5 * 60_000); await quiet();
+  });
+
+  it("keeps a loaded expiry deadline ahead of credential notification coalescing", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"], shouldAdvanceTime: false });
+    const deadline = Date.now() + 500;
+    await token(new Date(deadline));
+    await start();
+    expect(coordinator!.nextWakeAt()).toBe(deadline);
+    await session();
+    await vi.advanceTimersByTimeAsync(1);
+    await db.execute(sql`select pg_sleep(0.01)`);
+    expect(coordinator!.nextWakeAt()).toBe(deadline);
+    await vi.advanceTimersByTimeAsync(499);
+    await vi.waitFor(async () => expect(await db.select().from(toolMcpGatewayTokens)).toEqual([]));
+    expect(await db.select().from(toolGatewaySessions)).toHaveLength(1);
+    await settle(5 * 60_000); await quiet();
+  });
+
+  it("rejects a newly expired credential while physical cleanup is coalesced", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"], shouldAdvanceTime: false });
+    const cleanup = vi.spyOn(gateway, "cleanupExpiredSessions");
+    await start();
+    const at = Date.now();
+    const active = await gateway.createSession({ companyId, agentId, runId, ttlMs: 1000 });
+    await vi.advanceTimersByTimeAsync(1000);
+    await db.execute(sql`select pg_sleep(0.01)`);
+    expect(cleanup).toHaveBeenCalledTimes(1);
+    expect(await db.select().from(toolGatewaySessions)).toHaveLength(1);
+    await expect(gateway.listToolsForSession(active.token)).rejects.toMatchObject({ status: 401, reasonCode: "session_expired" });
+    expect(coordinator!.nextWakeAt()).toBe(at + 30_000);
+    await vi.advanceTimersByTimeAsync(29_000);
+    await vi.waitFor(async () => expect(await db.select().from(toolGatewaySessions)).toEqual([]));
+    await quiet();
+  });
+
+  it("bounds session cleanup and schedules the remaining overdue batch", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"], shouldAdvanceTime: false });
+    await db.insert(toolGatewaySessions).values(Array.from({ length: 501 }, () => ({
+      companyId, agentId, runId, tokenHash: randomUUID(), expiresAt: new Date(Date.now() - 1),
+    })));
+    const future = await session();
+    const cleanup = vi.spyOn(gateway, "cleanupExpiredSessions");
+    await start();
+    expect(cleanup).toHaveResolvedWith({ deletedCount: 500 });
+    expect(await db.select().from(toolGatewaySessions)).toHaveLength(2);
+    expect(coordinator!.nextWakeAt()).toBe(Date.now() + 30_000);
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(cleanup).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.waitFor(async () => expect((await db.select().from(toolGatewaySessions)).map(row => row.id)).toEqual([future.id]));
+    await settle(5 * 60_000); await quiet();
   });
 
   it("reconstructs saved token expiry on startup", async () => {
