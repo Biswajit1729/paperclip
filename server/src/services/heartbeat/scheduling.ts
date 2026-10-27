@@ -1095,14 +1095,14 @@ export function createHeartbeatScheduling(
   }
 
   async function tickIssueMonitors(now = new Date(), canContinue: () => boolean = () => true) {
-    if (!canContinue() || (await getSchedulingSuppression()).suppressed) {
+    if (!canContinue() || (await getSchedulingSuppression(true)).suppressed) {
       return { checked: 0, triggered: 0, skipped: 0 };
     }
     return tickDueIssueMonitors(now, canContinue);
   }
 
   async function nextIssueMonitorAt(): Promise<number | null> {
-    if ((await getSchedulingSuppression()).suppressed) return null;
+    if ((await getSchedulingSuppression(true)).suppressed) return null;
     const [row] = await db.select({ at: sql<string | null>`min(greatest(${issues.monitorNextCheckAt},
       ${issues.monitorWakeRequestedAt} + interval '5 minutes' + interval '1 millisecond'))` })
       .from(issues).innerJoin(companies, eq(companies.id, issues.companyId))
