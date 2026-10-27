@@ -9615,34 +9615,6 @@
           "method": "btree",
           "with": {}
         },
-        "chat_actions_github_stale_head_idx": {
-          "name": "chat_actions_github_stale_head_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "endpoint_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "(\"payload\"->'event'->>'deliveryId')",
-              "asc": true,
-              "isExpression": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"chat_actions\".\"kind\" = 'github_review_check'\n        and \"chat_actions\".\"status\" = 'cancelled' and \"chat_actions\".\"result\"->>'code' = 'stale_head'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "chat_actions_github_check_work_idx": {
           "name": "chat_actions_github_check_work_idx",
           "columns": [
@@ -13163,22 +13135,6 @@
         }
       },
       "indexes": {
-        "chat_github_reviews_projection_work_idx": {
-          "name": "chat_github_reviews_projection_work_idx",
-          "columns": [
-            {
-              "expression": "id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"chat_github_reviews\".\"state\" in ('queued', 'running')\n      and \"chat_github_reviews\".\"assessment\" is null\n      and \"chat_github_reviews\".\"delivery_id\" ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "chat_github_reviews_delivery_uq": {
           "name": "chat_github_reviews_delivery_uq",
           "columns": [
@@ -33641,22 +33597,6 @@
           "method": "btree",
           "with": {}
         },
-        "heartbeat_runs_scheduled_retry_cancellation_idx": {
-          "name": "heartbeat_runs_scheduled_retry_cancellation_idx",
-          "columns": [
-            {
-              "expression": "id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"heartbeat_runs\".\"status\" = 'scheduled_retry' and jsonb_typeof(\"heartbeat_runs\".\"result_json\"->'startupCancellation') = 'object'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "heartbeat_runs_cost_accounting_pending_idx": {
           "name": "heartbeat_runs_cost_accounting_pending_idx",
           "columns": [
@@ -51462,6 +51402,18 @@
           "primaryKey": false,
           "notNull": false
         },
+        "git_authorization_grant_id": {
+          "name": "git_authorization_grant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "git_authorized_by_user_id": {
+          "name": "git_authorized_by_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "pause_reason": {
           "name": "pause_reason",
           "type": "text",
@@ -51599,6 +51551,19 @@
             "id"
           ],
           "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "projects_git_authorization_grant_id_connection_grants_id_fk": {
+          "name": "projects_git_authorization_grant_id_connection_grants_id_fk",
+          "tableFrom": "projects",
+          "tableTo": "connection_grants",
+          "columnsFrom": [
+            "git_authorization_grant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
           "onUpdate": "no action"
         }
       },
@@ -64458,6 +64423,6 @@
     "tables": {},
     "columns": {}
   },
-  "id": "9380ee81-efab-4493-8811-d683cae5278a",
-  "prevId": "6b8f9062-39b5-45df-9d80-cba9c94b6508"
+  "id": "3b3c87a9-c11d-4191-bebd-1c952b720788",
+  "prevId": "b753e2c9-590c-479b-9a32-7a4103b5a077"
 }
