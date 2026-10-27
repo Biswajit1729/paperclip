@@ -22,7 +22,7 @@ export function registerDeadlineWork(
     pausePassiveMaintenance: true,
     onSettled: () => { requested++; },
     run: async signal => {
-      if (!task.canRun()) { requested++; return; }
+      if (!task.canRun()) { requested++; next = null; return; }
       if (Date.now() < earliest) { next = earliest; return; }
       if (Date.now() < coalesceUntil && (next === null || next > Date.now())) {
         next = next === null ? coalesceUntil : Math.min(next, coalesceUntil);
@@ -31,8 +31,12 @@ export function registerDeadlineWork(
       const generation = ++requested;
       earliest = Date.now() + task.retryMs;
       await task.run(signal);
-      if (signal.aborted) return;
+      if (signal.aborted || !task.canRun()) { next = null; return; }
       const deadline = await task.next();
+      // Admission can close while either asynchronous operation is in flight.
+      // Keep the request, but drop a stale local deadline so only the bounded
+      // in-memory retry runs until admission reopens.
+      if (!task.canRun()) { next = null; return; }
       // Back off failed or still-overdue work, not a successfully read future deadline.
       if (deadline === null || deadline > Date.now()) earliest = 0;
       next = deadline === null ? null : Math.max(earliest, deadline);

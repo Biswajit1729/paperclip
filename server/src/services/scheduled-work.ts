@@ -1,3 +1,4 @@
+import { readTaskDrain } from "./task-admission.js";
 import { registerDeadlineWork } from "./deadline-work.js";
 import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
@@ -23,9 +24,9 @@ export function registerScheduledWork(
   const monitors = registerDeadlineWork(coordinator, DELIVERY_QUEUES.issueMonitors, {
     run: options.tickIssueMonitors,
     next: options.nextIssueMonitorAt,
-    canRun: options.canRun,
+    canRun: () => options.canRun() && readTaskDrain(new Date()) === null,
     retryMs: options.retryMs,
-    notificationCoalesceMs: 1000,
+    notificationCoalesceMs: options.retryMs,
   });
   // Legacy agent interval policies retain their existing external tick until
   // that separate duty is migrated. They do not scan issue monitors.

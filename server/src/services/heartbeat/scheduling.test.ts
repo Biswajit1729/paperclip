@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { setTimeout as realDelay } from "node:timers/promises";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog, applyPendingMigrations, reconcileDatabaseWork, agents, agentSessionGoalActions, agentTaskSessions, companies, createDb,
@@ -13,7 +14,7 @@ import { issueService } from "../issues.js";
 import { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 import { registerScheduledWork } from "../scheduled-work.js";
-import { idleWorkSnapshot } from "../task-admission.js";
+import { idleWorkSnapshot, readTaskDrain, startTaskDrain, stopTaskDrain } from "../task-admission.js";
 import { conflict } from "../../errors.js";
 import { createHeartbeatRunPreparation } from "./run-preparation.js";
 import { createHeartbeatRunState } from "./run-state.js";
@@ -92,7 +93,9 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
   beforeAll(async () => {
     if (external) await applyPendingMigrations(external);
     else database = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-scheduling-module");
-    db = createDb(external ?? database.connectionString);
+    // The fake scheduler clock must not expire real PostgreSQL socket timers.
+    // Pool disconnect/reconnect behavior has its own database-client tests.
+    db = createDb(external ?? database.connectionString, { idleTimeoutSeconds: 0, maxLifetimeSeconds: 0, connectTimeoutSeconds: 0 });
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterAll(async () => {
     await db?.$client.end();
@@ -359,7 +362,7 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
       await expect(f.scheduler.triggerIssueMonitor(f.issue.id, { now: expiredAt })).rejects.toThrow("waiting for the previous run to settle");
       if (dispatch === "worker") {
         monitorWorker = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
-        const workers = registerScheduledWork(monitorWorker, { retryMs: 30_000, canRun: () => true,
+        const workers = registerScheduledWork(monitorWorker, { retryMs: 1000, canRun: () => true,
           tickAgentTimers: async () => {}, tickRoutines: async () => {}, nextRoutineRunAt: async () => null,
           tickIssueMonitors: signal => f.scheduler.tickIssueMonitors(new Date(), () => !signal.aborted),
           nextIssueMonitorAt: () => f.scheduler.nextIssueMonitorAt(),
@@ -496,6 +499,7 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
     });
     afterEach(async () => {
       await coordinator?.stop(); coordinator = undefined;
+      stopTaskDrain();
       vi.useRealTimers(); vi.restoreAllMocks();
       expect(errors).toEqual([]);
     });
@@ -510,15 +514,24 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
       await Promise.all([workers.monitors.ready, workers.routines.ready, workers.timers.ready]);
       return workers;
     }
+    async function advance(milliseconds: number) {
+      // Let real database I/O finish between scheduler clock edges. One large
+      // clock jump can place a completion receipt after the next retry edge.
+      for (let remaining = milliseconds; remaining > 0; remaining -= 1000) {
+        await vi.advanceTimersByTimeAsync(Math.min(1000, remaining));
+        await realDelay(5);
+      }
+    }
     async function quiet() {
-      await vi.advanceTimersByTimeAsync(2000);
+      // Finish the bounded notification batch before measuring passive quiet.
+      await advance(31_000);
       if (!draining) await vi.waitFor(() => {
         expect(idleWorkSnapshot().active).toBe(0);
         expect(coordinator!.nextWakeAt()).toBeNull();
       }, { timeout: 5000 });
       const select = vi.spyOn(db, "select"), execute = vi.spyOn(db, "execute"), transaction = vi.spyOn(db, "transaction");
       try {
-        await vi.advanceTimersByTimeAsync(120_000);
+        await advance(120_000);
         expect(select).not.toHaveBeenCalled(); expect(execute).not.toHaveBeenCalled(); expect(transaction).not.toHaveBeenCalled();
       } finally { select.mockRestore(); execute.mockRestore(); transaction.mockRestore(); }
     }
@@ -538,7 +551,7 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
       const at = new Date(Date.now() + 10_000);
       await schedule(f, at);
       await vi.waitFor(() => expect(coordinator!.nextWakeAt()).toBe(at.getTime()));
-      await vi.advanceTimersByTimeAsync(10_000);
+      await advance(10_000);
       await vi.waitFor(async () => expect((await readIssue(f.issue.id)).monitorNextCheckAt).toBeNull());
       expect(f.deps.enqueueWakeup).toHaveBeenCalledOnce();
       await quiet(); expect(coordinator!.nextWakeAt()).toBeNull();
@@ -559,16 +572,40 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
       }).catch(error => { if (!rollback) throw error; expect(error.message).toBe("rollback monitor"); });
       try {
         await written;
-        await vi.advanceTimersByTimeAsync(2000);
+        await advance(2000);
         expect(f.deps.enqueueWakeup).not.toHaveBeenCalled();
         expect((await readIssue(f.issue.id)).monitorNextCheckAt).toBeNull();
       } finally { release(); await writing; }
       if (rollback) {
-        await vi.advanceTimersByTimeAsync(30_000);
+        await advance(30_000);
         await vi.waitFor(() => expect(coordinator!.nextWakeAt()).toBeNull());
         await quiet();
       }
-      else await vi.waitFor(() => expect(coordinator!.nextWakeAt()).toBe(at.getTime()));
+      else {
+        await advance(30_000);
+        await vi.waitFor(() => expect(coordinator!.nextWakeAt()).toBe(at.getTime()));
+      }
+    });
+
+    it.each(["stop", "expiry"] as const)("resumes a saved monitor after maintenance drain %s", async end => {
+      const f = await fixture();
+      const at = new Date(Date.now() + 10_000);
+      await db.update(issues).set({ monitorNextCheckAt: at }).where(eq(issues.id, f.issue.id));
+      f.deps.getSchedulingSuppression.mockImplementation(async () => ({ suppressed: readTaskDrain(new Date()) !== null }));
+      await start(f);
+      startTaskDrain({ ttlMs: end === "expiry" ? 90_000 : null });
+      const select = vi.spyOn(db, "select");
+      try {
+        await advance(60_000);
+        expect(f.deps.enqueueWakeup).not.toHaveBeenCalled();
+        expect(select).not.toHaveBeenCalled();
+        expect(coordinator!.nextWakeAt()).not.toBeNull();
+      } finally { select.mockRestore(); }
+      if (end === "stop") stopTaskDrain();
+      await advance(60_000);
+      await vi.waitFor(async () => expect((await readIssue(f.issue.id)).monitorNextCheckAt).toBeNull());
+      expect(f.deps.enqueueWakeup).toHaveBeenCalledOnce();
+      await quiet();
     });
 
     it("retains a first producer during drain without passive SQL, then resumes", async () => {
@@ -578,7 +615,7 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
       await schedule(f, new Date(Date.now() + 10_000));
       await quiet(); expect(f.deps.enqueueWakeup).not.toHaveBeenCalled();
       draining = false;
-      await vi.advanceTimersByTimeAsync(30_000);
+      await advance(30_000);
       await vi.waitFor(async () => expect((await readIssue(f.issue.id)).monitorNextCheckAt).toBeNull());
       expect(f.deps.enqueueWakeup).toHaveBeenCalledOnce();
       await quiet();
@@ -588,10 +625,10 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
       const f = await fixture(); f.deps.enqueueWakeup.mockResolvedValueOnce(null);
       await start(f);
       expect(f.deps.enqueueWakeup).toHaveBeenCalledOnce();
-      await vi.advanceTimersByTimeAsync(5000);
+      await advance(5000);
       expect(f.deps.enqueueWakeup).toHaveBeenCalledOnce();
       expect(coordinator!.nextWakeAt()).not.toBeNull();
-      await vi.advanceTimersByTimeAsync(30_000);
+      await advance(30_000);
       await vi.waitFor(async () => expect((await readIssue(f.issue.id)).monitorNextCheckAt).toBeNull());
       expect(f.deps.enqueueWakeup).toHaveBeenCalledTimes(2);
       await quiet();
@@ -606,7 +643,7 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
       await start(f);
       expect(f.deps.enqueueWakeup).toHaveBeenCalledTimes(50);
       expect(await f.scheduler.nextIssueMonitorAt()).toBe(dueAt.getTime());
-      await vi.advanceTimersByTimeAsync(30_000);
+      await advance(30_000);
       await vi.waitFor(() => expect(f.deps.enqueueWakeup).toHaveBeenCalledTimes(51));
       await quiet();
       expect(await f.scheduler.nextIssueMonitorAt()).toBeNull();
@@ -618,13 +655,15 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
       await start(f);
       const later = new Date(Date.now() + 600_000);
       await schedule(f, later);
+      await advance(30_000);
       await vi.waitFor(() => expect(coordinator!.nextWakeAt()).toBe(later.getTime()), { timeout: 5000 });
       const earlier = new Date(Date.now() + 60_000);
       await schedule(f, earlier);
+      await advance(30_000);
       await vi.waitFor(() => expect(coordinator!.nextWakeAt()).toBe(earlier.getTime()), { timeout: 5000 });
       await issueService(db).update(f.issue.id, { monitorNextCheckAt: null, executionPolicy: null });
       await quiet();
-      await vi.advanceTimersByTimeAsync(600_000);
+      await advance(600_000);
       expect(f.deps.enqueueWakeup).not.toHaveBeenCalled();
     });
 
@@ -636,7 +675,7 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
       expect(await f.scheduler.tickIssueMonitors(new Date(claimedAt.getTime() + 300_000))).toMatchObject({ triggered: 0 });
       await start(f);
       expect(coordinator!.nextWakeAt()).toBe(claimedAt.getTime() + 300_001);
-      await vi.advanceTimersByTimeAsync(300_001);
+      await advance(300_001);
       await vi.waitFor(async () => expect((await readIssue(f.issue.id)).monitorNextCheckAt).toBeNull());
       expect(f.deps.enqueueWakeup).toHaveBeenCalledOnce();
       await quiet();
@@ -651,6 +690,29 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
       await vi.waitFor(async () => expect((await readIssue(f.issue.id)).monitorNextCheckAt).toBeNull());
       expect(f.deps.enqueueWakeup).toHaveBeenCalledOnce();
       await quiet();
+    });
+
+    it("bounds global scans during repeated ordinary checkout and release writes", async () => {
+      const f = await fixture();
+      const at = new Date(Date.now() + 300_000);
+      await db.update(issues).set({ status: "todo", monitorNextCheckAt: at }).where(eq(issues.id, f.issue.id));
+      const next = vi.spyOn(f.scheduler, "nextIssueMonitorAt");
+      const tick = vi.spyOn(f.scheduler, "tickIssueMonitors");
+      await start(f);
+      const service = issueService(db);
+      for (let i = 0; i < 12; i++) {
+        await service.checkout(f.issue.id, f.agent.id, ["todo"], null);
+        await service.release(f.issue.id, f.agent.id, null);
+        await advance(2000);
+      }
+      expect(next).toHaveBeenCalledOnce();
+      expect(tick).toHaveBeenCalledOnce();
+      await service.checkout(f.issue.id, f.agent.id, ["todo"], null);
+      await advance(6000);
+      await vi.waitFor(() => expect(next).toHaveBeenCalledTimes(2));
+      expect(tick).toHaveBeenCalledTimes(2);
+      await vi.waitFor(() => expect(coordinator!.nextWakeAt()).toBe(at.getTime()));
+      expect(f.deps.enqueueWakeup).not.toHaveBeenCalled();
     });
 
     it("checkout reactivates a retained monitor on a formerly ineligible task", async () => {

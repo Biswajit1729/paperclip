@@ -53,7 +53,7 @@ The worker uses the configured heartbeat interval as a minimum retry spacing
 while overdue debt remains. The spacing applies to the monitor worker, so new
 notifications during that backoff do not start another immediate scan. Future
 saved deadlines run directly when no overdue retry is pending. State-change
-bursts use the shared worker's one-second coalescing window. No per-monitor
+bursts use a coalescing window equal to the configured heartbeat interval. No per-monitor
 queue, new table, independent timer, or shared scheduler modification was added.
 
 ## Producer coverage
@@ -118,3 +118,35 @@ This slice does not prove host or database suspension. Cloud's existing durable
 routine/monitor alarm proof remains unchanged. Legacy agent interval policy and
 other remaining recurring duties still run. Migrate the legacy agent timer as
 its own slice, preserving due claims, worktree cutoff, eligibility, and budgets.
+
+## Review corrections
+
+The original lifecycle fixture covered idle drain but missed ordinary maintenance
+drain. Monitor registration now checks all task drains through the existing
+admission owner. The shared deadline worker retains an unfinished request if
+admission closes during either the run or the deadline read. It clears the old
+local deadline in that state, so a past deadline cannot create an immediate spin;
+a bounded in-memory retry remains. Explicit stop and TTL expiry restore dispatch.
+Other deadline-worker consumers keep their existing admission predicates.
+
+Ordinary issue and execution-control writes can wake this queue. Their global
+scans are now bounded by the configured heartbeat interval instead of one second.
+Known saved deadlines still preempt that batching window. New notifications can
+therefore take up to one interval to be inspected, matching the previous polling
+latency. This does not add a periodic scan after the queue settles.
+
+New tests reproduce both findings before the fix. They cover mid-run and
+mid-read drain transitions, ordinary drain stop/expiry, repeated notification
+traffic, and repeated real checkout/release transactions. Integration fixtures
+advance the scheduler clock between real I/O completions and disable driver
+socket timers in that fixture; DB disconnect/reconnect has separate tests. The
+operator writer contract is in [idle-issue-monitors.md](../idle-issue-monitors.md).
+
+Validation after review: eight complete suites passed (211 tests). The routine
+suite initially had five failures because its unused monitor stub retained the
+new batching deadline. That fixture now registers only the real routine worker;
+all 17 routine tests pass separately. An intermediate test setup used a worker
+stop method that is not exposed; it was removed before final verification. The
+combined affected coverage is 228 passing tests, with no skips in the final
+complete suite results. Server typechecking and build pass. These are local
+results; current-head CI and remaining reviews are separate gates.

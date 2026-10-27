@@ -4,11 +4,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../services/delivery-work-notifications.js";
 import { registerScheduledWork } from "../services/scheduled-work.js";
-import { idleWorkSnapshot } from "../services/task-admission.js";
+import { idleWorkSnapshot, startTaskDrain, stopTaskDrain } from "../services/task-admission.js";
 
 const coordinators: ReturnType<typeof createDeliveryWorkCoordinator>[] = [];
 afterEach(async () => {
   for (const coordinator of coordinators.splice(0)) await coordinator.stop();
+  stopTaskDrain();
   vi.useRealTimers();
 });
 
@@ -56,6 +57,38 @@ function fixture(input: { routine?: number | null; monitor?: number | null; tick
 }
 
 describe("scheduled routine and monitor deadlines", () => {
+  it.each(["run", "deadline read"])("retains a monitor pass interrupted during %s by a maintenance drain", async boundary => {
+    const f = fixture({ tickIssueMonitors: async () => { if (boundary === "run") startTaskDrain(); } });
+    if (boundary === "deadline read") f.nextIssueMonitorAt.mockImplementationOnce(async () => { startTaskDrain(); return null; });
+    await f.ready();
+    expect(f.coordinator.nextWakeAt()).not.toBeNull();
+    expect(f.nextIssueMonitorAt).toHaveBeenCalledTimes(boundary === "run" ? 0 : 1);
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(f.tickIssueMonitors).toHaveBeenCalledOnce();
+    f.tickIssueMonitors.mockImplementation(async () => {});
+    stopTaskDrain();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(f.tickIssueMonitors).toHaveBeenCalledTimes(2);
+    expect(f.coordinator.nextWakeAt()).toBeNull();
+  });
+
+  it("bounds notification scans to the configured cadence while preserving known deadlines", async () => {
+    const origin = Date.UTC(2020, 0, 1);
+    const f = fixture({ monitor: origin + 150_000 });
+    await f.ready();
+    for (let second = 0; second < 120; second++) {
+      await f.owner.transaction(tx => notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors));
+      await vi.advanceTimersByTimeAsync(1000);
+    }
+    expect(f.nextIssueMonitorAt).toHaveBeenCalledTimes(3);
+    expect(f.tickIssueMonitors).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(f.tickIssueMonitors).toHaveBeenCalledTimes(4);
+    expect(f.coordinator.nextWakeAt()).toBeNull();
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(f.nextIssueMonitorAt).toHaveBeenCalledTimes(4);
+  });
+
   it("legacy agent timer wakes do not query or dispatch issue monitors", async () => {
     const f = fixture();
     await f.ready();
