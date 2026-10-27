@@ -254,3 +254,35 @@ including the historical approval's expired request, failed invocation with
 `approvalState: expired`, and zero provider requests. Server typecheck passes
 in `/tmp/sleep-approved-managed-expiry-types.log`. Latest-head remote CI and
 combined-stack acceptance still need their own results.
+
+## Delegated Test-tab admission after policy changes
+
+A delegated Test-tab call has an originating agent but no gateway token. The
+named-gateway admission path therefore did not evaluate its caller policy. If a
+rate rule was added while approval was pending, approval charged only the target.
+A shared company/tool bucket then rejected the caller against that same charge;
+a caller-specific rule instead allowed execution without recording its charge.
+
+The Test-tab owner now supplies its caller/target policy evaluation to the existing
+claim-transaction admission API. Both decisions use the claimed invocation's
+receipts. The target can share the caller's charge only when the rule and bucket
+match. Both receipts commit together. A denial rolls back new charges and receipts.
+Management reauthorization and credential identity checks remain with their owners,
+and provider execution stays outside the transaction. This adds no queue or timer.
+
+Three actual HTTP/PostgreSQL cases cover a newly added shared rate rule, separate
+caller and target rules, and a target denial after caller admission. The unchanged
+implementation failed the first two cases: the shared rule rejected execution,
+and separate rules left only one charge. The denial case already passed. After
+the repair, all three pass, including duplicate approval, both saved receipts,
+one provider execution, and rejection of a subsequent authorized call.
+
+The full connection-management suite passes all 78 cases against a fresh database.
+All 92 existing gateway tests and the server production typecheck also pass.
+Intermediate fixture failures remain accounted for: the new assertion initially
+used a nonexistent counter count field instead of remaining; the subsequent-call
+fixture first reused an ended run and then lacked responsible-user authority.
+The final fixture uses a new live run with the original responsible user. A reused
+full-suite database also retained a conflicting Slack bot identity; final acceptance
+uses a fresh isolated database. These are local checks, not current-head CI or a
+host-suspension qualification.
