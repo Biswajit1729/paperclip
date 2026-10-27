@@ -28,4 +28,3 @@ export function githubRecoveryWindow(value: unknown): GitHubRecoveryWindow | nul
     ? item
     : null;
 }
-
