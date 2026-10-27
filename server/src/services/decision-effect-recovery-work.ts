@@ -10,6 +10,7 @@ export function registerDecisionEffectRecoveryWork(
 ) {
   return registerDeadlineWork(coordinator, DELIVERY_QUEUES.decisionEffectRecovery, {
     retryMs: 30_000, canRun,
+    notificationCoalesceMs: 1000,
     run: signal => service.recoverEffects(new Date(), undefined, signal),
     next: service.nextEffectRecoveryAt,
   });
