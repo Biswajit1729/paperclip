@@ -3036,3 +3036,19 @@ awaiting provider cleanup inline. All 84 startup and 20 real-database environmen
 settlement cases pass, plus workspace typechecking and the full build. This
 changes only the last PR; earlier stack qualification and unresolved scope remain
 as recorded above. Fresh CI is required and nothing is merged.
+
+## Slice 59: import spool cleanup
+
+Branch `codex/sleep-59-import-spool-cleanup` follows slice 58 at
+`929c86e32e00d219b329741dd2c89c40b1a5f826`. Replace the hourly abandoned-upload
+scan with root/run-scoped filesystem hints, transaction-aware ledger changes,
+and saved 24-hour deadlines. Keep failed/applying files quiet and preserve the
+atomic cancellation claim. Database failures no longer count as missing rows
+that permit orphan deletion. No new table or external-wake exemption.
+
+The owning three complete suites pass 50 tests with real PostgreSQL and files;
+server typechecking passes. The initial outage regression reproduced deletion,
+and fixture failures during lifecycle testing are recorded in
+[the producer and lifecycle audit](2026-10-26-import-spool-cleanup-sleep.md).
+Workspace and remote checks remain separate acceptance gates. This is one
+remaining original duty, not a declaration that the inventory or stack is done.

@@ -10,6 +10,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { companyTransferRunService } from "../services/company-transfer-runs.js";
 import { sweepAbandonedImportTransferSpools } from "../services/company-import-transfers.js";
 
@@ -87,7 +88,8 @@ vi.mock("../services/company-import-transfers.js", async (importOriginal) => {
   };
 });
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const externalTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_IMPORT_TRANSFER_TEST_DATABASE_URL");
+const embeddedPostgresSupport = externalTestDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported
   ? describe
   : describe.skip;
@@ -250,8 +252,8 @@ describeEmbeddedPostgres("company import transfer routes", () => {
   }
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-import-transfer-routes-");
-    db = createDb(tempDb.connectionString);
+    if (!externalTestDatabaseUrl) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-import-transfer-routes-");
+    db = createDb(externalTestDatabaseUrl ?? tempDb!.connectionString);
     // The mocked import result points at this company; the ledger's
     // company_id foreign key needs the row to exist.
     await db.insert(companies).values({ id: companyId, name: "Chunked Import Target" });
@@ -260,6 +262,7 @@ describeEmbeddedPostgres("company import transfer routes", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
     await fs.rm(spoolRoot, { recursive: true, force: true });
   });
@@ -930,7 +933,7 @@ describeEmbeddedPostgres("company import transfer routes", () => {
     // — as if a part upload bumped the row right after that read — while the
     // guarded UPDATE sees the fresh row in the database and must miss.
     const real = (await companyTransferRunService.getRun(db, transferId))!;
-    const staleRead = vi.spyOn(companyTransferRunService, "getRun").mockResolvedValue({
+    const staleRead = vi.spyOn(companyTransferRunService, "getCleanupState").mockResolvedValue({
       ...real,
       updatedAt: new Date(Date.now() - 25 * 60 * 60 * 1000),
     });
