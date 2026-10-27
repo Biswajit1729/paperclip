@@ -245,3 +245,30 @@ path through restoring the original account, but a permanently unavailable
 provider needs a deliberate ownership/product policy. A retry cap, elapsed time,
 or ambiguous 404 is not evidence that a billable call ended. Do not manufacture
 cleanup confirmation or silently discard the obligation to unblock deletion.
+
+## Retrying an interrupted approval (2026-10-27)
+
+Older versions could commit a private session or guest promotion before writing
+the admission binding. Retrying approval then found the existing session and
+returned before the new atomic binding helper ran. The inbound API rejected the
+still-approving admission with “This call ended during approval.”
+
+Reservation now validates the inbound admission before the existing-session
+return. It uses the existing session authorizer to check current liveness,
+expiry, generation, credentials, caller and task access, then checks the exact
+admission/session identity before binding in the same transaction. Lock order
+remains endpoint, connection, admission, session. A matching provider session ID
+alone cannot establish approval. Already approved idempotent calls remain valid
+and do not rewrite the binding. Browser and outbound reservation behavior stays
+with the existing path. This adds no table, timer or recovery wrapper.
+
+Both direct and promoted-guest retry regressions failed through the real inbound
+API before the correction. They now return the same session without starting or
+ending another provider call. Ended, expired and token-changed sessions are
+rejected without binding. Existing atomic handoff and approval-authority cases
+also pass. An initial negative expiry fixture violated the database timestamp
+constraint; it was corrected to represent a valid session that has expired.
+All 132 cases across the complete voice-session and inbound-cleanup suites pass
+on separate fresh databases, and server typechecking passes. Downstream
+integration and latest-head CI remain required. The separate company-deletion
+cleanup findings are not resolved by this correction.
