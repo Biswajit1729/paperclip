@@ -107,12 +107,23 @@ The grouped startup inventory remains unchanged. Existing company signals,
 authority checks, expiry settlement, paging, backoff, and sleep gates remain
 owned by their existing services.
 
-The generated additive migration reserves number 0402 because later PRs in this
-stack already own 0380 through 0401. It builds the new index concurrently and
-idempotently through the existing top-level migration executor. No old SQL
-migration is edited. Combined snapshots must be generated from each branch's
-merged schema, retaining the five newest snapshots, so the reserved later
-number cannot hide descendant schema changes from future generation.
+The additive company-expiry index is migration `0380_tool_review_company_expiry`.
+It builds the index concurrently and idempotently through the existing top-level
+migration executor. It was initially numbered 0402 to avoid existing allocations.
+That passed per-branch numbering and schema checks, but CI correctly rejected
+later PRs whose migrations then preceded their target branch's 0402. The fix
+renumbers this unmerged index migration to 0380 and shifts the stack's former
+0380 through 0401 migrations forward by one, preserving their SQL bytes. It
+updates filename references, journal tags and indices, and generates snapshots
+in the corrected dependency order. The moved journal timestamp is placed after
+0379 and before the next migration; other timestamps remain unchanged.
+
+Each PR must pass the exact target-branch migration-order gate, in addition to
+the existing numbering, safety, five-snapshot retention, and schema-drift checks.
+Local branch checks alone did not establish the stack's append-only ordering.
+Fresh application, upgrades from the previous numbered task databases, and
+replay also require verification. These unmerged stack migrations have not
+changed the SQL of migrations already on master.
 
 Two failures shaped the repair. The first migration attempt omitted its explicit
 top-level registration and PostgreSQL rejected the concurrent build inside a
