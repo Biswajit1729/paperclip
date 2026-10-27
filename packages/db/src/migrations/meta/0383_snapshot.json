@@ -24028,22 +24028,6 @@
           "method": "btree",
           "with": {}
         },
-        "decisions_pending_continuation_idx": {
-          "name": "decisions_pending_continuation_idx",
-          "columns": [
-            {
-              "expression": "id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"decisions\".\"continuation_policy\" = 'wake_origin_agent' AND \"decisions\".\"metadata\" ->> 'continuationPending' = 'true' AND (\"decisions\".\"status\" IN ('expired', 'cancelled') OR (\"decisions\".\"status\" = 'decided' AND \"decisions\".\"execution_status\" IN ('succeeded', 'partial', 'failed')))",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "decisions_bundle_idx": {
           "name": "decisions_bundle_idx",
           "columns": [
@@ -51126,6 +51110,18 @@
           "primaryKey": false,
           "notNull": false
         },
+        "git_authorization_grant_id": {
+          "name": "git_authorization_grant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "git_authorized_by_user_id": {
+          "name": "git_authorized_by_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "pause_reason": {
           "name": "pause_reason",
           "type": "text",
@@ -51263,6 +51259,19 @@
             "id"
           ],
           "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "projects_git_authorization_grant_id_connection_grants_id_fk": {
+          "name": "projects_git_authorization_grant_id_connection_grants_id_fk",
+          "tableFrom": "projects",
+          "tableTo": "connection_grants",
+          "columnsFrom": [
+            "git_authorization_grant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
           "onUpdate": "no action"
         }
       },
@@ -56450,28 +56459,6 @@
           ],
           "isUnique": false,
           "where": "\"tool_action_requests\".\"status\" = 'pending'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "tool_action_requests_executing_deadline_idx": {
-          "name": "tool_action_requests_executing_deadline_idx",
-          "columns": [
-            {
-              "expression": "updated_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"tool_action_requests\".\"status\" = 'executing'",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -64122,6 +64109,6 @@
     "tables": {},
     "columns": {}
   },
-  "id": "15804294-0eee-46ef-9032-3280ff4d16ef",
-  "prevId": "ce9f6a62-5259-4041-b313-9de9484154f7"
+  "id": "9c7a9027-d6c9-4d7e-a4aa-ceb682cc1b36",
+  "prevId": "fcbc38bf-2056-4469-bcec-0afc8a34501a"
 }
