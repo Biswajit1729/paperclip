@@ -195,3 +195,23 @@ Regression evidence against owner head d1a7c64c8b03ada0741c7c5ebb8ff9cb5190479b:
 - Four embedded-only heartbeat integration cases were skipped by their existing
   support gate; they are not included in the 139 passing cases above. This is not
   evidence of full repository CI or deployed host/database suspension.
+
+## Retry fixture timing correction (2026-10-27)
+
+A later CI run exposed a test race, not a different production retry policy.
+The attempt counter is written before filesystem replacement completes. The old
+attempt-cap test waited for that counter, advanced a fixed 31 seconds, and could
+move the clock before the pending save recorded its next retry deadline. It then
+expected attempt three before that newly recorded deadline was due.
+
+Holding the second filesystem replacement across that clock advance reproduced
+the exact CI assertion: expected three attempts, received two. The test now waits
+for the completed attempt's persisted deadline and advances to that deadline.
+It retains the deliberate slow-save barrier, the three-attempt cap, the original
+canonical bytes, the captured candidate, and the absence of later retries. The
+captured-commit group also retires its own company fixture during teardown, so a
+failed test cannot leave retry debt in the next test's global reconstruction.
+
+All 38 instruction-copy cases pass on a fresh PostgreSQL 17 database with the
+owner branch's 396 migrations. The controlled reproduction fails without the
+fixture correction. No production retry code, timeout, or assertion is weakened.
