@@ -147,3 +147,30 @@ The older failed gates and eight-worker restore/worktree suppression audit remai
 open. All other duties in the ledger remain in scope. This establishes worker
 behavior, not deployed database suspension, host sleep or fleet savings. The stack
 is unmerged, and this request does not authorize merging it.
+
+## Reply and notice contention repair
+
+The committed-response owner previously locked issue, run, then coordinator.
+Notice resolution, status arbitration, and physical workspace recovery lock
+coordinator, issue, then run. Concurrent reply and notice repair could therefore
+deadlock even though both were authorized to settle the same committed result.
+The reply owner now acquires and validates its exact committed, unleased
+coordinator first, then retains its existing issue/run and presentation checks.
+No publication authority, completion policy, retry cadence, or transaction scope
+is broadened. The change belongs with this notice worker because introducing
+that concurrent owner exposed the conflicting order.
+
+The regression uses a real committed Telegram reply, real notice creation, and
+the real resolution/publication owners. It holds the notice transaction at its
+first coordinator lock, observes the reply's actual PostgreSQL blocking state,
+then continues notice resolution with a bounded local lock timeout. Before the
+fix PostgreSQL rejected reply recovery with `40P01` (deadlock detected). After
+the fix both operations commit, the notice resolves, and exactly one accepted
+comment/publication exists; replay publishes nothing.
+
+The focused regression passed, followed by 73 selected committed/accepted-response
+chat cases (1,570 unrelated chat cases filtered out) and all 141 cases in the
+notice, finalizer telemetry, startup, and response-authority suites. Logs:
+`/tmp/sleep55-lock-order-{red,green,chat,consumers}.log`. This is 214 distinct
+passing cases across five files, not a full chat-file or full repository test
+run. Integrated typecheck, build, and fresh remote checks remain required.
