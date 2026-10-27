@@ -1,3 +1,4 @@
+import { notifyChatConfirmationResolution } from "./chat-confirmation-notifications.js";
 import { enqueueTerminalIssueInteractionChatPublications } from "./chat-interaction-publications.js";
 import { and, asc, eq, gt, inArray, isNull, or } from "drizzle-orm";
 import { approvals, companyMemberships, connectionIntentDeliveries, issueApprovals, issueThreadInteractions, issues, type Db } from "@paperclipai/db";
@@ -112,6 +113,7 @@ export function satisfiedConnectionIntentService(db: Db) {
             if (!connection) return false;
             const now = new Date();
             // Retire the obsolete request without inventing a human approval.
+            await notifyChatConfirmationResolution(tx, intent);
             const [retired] = await tx.update(issueThreadInteractions).set({ status: "expired", resolvedAt: now, updatedAt: now,
               result: { version: 1, outcome: "expired", connectionId: connection.id,
                 reason: "An already authorized connection is available to the requesting agent." },
