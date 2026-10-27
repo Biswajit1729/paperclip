@@ -293,6 +293,7 @@ export type CancelRunOptions = {
 function runCancellationFenceSql(input: {
   cancellation: ReturnType<typeof requestedRunCancellation>;
   errorCode: string;
+  attribution?: Pick<Record<string, unknown>, "cancelledByActorType" | "cancelledByUserId">;
   reassignmentStopRequested?: boolean;
   preserveCancellation?: boolean;
   budgetEnforcement?: BudgetEnforcementScope;
@@ -318,6 +319,7 @@ function runCancellationFenceSql(input: {
       coalesce(nullif(${heartbeatRuns.resultJson}->'startupCancellation'->'budgetEnforcement', 'null'::jsonb), ${intent}::jsonb))`;
   }
   return sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) ||
+    ${JSON.stringify(input.attribution ?? {})}::jsonb ||
     ${JSON.stringify(input.reassignmentStopRequested ? { reassignmentStopRequested: true } : {})}::jsonb ||
     jsonb_build_object('cancellation', ${input.preserveCancellation
       ? sql`coalesce(${heartbeatRuns.resultJson}->'cancellation', ${cancellation}::jsonb)`
@@ -1133,6 +1135,12 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     let run = await getRun(runId);
     if (!run) throw notFound("Heartbeat run not found");
     if (options.expectedStatus && run.status !== options.expectedStatus) return null;
+    // Recovery can settle as soon as either fence commits. Keep the operator
+    // identity with that intent so a winning recovery still suppresses restart.
+    const attribution = {
+      cancelledByActorType: options.resultJson?.cancelledByActorType,
+      cancelledByUserId: options.resultJson?.cancelledByUserId,
+    };
     const handoffIssueId = run.nativeIssueId ?? run.issueId ?? (typeof run.contextSnapshot?.issueId === "string" ? run.contextSnapshot.issueId : null);
     const supersedesCaseHandoff = options.resultJson?.cancelledByActorType === "user" || options.errorCode === "issue_reassigned";
     let cancellationClaimed = false;
@@ -1181,7 +1189,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
         await notifyScheduledRetryCancellation(tx, { companyId: run!.companyId, runId });
         const [fenced] = await tx.update(heartbeatRuns).set({
           resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({
-            executionCancellation: { state: "requested", requestedAt }, ...guardedCancellation,
+            ...attribution, executionCancellation: { state: "requested", requestedAt }, ...guardedCancellation,
           })}::jsonb`,
         }).where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, run!.companyId),
           inArray(heartbeatRuns.status, cancellableStatuses))).returning();
@@ -1287,7 +1295,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
         const [fenced] = await tx.update(heartbeatRuns).set({
           // Record handoff intent before native cancellation can finalize and release
           // the run. Only its audited stop acknowledgement suppresses recovery.
-          resultJson: runCancellationFenceSql({ cancellation, errorCode,
+          resultJson: runCancellationFenceSql({ cancellation, errorCode, attribution,
             reassignmentStopRequested: options.errorCode === "issue_reassigned" && options.resultJson?.reassignmentStopConfirmed === true }),
         }).where(and(eq(heartbeatRuns.id, runId), inArray(heartbeatRuns.status,
           options.expectedStatus ? [options.expectedStatus] : pendingNativeRetry ? [...CANCELLABLE_HEARTBEAT_RUN_STATUSES, "failed"] : [...CANCELLABLE_HEARTBEAT_RUN_STATUSES],
