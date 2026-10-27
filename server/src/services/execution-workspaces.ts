@@ -3483,8 +3483,9 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             const [after] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspace.id));
             if (after && (isIsolatedRepositoryRehomeCandidate(after) || hasPendingIsolatedRepositoryRehomeCleanup(after))) {
               if (isolatedRehomeNotBefore.size >= 4096) isolatedRehomeNotBefore.delete(isolatedRehomeNotBefore.keys().next().value!);
-              isolatedRehomeNotBefore.set(workspace.id, now().getTime() + ISOLATED_REHOME_RETRY_MS);
-              isolatedRehomeDeadlines.set(workspace.id, now().getTime() + ISOLATED_REHOME_RETRY_MS);
+              const retryAt = now().getTime() + ISOLATED_REHOME_RETRY_MS;
+              isolatedRehomeNotBefore.set(workspace.id, retryAt);
+              isolatedRehomeDeadlines.set(workspace.id, retryAt);
             } else {
               isolatedRehomeNotBefore.delete(workspace.id);
               isolatedRehomeDeadlines.delete(workspace.id);
@@ -3521,14 +3522,17 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             }
             const [after] = names.length > 0 ? await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspace.id)) : [workspace];
             if (!dryRun && after && hasPendingNestedCloneMigration(after)) retry = true;
+            // The retry gate and advertised deadline describe one obligation.
+            // An early inspection must not move it by reading the clock again.
+            const retryAt = now().getTime() + ISOLATED_REHOME_RETRY_MS;
             if (remaining) {
               if (nestedCloneMigrationNotBefore.size >= 4096) nestedCloneMigrationNotBefore.delete(nestedCloneMigrationNotBefore.keys().next().value!);
-              nestedCloneMigrationNotBefore.set(workspace.id, now().getTime() + ISOLATED_REHOME_RETRY_MS);
+              nestedCloneMigrationNotBefore.set(workspace.id, retryAt);
             } else nestedCloneMigrationNotBefore.delete(workspace.id);
             if (retry) {
               if (nestedCloneMigrationRetryAt.size >= 4096) nestedCloneMigrationRetryAt.delete(nestedCloneMigrationRetryAt.keys().next().value!);
-              nestedCloneMigrationRetryAt.set(workspace.id, now().getTime() + ISOLATED_REHOME_RETRY_MS);
-              nestedCloneMigrationDeadlines.set(workspace.id, now().getTime() + ISOLATED_REHOME_RETRY_MS);
+              nestedCloneMigrationRetryAt.set(workspace.id, retryAt);
+              nestedCloneMigrationDeadlines.set(workspace.id, retryAt);
             } else {
               nestedCloneMigrationRetryAt.delete(workspace.id);
               nestedCloneMigrationDeadlines.delete(workspace.id);
