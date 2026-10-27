@@ -83,6 +83,7 @@ export function registerChatReceiverWork(
     // The coordinator independently fences unresolved database transactions.
     hasPending: async () => canRun() && dirty.size > 0,
     nextRunAt: next,
+    nextRunAtOnError: next,
   });
   return { ready: worker.ready, changed(id: string) {
     dirty.add(receiverScopeHint({ kind: "endpoint", id })); worker.wake();
