@@ -1,5 +1,6 @@
 import { notifyChatConnectionConfiguration } from "../../chat-channels/configuration-work-notifications.js";
 import { writeToolConnectionHealthChange } from "../../tool-connection-health-notifications.js";
+import { connectionActorUserId } from "../actor.js";
 import { assertSupportedConnection } from "../connections/setup-policy.js";
 import { connectionSetupUrl, connectionReconnectUrl } from "../identifiers.js";
 import { createGitHubGrantContinuity } from "../github-grant-continuity.js";
@@ -104,16 +105,16 @@ export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, d
             ),
           );
         const actorGrant =
-          actor?.actorType === "user"
+          connectionActorUserId(actor)
             ? activeGrants.find(
                 (grant) =>
                   grant.kind === "user" &&
-                  grant.subjectUserId === actor.actorId,
+                  grant.subjectUserId === connectionActorUserId(actor),
               )
             : null;
         const grantsToCheck =
           connection.credentialPolicy === "per_user" &&
-          actor?.actorType === "user"
+          Boolean(connectionActorUserId(actor))
             ? actorGrant
               ? [actorGrant]
               : []
@@ -136,8 +137,8 @@ export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, d
           connection.status === "draft" &&
           connection.authKind === "none" &&
           connection.credentialPolicy === "per_user" &&
-          actor?.actorType === "user" &&
-          actor.actorId === connection.createdByUserId;
+          Boolean(connectionActorUserId(actor)) &&
+          connectionActorUserId(actor) === connection.createdByUserId;
         const credentialHeaders =
           connection.credentialSource === "vercel_connect"
             ? await resolveCredentialHeaders(connection, actor, {
