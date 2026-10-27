@@ -128,7 +128,7 @@ unsafe terminal-failure state, reduced these measurements to 0.105 ms and
 local fixture timings, not deployment latency or fleet cost claims. Dormant
 unsafe history still requires eligibility evaluation when its scope changes.
 
-Migration `0398_shocking_molecule_man.sql` creates the index concurrently with
+Migration `0399_shocking_molecule_man.sql` creates the index concurrently with
 `IF NOT EXISTS` through the existing top-level migration runner. Fresh database
 application, migration replay, direct SQL replay, and ready/valid index inspection
 passed. The generated snapshot set retains 0394–0398. Historical SQL and journal
