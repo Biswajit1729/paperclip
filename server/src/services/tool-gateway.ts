@@ -1,7 +1,7 @@
 import { writeApprovalChange } from "./retention-work-notifications.js";
 import { toolReviewProjectionService } from "./tool-review-projection.js";
 import { toolReviewInterruptionService } from "./tool-review-interruption.js";
-import { claimToolTestApproval, persistToolTestOutcome, startToolTestInvocation, type ToolTestApprovalClaim } from "./tool-test-approval.js";
+import { claimToolTestApproval, releaseToolTestApproval, persistToolTestOutcome, startToolTestInvocation, type ToolTestApprovalClaim } from "./tool-test-approval.js";
 import { approvedToolReviewCompanies, prepareApprovedToolReview, recoverApprovedToolReviews } from "./tool-review-recovery.js";
 import { toolReviewExpiryService } from "./tool-review-expiry.js";
 import { notifyToolReviewChange, writeToolReviewChange } from "./tool-review-work-notifications.js";
@@ -7673,6 +7673,15 @@ export function createToolGatewayService(
         companyId: invocation.companyId, agentId, userId, argumentsSummary, reasonCode: "approval_granted",
         approvedClaim: claim, matchedPolicyIds: invocation.matchedPolicyIds ?? [] };
     } catch (err) {
+      const rejected = err instanceof ToolContentValidationError ||
+        err instanceof ToolGatewayHttpError && err.status >= 400 && err.status < 500 &&
+        ![408, 425, 429].includes(err.status);
+      if (!rejected) {
+        // Preparation has not entered runTestToolInvocation. Preserve approval
+        // through dependency failures; the claim owner still verifies no dispatch.
+        await releaseToolTestApproval(db, claim);
+        throw err;
+      }
       const message = err instanceof Error ? err.message : String(err);
       const errorCode = err instanceof ToolGatewayHttpError || err instanceof ToolContentValidationError
         ? err.reasonCode : "tool_execution_failed";
