@@ -9,11 +9,14 @@ export function registerDeadlineWork(
     next: () => Promise<number | null>;
     canRun: () => boolean;
     retryMs: number;
+    // Optional batching latency for notifications; already-known deadlines still preempt it.
+    notificationCoalesceMs?: number;
   },
 ) {
   let requested = 1, reconciled = 0;
   let next: number | null = null;
   let earliest = 0;
+  let coalesceUntil = 0;
   return coordinator.register(queue, {
     retryMs: task.retryMs,
     pausePassiveMaintenance: true,
@@ -21,6 +24,10 @@ export function registerDeadlineWork(
     run: async signal => {
       if (!task.canRun()) { requested++; return; }
       if (Date.now() < earliest) { next = earliest; return; }
+      if (Date.now() < coalesceUntil && (next === null || next > Date.now())) {
+        next = next === null ? coalesceUntil : Math.min(next, coalesceUntil);
+        return;
+      }
       const generation = ++requested;
       earliest = Date.now() + task.retryMs;
       await task.run(signal);
@@ -29,6 +36,7 @@ export function registerDeadlineWork(
       // Back off failed or still-overdue work, not a successfully read future deadline.
       if (deadline === null || deadline > Date.now()) earliest = 0;
       next = deadline === null ? null : Math.max(earliest, deadline);
+      coalesceUntil = Date.now() + (task.notificationCoalesceMs ?? 0);
       reconciled = generation;
     },
     hasPending: async () => requested !== reconciled,
