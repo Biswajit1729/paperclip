@@ -4023,6 +4023,45 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       } finally { await coordinator.stop(); vi.useRealTimers(); }
     });
 
+    it("settles a deleted Board-origin request without starving unrelated terminal GitHub replies", async () => {
+      const invalid = await toolReplyFixture();
+      const valid = await toolReplyFixture();
+      const [message] = await db.insert(issueComments).values({ companyId: invalid.companyId,
+        issueId: invalid.conversation.issueId!, authorType: "user", authorUserId: "owner-user", body: "Board follow-up",
+      }).returning();
+      await initializeRunIdentity(db, { companyId: invalid.companyId, runId: invalid.run.id,
+        issueId: invalid.conversation.issueId!, responsibleUserId: "owner-user", messageIds: [message.id], cause: "instruction" });
+      await db.update(issueComments).set({ deletedAt: new Date() }).where(eq(issueComments.id, message.id));
+      await db.update(heartbeatRuns).set({ status: "failed", updatedAt: new Date() })
+        .where(inArray(heartbeatRuns.id, [invalid.run.id, valid.run.id]));
+      const invalidWrites = invalid.responseWrites.length;
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      // The denied request must never reach transport; only the valid request
+      // uses this provider, even though discovery covers both companies.
+      const responses = githubResponseCommentService(db, valid.providerFetch);
+      try {
+        await responses.registerTerminalResponseWork(coordinator, () => true).ready;
+        await expect.poll(() => [...valid.responseComments.values()][0]?.body, { timeout: 5000 })
+          .toContain("stopped before completing");
+        const [denied] = await db.select().from(chatActions).where(and(eq(chatActions.endpointId, invalid.endpoint.id),
+          eq(chatActions.kind, "github_response_comment")));
+        expect(denied).toMatchObject({ status: "cancelled", result: { retryable: false, code: "authorization_changed" } });
+        expect(invalid.responseWrites).toHaveLength(invalidWrites);
+        expect(valid.responseWrites.map(write => write.method)).toEqual(["POST", "PATCH"]);
+        await expect.poll(() => ({ next: coordinator.nextWakeAt(), active: idleWorkSnapshot().active }),
+          { timeout: 5000 }).toEqual({ next: null, active: 0 });
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+        const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction");
+        try {
+          await vi.advanceTimersByTimeAsync(120_000);
+          expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
+          expect(valid.responseWrites.map(write => write.method)).toEqual(["POST", "PATCH"]);
+        } finally { reads.mockRestore(); writes.mockRestore(); }
+        expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); vi.useRealTimers(); }
+    });
+
     it.each(["passive", "missing"] as const)("keeps native presentation idle until its committed GitHub outcome: %s", async outcome => {
       const f = await toolReplyFixture("github:paperclipai/paperclip:418");
       await db.update(heartbeatRuns).set({ status: "succeeded", nativePhase: "observed", resultJson: null })
