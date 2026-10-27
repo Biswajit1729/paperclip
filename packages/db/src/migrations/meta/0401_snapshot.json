@@ -33669,34 +33669,6 @@
         }
       },
       "indexes": {
-        "heartbeat_runs_native_unpresented_response_idx": {
-          "name": "heartbeat_runs_native_unpresented_response_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "native_issue_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"heartbeat_runs\".\"runtime_mode\" = 'native' AND \"heartbeat_runs\".\"status\" in ('succeeded', 'failed', 'timed_out') AND \"heartbeat_runs\".\"finished_at\" is not null AND jsonb_typeof(\"heartbeat_runs\".\"result_json\" #> '{presentationDecision,commentId}') is distinct from 'string'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "heartbeat_runs_cancelled_workspace_preservation_idx": {
           "name": "heartbeat_runs_cancelled_workspace_preservation_idx",
           "columns": [
@@ -46230,34 +46202,6 @@
         }
       },
       "indexes": {
-        "native_run_finalizations_pending_effect_owner_idx": {
-          "name": "native_run_finalizations_pending_effect_owner_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "issue_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "decision_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"native_run_finalizations\".\"decision_id\" is not null AND \"native_run_finalizations\".\"result_id\" is not null AND \"native_run_finalizations\".\"phase\" <> 'terminal_failure'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "native_run_finalizations_unsafe_export_recovery_idx": {
           "name": "native_run_finalizations_unsafe_export_recovery_idx",
           "columns": [
@@ -51612,6 +51556,18 @@
           "primaryKey": false,
           "notNull": false
         },
+        "git_authorization_grant_id": {
+          "name": "git_authorization_grant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "git_authorized_by_user_id": {
+          "name": "git_authorized_by_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "pause_reason": {
           "name": "pause_reason",
           "type": "text",
@@ -51749,6 +51705,19 @@
             "id"
           ],
           "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "projects_git_authorization_grant_id_connection_grants_id_fk": {
+          "name": "projects_git_authorization_grant_id_connection_grants_id_fk",
+          "tableFrom": "projects",
+          "tableTo": "connection_grants",
+          "columnsFrom": [
+            "git_authorization_grant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
           "onUpdate": "no action"
         }
       },
@@ -55751,34 +55720,6 @@
         }
       },
       "indexes": {
-        "status_decision_effects_pending_delivery_idx": {
-          "name": "status_decision_effects_pending_delivery_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "issue_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "decision_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"status_decision_effects\".\"delivery_state\" in ('pending', 'failed')",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "status_decision_effects_decision_ordinal_uq": {
           "name": "status_decision_effects_decision_ordinal_uq",
           "columns": [
@@ -64636,6 +64577,6 @@
     "tables": {},
     "columns": {}
   },
-  "id": "2d76526b-9300-41a4-9d4c-53be56754d0a",
-  "prevId": "e004acb2-3979-4be6-894d-3a1b886f3c64"
+  "id": "342f17cc-9a9b-4c65-8765-045cc95d0490",
+  "prevId": "c1db9293-5dbd-4e57-a95c-d1adc65387dd"
 }
