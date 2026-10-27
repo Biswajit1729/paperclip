@@ -111,3 +111,10 @@ behavioral evidence; combined-stack and fresh remote checks remain required.
 The full local test:run remains unverified because of embedded PostgreSQL
 startup/capacity limits; the two real gateway suites used separate migrated,
 task-owned disposable PostgreSQL databases.
+
+A later combined run exposed a test-clock overshoot: repeated blind 30-second
+advances could expire the future session before its intermediate assertion.
+The settlement helper now lets real SQL settle and advances only to an actually
+armed follow-up within the coalescing window. All 12 credential expiry tests pass
+on the owning gateway branch with the existing exact-deadline and transaction
+assertions intact. This follow-up changes the test fixture only.
