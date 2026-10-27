@@ -1599,3 +1599,22 @@ The original failures remain in `/tmp/sleep-master-credentials-tests.log` and
 `/tmp/sleep-master-project-git-external-before.log`; corrected results are in
 `/tmp/sleep-master-identity-fixture-tests.log` (credentials) and
 `/tmp/sleep-master-project-git-fixed.log` (project authorization).
+
+
+### Slack setup identity producer correction (2026-10-27)
+
+The extracted Slack setup service's `linkSlackAccount` callback was missing the
+milestone intent before its identity upsert. It now uses the existing company-
+scoped notification after lease/membership/conflict checks and before the write.
+An already linked account returns without a notification. No polling, new storage,
+or caller wrapper is added; downstream milestone consumers retain their own scope
+and current-authority checks.
+
+Two real setup regressions failed before the fix with no intent observed. A real
+PostgreSQL table lock proves the intent exists while the insert is still blocked,
+the link is invisible until commit, and settlement follows commit. A failed insert
+rolls back identity without sending a test message; repeated successful linking
+emits no new milestone work. The complete automatic Slack registration group
+passes 115 cases (the other integration groups were not selected), and server
+TypeScript checking passes. Combined stack and current-head CI remain separate
+verification gates.
