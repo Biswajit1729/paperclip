@@ -12,7 +12,7 @@ export function registerGatewayCredentialExpiryWork(
     retryMs: 30_000,
     notificationCoalesceMs: 30_000,
     canRun,
-    run: () => gateway.cleanupExpiredSessions(),
+    run: () => gateway.cleanupExpiredSessions({ singleBatch: true }),
     next: () => gateway.nextCredentialExpiryAt(),
   });
 }
