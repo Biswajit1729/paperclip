@@ -12791,6 +12791,8 @@ async function createRunnerdBackendWithinSessionClaim(
       .select({
         metadata: environmentLeases.metadata,
         providerLeaseId: environmentLeases.providerLeaseId,
+        companyId: environmentLeases.companyId,
+        heartbeatRunId: environmentLeases.heartbeatRunId,
       })
       .from(environmentLeases)
       .where(eq(environmentLeases.id, remoteTarget.leaseId))
@@ -12825,7 +12827,7 @@ async function createRunnerdBackendWithinSessionClaim(
       })
       .where(eq(environmentLeases.id, leaseId))
       .returning({ id: environmentLeases.id })
-      .then((rows) => rows[0] ?? null));
+      .then((rows) => rows[0] ?? null), { companyId: leaseRow.companyId, runId: leaseRow.heartbeatRunId ?? undefined });
     if (!updated) throw new Error("runner_harness_backup_lease_missing");
   };
 
