@@ -66,3 +66,18 @@ on its own disposable database and retain the existing embedded fixture fallback
 
 These are local correctness and scheduling results, not deployed host-sleep or
 external-wake proof. Remote acceptance must be checked at the published head.
+
+## External fixture migrations (October 26 review repair)
+
+Review found that the two migration suites opened external test databases without
+applying migrations. The previous verification used prepared databases, which
+hid this setup gap. Both selected retry cases failed against new empty disposable
+databases with missing `companies` and restore-point tables. Setup now applies
+pending migrations before creating its test client, matching the workspace
+service fixture. The embedded path is unchanged.
+
+All 49 cases in the two complete suites then passed against those same databases,
+including Git/filesystem migration, recovery, and exact retry-deadline checks.
+The fixture itself prepared the databases. This repair changes no production
+recovery code. Evidence: `/tmp/sleep-workspace-fresh-red.log` and
+`/tmp/sleep-workspace-fresh-green.log`.
