@@ -118,6 +118,46 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     expect(sweeps).not.toHaveBeenCalled();
   });
 
+  it("coalesces sequential committed cancellations without an idle recovery poll", async () => {
+    const rows = [];
+    for (let i = 0; i < 10; i++) rows.push(await create());
+    // Freeze wall time while real SQL and transaction settlement continue.
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"], shouldAdvanceTime: false });
+    await start();
+    const scans = vi.mocked(recovery.recoverEffects);
+    expect(scans).toHaveBeenCalledTimes(1);
+    for (const row of rows) {
+      await service().cancel(row.id, { actorType: "user", actorId: userId });
+      await vi.advanceTimersByTimeAsync(1);
+      await db.execute(sql`select pg_sleep(0.01)`); // Allow each old scan to finish, rather than only testing overlap coalescing.
+    }
+    expect(scans).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1000);
+    await vi.waitFor(() => expect(scans).toHaveBeenCalledTimes(2));
+    await quiet();
+    const count = scans.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(3_600_000);
+    expect(scans).toHaveBeenCalledTimes(count);
+    expect(wake).toHaveBeenCalledTimes(10);
+  });
+
+  it("lets an already saved recovery deadline preempt notification coalescing", async () => {
+    const due = await create(), cancelled = await create();
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"], shouldAdvanceTime: false });
+    const deadline = Date.now() + 500;
+    await claim(due.id, new Date(deadline - 60_000));
+    await start();
+    expect(coordinator!.nextWakeAt()).toBe(deadline);
+    await service().cancel(cancelled.id, { actorType: "user", actorId: userId });
+    await vi.advanceTimersByTimeAsync(1);
+    await db.execute(sql`select pg_sleep(0.01)`);
+    expect(coordinator!.nextWakeAt()).toBe(deadline);
+    await vi.advanceTimersByTimeAsync(499);
+    await vi.waitFor(async () => expect(await comments()).toHaveLength(1));
+    await settled(due.id); await quiet();
+    expect(wake).toHaveBeenCalledTimes(2);
+  });
+
   it("retries an old failure while newer due claims keep filling pages", async () => {
     const failed = await create(), healthy = await create();
     const at = Date.now() - 600_000;
