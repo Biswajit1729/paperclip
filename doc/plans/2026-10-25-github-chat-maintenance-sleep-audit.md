@@ -272,3 +272,38 @@ three additional cases; earlier full results are not substituted for that run.
 After the final receipt correction, all 17 new lifecycle cases and the startup
 guard pass. Workspace typecheck and build pass again. The final complete chat
 run remains in progress; source and branch remain fixed during acceptance.
+
+
+## Acknowledgement presentation wait correction
+
+An acknowledgement for the latest successful native run can remain `received`
+while that run's presentation decision is still absent. Reattempting it only
+acquires/releases the publication lease and returns, leaving an overdue entry.
+Recovery now shares the delivery owner's request/run projection and parks that
+specific no-reply state. It retains normal lease, fast-response, and delivery
+retry deadlines for actionable requests. Run/presentation/publication changes
+wake it through the existing transaction-aware response-availability topic.
+No new rows or periodic recovery scan are introduced.
+
+The GitHub owner keeps request binding and provider reply interpretation in
+`github/response-run-state.ts`; both delivery and scheduling use the same
+projection. Heartbeat's existing presentation write is named
+`recordRunPresentationDecision` without changing its transaction or event order,
+so the real producer can be exercised with outer commit and rollback. This does
+not move GitHub publication authority into the generic native chat repair path.
+
+The first usable regression reproduced an overdue deadline in
+`/tmp/sleep-ack-presentation-red-terminal.log`. Earlier fixture attempts lacked
+GitHub configuration or terminal success. An attempted generic native-response
+repair correctly returned false: GitHub replies remain tool-owned. Those fixture
+failures remain in the red/configured, green, and current logs. The final regression
+uses the existing GitHub delivery fixture and real heartbeat decision writer:
+no SQL for two virtual minutes while parked or after rollback; commit updates the
+same provider comment once, then returns to quiet.
+
+All 228 GitHub workflow cases pass (`/tmp/sleep-ack-presentation-acceptance.log`),
+as do all 30 heartbeat completion cases (`/tmp/sleep-ack-completion-full.log`) and
+server typecheck (`/tmp/sleep-ack-presentation-types-final.log`). The initial
+completion command omitted its database URL and skipped 29 cases; the full result
+uses a fresh dedicated migrated database. No full-repository, final-stack, or
+deployed sleep claim follows from these owner-level checks.
