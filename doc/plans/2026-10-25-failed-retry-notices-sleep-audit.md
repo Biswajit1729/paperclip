@@ -347,3 +347,28 @@ the captured cause and corrected result are in
 `/tmp/sleep-master-budget-fixture-diagnostic.log` and
 `/tmp/sleep-master-budget-fixture-fixed.log`. Temporary diagnostic logging was
 removed before this commit. The full combined suite still requires a fresh run.
+
+
+## Agent lifecycle reactivation
+
+A parked failed-retry notice also becomes eligible when its agent finishes
+resuming. The lifecycle transaction now uses the shared `beforeStatusChange`
+effect before changing a non-invokable status to an invokable status. The service
+supplies the existing company-scoped inbound/failed-notice notification; the
+lifecycle module owns status transitions and knows no chat/provider policy. This
+brings forward the same lifecycle effect used by downstream native response work,
+without adding a polling fallback, table, or caller recovery wrapper.
+
+The real retry-notice integration first failed because a successfully resumed
+agent left the parked notice unpublished (`/tmp/sleep-agent-resume-red.log`). All
+four authority-reactivation cases now pass, including two minutes of virtual
+quiet before and after the real pause/resume producer
+(`/tmp/sleep-agent-resume-green.log`). The full lifecycle suite passes all 64
+cases, including outer transaction commit/rollback and no notification on an
+unchanged ready state (`/tmp/sleep-agent-resume-lifecycle-fixed.log`). The first
+lifecycle regression fixture incorrectly hired an initially paused agent, whose
+resume target is preparation; it was corrected to hire, complete preparation,
+pause, and resume through the real lifecycle. Its initial failure is retained in
+`/tmp/sleep-agent-resume-lifecycle.log`. Server typecheck passed in
+`/tmp/sleep-agent-resume-types.log`. These results establish worker and transaction
+behavior only; final-stack acceptance and latest-head CI still apply.

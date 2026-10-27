@@ -16,7 +16,7 @@ import { chatRunSourceMessageId } from "../services/chat-channels/run-origin.js"
 import * as durableChatWakeup from "../services/durable-chat-wakeup.js";
 import { conflict } from "../errors.js";
 import * as githubTaskPreparation from "../services/chat-channels/github/task-preparation.js";
-import { configureAgentLifecycle } from "../services/agent-lifecycle.js";
+import { configureAgentLifecycle, createAgentLifecycle } from "../services/agent-lifecycle.js";
 import { budgetPolicies } from "@paperclipai/db";
 import { budgetService } from "../services/budgets.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
@@ -64607,7 +64607,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     }
   });
 
-  it.each(["idle", "bounded pass", "requester merge"] as const)("reactivates denied retry notices when authority is restored during %s", async mode => {
+  it.each(["idle", "bounded pass", "requester merge", "agent resume"] as const)("reactivates denied retry notices when authority is restored during %s", async mode => {
     const context = await deferredFailedRetryNoticeFixture();
     const rejectedIds = mode === "bounded pass" ? Array.from({ length: 100 }, () => randomUUID()) : [];
     const errors: unknown[] = [];
@@ -64616,12 +64616,20 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     let held = false, release!: () => void;
     const pending = new Promise<void>(resolve => { release = resolve; });
     let ready: Promise<unknown> | undefined;
+    let lifecycle: ReturnType<typeof configureAgentLifecycle> | undefined;
     const reconcile = context.service.reconcileFailedRetryNotices.bind(context.service);
     const pass = vi.spyOn(context.service, "reconcileFailedRetryNotices");
     try {
       expect(await context.admit()).toMatchObject({ status: "deferred" });
       const [originalReceipt] = await readAgentWakeupRequestsById(context.retry.chatActionId!);
-      if (mode === "requester merge") {
+      if (mode === "agent resume") {
+        lifecycle = configureAgentLifecycle(db, { requiredPluginIds: async () => [],
+          runHost: async () => "complete", runPlugin: async () => "complete" });
+        await createAgentLifecycle(db).pauseAgent(context.fixture.assignedAgentId);
+        await lifecycle.process(context.fixture.assignedAgentId);
+        expect((await db.select().from(agents).where(eq(agents.id, context.fixture.assignedAgentId)))[0])
+          .toMatchObject({ status: "paused", lifecycleState: "paused" });
+      } else if (mode === "requester merge") {
         expect(originalReceipt.requestedByActorType).toBe("user");
         await db.update(agentWakeupRequests).set({ requestedByActorId: "another-requester" })
           .where(eq(agentWakeupRequests.id, originalReceipt.id));
@@ -64660,7 +64668,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         } finally { select.mockRestore(); transaction.mockRestore(); }
       }
       expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
-      if (mode === "requester merge") {
+      if (mode === "agent resume") {
+        await createAgentLifecycle(db).resumeAgent(context.fixture.assignedAgentId);
+        await lifecycle!.process(context.fixture.assignedAgentId);
+        expect((await db.select().from(agents).where(eq(agents.id, context.fixture.assignedAgentId)))[0])
+          .toMatchObject({ status: "idle", lifecycleState: "ready" });
+      } else if (mode === "requester merge") {
         await db.transaction(async tx => {
           await tx.execute(sql`select id from issues where id = ${context.issue.id} for update`);
           await createWakeAdmissionWriter().mergeIntoExistingDeferredWake(
@@ -64684,7 +64697,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       } finally { select.mockRestore(); transaction.mockRestore(); }
       expect(errors).toEqual([]);
     } finally {
-      release(); await ready; await coordinator.stop(); pass.mockRestore(); vi.useRealTimers();
+      release(); await ready; await lifecycle?.stop(); await coordinator.stop(); pass.mockRestore(); vi.useRealTimers();
       await context.service.shutdown();
       await db.delete(agentWakeupRequests).where(inArray(agentWakeupRequests.id,
         [...rejectedIds, context.retry.requestId!, context.retry.chatActionId!]));
