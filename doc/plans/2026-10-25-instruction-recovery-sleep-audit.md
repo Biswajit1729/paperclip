@@ -163,3 +163,35 @@ Current PR CI and fresh review are still required. Host suspension, database
 suspension, external wake delivery, the two remaining instruction duties, the
 other run-reaper duties, and the complete original stack inventory remain open.
 This stack has no merge authorization.
+
+## Foreground ownership correction (2026-10-27)
+
+Review of PR #17670 found that the original foreground race assertion accepted
+an extra recovery attempt while the first save still held the canonical-file
+operation. Exact-byte deduplication prevented a duplicate write but did not protect
+the copy receipt: an incremented attempt invalidated the foreground failure CAS
+and could lose its 30-second retry deadline.
+
+The instruction-copy service now serializes collection and captured recovery per
+company/run using the existing database work scope. Separate service instances and
+dedicated connections belonging to that scope share the same in-flight owner.
+Recovery joins the live operation, then rereads durable state and its deadline
+before claiming an attempt. Rejected operations release ownership; no elapsed-time
+lease, new table, polling loop, or transaction around filesystem work is added.
+This is process-local ownership within the existing supported writer model, not a
+cross-replica lock. Persisted candidates still reconstruct after process restart.
+
+Regression evidence against owner head d1a7c64c8b03ada0741c7c5ebb8ff9cb5190479b:
+- The six-case real-save barrier regression failed in five cases before the fix:
+  attempts advanced from one to two while foreground file replacement was held.
+  The shared-service success case passed; the result is not described as six failures.
+- With the fix, all 38 instruction-copy tests and 14 heartbeat helper tests pass.
+  Tests cover successful and failed foreground saves across shared, separate, and
+  dedicated-connection services, a two-minute held operation, the preserved retry
+  deadline, eventual canonical bytes, and exactly one file-update activity receipt.
+- All 87 persistent agent-directory tests pass on a separate fresh PostgreSQL
+  database, covering the existing directory consumer of the collection boundary.
+- Server typechecking passes with the expanded regression tests.
+- Four embedded-only heartbeat integration cases were skipped by their existing
+  support gate; they are not included in the 139 passing cases above. This is not
+  evidence of full repository CI or deployed host/database suspension.
