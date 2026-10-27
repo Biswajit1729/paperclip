@@ -201,3 +201,44 @@ decoding. It does not measure wire bytes or PostgreSQL storage/CPU savings: JSON
 extraction still runs in PostgreSQL. This is evidence of reduced response payload
 and application decoding work, not deployed suspension or fleet-cost savings.
 Workspace verification and fresh PR checks remain separate gates.
+
+## Scoped lease-write notifications (2026-10-27)
+
+The shared cleanup fanout originally sent a global native-settlement hint for
+all lease updates. A controlled six-run backlog reproduced seven full inventory
+discoveries: startup plus one after every successful release. Each discovery also
+recomputed remaining run deadlines. This was unnecessary database activity during
+real work, even though the worker eventually became quiet.
+
+The existing cleanup helpers now accept the native worker's existing company/run
+scope. Lease writers pass identity from their own lease/run records. Release,
+bulk run release, cleanup claims and receipts, export recovery, stopped-sandbox
+handoffs, recovery cleanup, plugin task failure, and harness/workspace metadata
+writes preserve the same transaction and intent-before-write contract. ID-only
+metadata updates read and lock the two scope columns within their transaction;
+other reads/returns that already fetch the lease include those scalar columns.
+No caller receives a new lifecycle object or manual recovery wrapper.
+
+The generic environment-cleanup and historical-cleanup topics retain their prior
+contracts. Startup and broad custom-image cleanup changes still allow global
+native discovery because they have no single run scope. Lease writes no longer
+cause cross-company global reloads. The worker, deadlines, cleanup authority,
+provider operations, and supported process-local writer model are unchanged.
+
+Evidence:
+- Baseline backlog regression failed with seven unscoped discoveries instead of
+  one. With scoped writes, the same real finalizer/lease/runtime path discovers
+  globally once, releases all six leases, and returns to zero SQL/network work.
+- A real nested metadata write produces no discovery before outer commit, wakes
+  only its run after commit, and produces no discovery after outer rollback.
+- Seven selected suites completed with 203 passing cases and 60 embedded-only
+  cases skipped. This includes native settlement, export retry, workspace
+  recovery, plugin task contracts, and workspace-sync unit coverage.
+- Initial typechecking caught an attempt to access a run ID on the plugin cleanup
+  API's deliberately narrow lease input. The existing update now returns that
+  scalar field instead. Final server typechecking passes; the plugin task suite
+  then passes all 32 cases (four embedded driver cases remain skipped).
+
+These local checks do not establish full CI or deployed suspension. The pending
+whole-stack checks, remaining review findings, and unmigrated recurring duties
+remain open.

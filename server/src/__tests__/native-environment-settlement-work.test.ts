@@ -191,6 +191,64 @@ describe("native environment release scheduling", () => {
     expect((await environmentService(db).getLeaseById(acquired.id))?.status).toBe("released");
     await quiet();
   });
+  it("drains a backlog without globally rediscovering it after each lease release", async () => {
+    const bindings = [];
+    for (let index = 0; index < 6; index += 1) {
+      const binding = await committed(); await lease(binding); bindings.push(binding);
+    }
+    const previous = db.$client.options.debug;
+    const discovery: { query: string; parameters: readonly unknown[] }[] = [];
+    db.$client.options.debug = (_id, query, parameters) => {
+      if (query.includes('from "native_run_finalizations" inner join "heartbeat_runs"')) {
+        discovery.push({ query, parameters });
+      }
+    };
+    try {
+      await start(); await flush();
+      expect(release).toHaveBeenCalledTimes(bindings.length);
+      // Startup reconstructs all runs once. Subsequent notifications must be
+      // scoped to the lease owner, even when settlement itself emits the write.
+      expect(discovery.filter(read => !bindings.some(binding => read.parameters.includes(binding.runId))))
+        .toHaveLength(1);
+      await quiet();
+    } finally { db.$client.options.debug = previous; }
+  });
+
+  it("keeps a metadata wake scoped and defers it until the outer transaction commits", async () => {
+    const binding = await committed(), acquired = await lease(binding);
+    await environmentService(db).releaseLease(acquired.id, "pending_cleanup", { cleanupStatus: "failed" });
+    const metadata = { nativeWorkspaceExportResume: {}, pendingCleanupRetryAfterMs: Date.now() + 600_000 };
+    await environmentService(db).updateLeaseMetadata(acquired.id, metadata);
+    await start();
+    const previous = db.$client.options.debug;
+    const reads: (readonly unknown[])[] = [];
+    db.$client.options.debug = (_id, query, parameters) => {
+      if (query.includes('from "native_run_finalizations" inner join "heartbeat_runs"')) reads.push(parameters);
+    };
+    let finish!: () => void, entered!: () => void;
+    const held = new Promise<void>(resolve => { finish = resolve; });
+    const reached = new Promise<void>(resolve => { entered = resolve; });
+    let write: Promise<unknown> | undefined;
+    try {
+      write = db.transaction(async tx => {
+        await environmentService(tx as unknown as Db).updateLeaseMetadata(acquired.id, metadata);
+        entered(); await held;
+      });
+      await reached; await vi.advanceTimersByTimeAsync(2000);
+      expect(reads).toEqual([]);
+      finish(); await write;
+      await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(1000); expect(reads.length).toBeGreaterThan(0); });
+      expect(reads.every(parameters => parameters.includes(binding.runId))).toBe(true);
+      expect(release).not.toHaveBeenCalled();
+      reads.length = 0;
+      await expect(db.transaction(async tx => {
+        await environmentService(tx as unknown as Db).updateLeaseMetadata(acquired.id, metadata);
+        throw new Error("rolled back metadata");
+      })).rejects.toThrow("rolled back metadata");
+      await vi.advanceTimersByTimeAsync(2000); expect(reads).toEqual([]);
+    } finally { finish(); await write; db.$client.options.debug = previous; }
+  });
+
   it("uses the real finalizer commit to release an existing active lease", async () => {
     const binding = await accepted(); const acquired = await lease(binding);
     await start(); await quiet(); expect(release).not.toHaveBeenCalled();
