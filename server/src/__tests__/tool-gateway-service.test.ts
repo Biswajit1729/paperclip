@@ -1190,7 +1190,8 @@ describeEmbeddedPostgres("tool gateway service", () => {
           (query.includes('min(') || query.includes('"expires_at" <=') || query.includes('"expires_at" is not null'))) reads.push({ query, params: [...params] });
       };
       try { await settle(6000); } finally { db.$client.options.debug = debug; }
-      expect(reads.some(read => read.query.includes('"expires_at" <=') || query.includes('"expires_at" is not null'))).toBe(true);
+      expect(reads.some(read => read.query.includes('"expires_at" <='))).toBe(true);
+      expect(reads.some(read => read.query.includes('"expires_at" is not null'))).toBe(true);
       for (const read of reads) {
         expect(read.query).toContain('"tool_action_requests"."company_id" =');
         expect(read.params).toContain(fixture.company.id);
