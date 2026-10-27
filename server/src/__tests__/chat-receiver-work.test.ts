@@ -192,15 +192,20 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await endpoint();
     await settled(); expect(reconcile).toHaveBeenCalledOnce(); expect(errors.length).toBeGreaterThan(0); errors.length = 0; await quiet();
   });
-  it("loads inventory in bounded pages and drains a backlog despite one failed receiver", async () => {
+  it.each([0, 1100])("drains paged inventory despite a failed receiver after %i ms", async delay => {
     for (let i = 0; i < 105; i++) await endpoint();
     const service = chatReceiverSchedule(db, { reconcile, stop });
     const reads = vi.spyOn(db, "select"); const inventory = await service.load({ kind: "company", id: companyId });
     expect(inventory).toHaveLength(105); expect(reads).toHaveBeenCalledTimes(2); reads.mockRestore();
     const failedId = inventory[0].id;
-    reconcile.mockImplementation(async id => { if (id === failedId) throw new Error("bad credential"); return "owned"; });
+    reconcile.mockImplementation(async id => {
+      if (id === failedId) { vi.setSystemTime(Date.now() + delay); throw new Error("bad credential"); }
+      return "owned";
+    });
     await start(service);
-    await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(1000); expect(new Set(reconcile.mock.calls.map(([id]) => id)).size).toBe(105); }, { timeout: 5000 });
+    expect(coordinator!.nextWakeAt()).not.toBeNull();
+    expect(coordinator!.nextWakeAt()!).toBeLessThanOrEqual(Date.now() + 1000);
+    await vi.waitFor(() => expect(new Set(reconcile.mock.calls.map(([id]) => id)).size).toBe(105), { timeout: 5000 });
     expect(reconcile.mock.calls.filter(([id]) => id === failedId)).toHaveLength(1);
     reconcile.mockResolvedValue("owned"); await settled(); errors.length = 0; await quiet();
   });

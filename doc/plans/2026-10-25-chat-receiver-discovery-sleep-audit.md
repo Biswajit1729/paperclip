@@ -248,3 +248,26 @@ full-refresh failure/backoff case. Server typecheck and build pass. Prior broad
 consumer/workspace verification remains recorded above; these 45 overlap that
 coverage and are not an additional unique total. Publication requires fresh
 remote CI and review. The full migration inventory remains outstanding.
+
+## Healthy receiver progress after a slow failed batch
+
+The receiver worker already stores a retry deadline for each failed receiver and
+scope. It now supplies that deadline calculation through the coordinator's
+`nextRunAtOnError` contract as well. A completed batch can take longer than the
+one-second batching interval. When that batch contained an error, the coordinator
+previously ignored an already-due healthy backlog and waited for its generic
+30-second retry. The changed registration lets healthy due entries proceed while
+the failed receiver retains its own exponential backoff.
+
+The existing 105-receiver PostgreSQL regression now runs with both an immediate
+failure and a controlled 1,100 ms elapsed interval in the failed provider call.
+The latter failed before the repair: its next wake was 30 seconds away although
+healthy receivers were due. Afterward, all 105 are attempted before retrying the
+failed receiver, which is attempted once during the healthy drain. Recovery then
+settles and two former poll periods add no SQL. The assertion helper advances its
+own fake clock; the test no longer adds an extra second on every assertion retry.
+
+All 20 receiver lifecycle cases and the server production typecheck pass on the
+owning branch. This changes one coordinator registration and adds no provider
+branch, queue, table, or independent timer. Current-head CI and combined-stack
+verification remain separate gates.
