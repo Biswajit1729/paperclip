@@ -327,3 +327,23 @@ lease-repair checkpoint (`/tmp/sleep31-native-final-types.log` and
 checks remain required. Initial remote head `cbfaab918a` finished with only the
 Runner receipt timeout and dependent `ci / verify` failing; all other 51 checks
 passed. The forthcoming source-change push must earn its own checks and review.
+
+
+## Master integration: budget-refusal fixture transaction
+
+The combined full chat suite passed 1,761 cases and failed the newer-saved-input
+case that remains budget-blocked. A focused run reproduced that failure among
+49 related cases. Its `failed_chat_retry_contended` receipt was not evidence of
+actual database contention: temporary diagnostic instrumentation captured
+`Database work must be registered inside a transaction` from the budget mock's
+`request.authorize(db)` call. The real admission owner passes a transaction.
+
+The mock now authorizes and writes its skipped wake receipt in one transaction.
+All original requester, source-comment, and skipped-status assertions remain.
+No production retry, budget, or authority behavior changed. All 49 related cases
+pass on this owner. The initial full-suite and focused failures remain recorded
+in `/tmp/sleep-master-chat-full-tests.log` and `/tmp/sleep-master-chat-budget-tests.log`;
+the captured cause and corrected result are in
+`/tmp/sleep-master-budget-fixture-diagnostic.log` and
+`/tmp/sleep-master-budget-fixture-fixed.log`. Temporary diagnostic logging was
+removed before this commit. The full combined suite still requires a fresh run.
