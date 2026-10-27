@@ -9614,22 +9614,6 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
-        },
-        "chat_actions_github_ack_work_idx": {
-          "name": "chat_actions_github_ack_work_idx",
-          "columns": [
-            {
-              "expression": "id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"chat_actions\".\"kind\" = 'github_response_comment'\n      and \"chat_actions\".\"delivery_id\" is not null and coalesce(\"chat_actions\".\"result\"->>'final', 'false') <> 'true'\n      and (\"chat_actions\".\"status\" = 'received' or (\"chat_actions\".\"status\" = 'failed' and \"chat_actions\".\"result\"->>'retryable' = 'true'))",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
         }
       },
       "foreignKeys": {
@@ -12053,40 +12037,6 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "chat_publications_comment_destination_idx": {
-          "name": "chat_publications_comment_destination_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "comment_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "endpoint_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "conversation_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"chat_publications\".\"comment_id\" is not null",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -15013,28 +14963,6 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "chat_voice_sessions_report_window_idx": {
-          "name": "chat_voice_sessions_report_window_idx",
-          "columns": [
-            {
-              "expression": "ended_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"chat_voice_sessions\".\"state\" in ('ended', 'failed', 'expired') and \"chat_voice_sessions\".\"provider_session_id\" is not null",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -30504,34 +30432,6 @@
             }
           ],
           "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "fast_response_requests_delivery_idx": {
-          "name": "fast_response_requests_delivery_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "endpoint_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "delivery_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"fast_response_requests\".\"delivery_id\" is not null",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -51370,6 +51270,18 @@
           "primaryKey": false,
           "notNull": false
         },
+        "git_authorization_grant_id": {
+          "name": "git_authorization_grant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "git_authorized_by_user_id": {
+          "name": "git_authorized_by_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "pause_reason": {
           "name": "pause_reason",
           "type": "text",
@@ -51507,6 +51419,19 @@
             "id"
           ],
           "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "projects_git_authorization_grant_id_connection_grants_id_fk": {
+          "name": "projects_git_authorization_grant_id_connection_grants_id_fk",
+          "tableFrom": "projects",
+          "tableTo": "connection_grants",
+          "columnsFrom": [
+            "git_authorization_grant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
           "onUpdate": "no action"
         }
       },
@@ -64366,6 +64291,6 @@
     "tables": {},
     "columns": {}
   },
-  "id": "a3eaf5a2-d8c0-4314-b022-2155b7b92f99",
-  "prevId": "5db1f039-3778-4473-bfce-211aacfceb62"
+  "id": "7fe8f6ac-a52f-4a09-8741-7eb98d372317",
+  "prevId": "04ffa8d3-0a3b-4875-b031-a114859c0efd"
 }
