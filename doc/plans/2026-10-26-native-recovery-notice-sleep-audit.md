@@ -174,3 +174,22 @@ notice, finalizer telemetry, startup, and response-authority suites. Logs:
 `/tmp/sleep55-lock-order-{red,green,chat,consumers}.log`. This is 214 distinct
 passing cases across five files, not a full chat-file or full repository test
 run. Integrated typecheck, build, and fresh remote checks remain required.
+
+## Projection fixture follow-through after the lock-order repair
+
+The coordinator-first response-recovery guard exposed stale projection fixtures.
+Thirteen cases inserted a native run without a committed finalization record.
+Recovery correctly stopped before loading that run, so the expected measured
+projection was absent. The failure reproduced locally against a new disposable
+PostgreSQL database: 13 failures and four passes, matching the CI failures on
+later stack branches.
+
+The fixture now uses the existing accepted-result and finalization setup. It
+retains a future retry while comparing narrow and full-row reads, so both paths
+observe the same state without publishing between comparisons. The selected
+answer guard, typed context flags, non-object result evidence, payload byte
+limits, unchanged-row assertions, company/issue scope checks, and separate real
+publication comparison remain. All 17 cases now pass; server typechecking also
+passes. The existing external-test-database convention permits a real database
+replay without requiring another embedded PostgreSQL instance. No production
+lock, recovery eligibility, retry policy, or projection was weakened.
