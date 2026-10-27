@@ -141,3 +141,23 @@ real worker and owner acceptance passed, but startup wiring coverage was missing
 from the local selection. The double now exposes the method, and new assertions
 verify scheduler enablement and periodic-reaper exclusion. All 48 startup tests
 pass in 5.34 seconds. This is a test-only repair; fresh head CI/review is required.
+
+## Master integration and Stop attribution follow-up (2026-10-27)
+
+Integrated master `8548173fc9efdc0fa07644fb92dcc0b6851a95e5`. A real PostgreSQL
+regression held the foreground Stop after each cancellation fence and allowed an
+independent scheduled-retry recovery owner to win terminal settlement. All three
+user/board cases reproduced missing operator attribution. Both existing fence
+transactions now persist `cancelledByActorType` and `cancelledByUserId`, so the
+recovery winner retains the fields used to suppress automatic restart. No new
+queue, table, or timer is introduced. Arbitrary result metadata is not copied
+into the fence.
+
+All 49 run-control tests pass, including those three races. The integrated
+recovery, dispatch, and scheduled-retry route suites pass on fresh disposable
+PostgreSQL databases; their external-database fixtures apply migrations before
+opening the test client. Production server typechecking passes after resolving
+the overlapping upstream recovery fixture imports and connection variable.
+The first targeted test command used an invalid project filter and ran no tests;
+the corrected command established the failing baseline before the fix. These are
+local behavior checks, not a full-repository or deployed-sleep claim.

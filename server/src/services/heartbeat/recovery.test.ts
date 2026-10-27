@@ -1,4 +1,3 @@
-import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import { activityLog, agents, applyPendingMigrations, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environments, environmentLeases, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations } from "@paperclipai/db";
@@ -465,7 +464,7 @@ describePostgres("heartbeat recovery module ownership", () => {
       const old = (await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id)))[0];
       await db.update(heartbeatRuns).set({ status: "interrupted", contextSnapshot: { issueId: f.run.issueId }, resultJson: { workspaceRestored: true } }).where(eq(heartbeatRuns.id, f.run.id));
       await finishLegacyShutdownWorkspaceSettlement(db, f.run);
-      const single = createDb(external ?? database.connectionString, { maxConnections: 1 });
+      const single = createDb(externalUrl ?? database.connectionString, { maxConnections: 1 });
       try { expect(await allowLegacyShutdownWorkspaceCleanup(single, old, new Date(Date.now() + 60_000))).toBe(true); }
       finally { await single.$client.end({ timeout: 1 }); }
       expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id)))[0])
