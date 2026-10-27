@@ -1544,7 +1544,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
             eq(environmentLeases.status, "active"),
           ),
         )
-        .returning({ id: environmentLeases.id }));
+        .returning({ id: environmentLeases.id }), { companyId: lease.companyId, runId: lease.heartbeatRunId ?? undefined });
       if (flipped.length > 0) recovered += 1;
     }
 
@@ -1787,7 +1787,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
             ? 30 * 60_000 : Math.min(30 * 60_000, Math.max(30_000, backoffMs))),
         })}::jsonb`,
       }).where(and(eq(environmentLeases.id, lease.id),
-        sql`${environmentLeases.metadata}->>'pendingCleanupAttemptId' = ${claimed}`)));
+        sql`${environmentLeases.metadata}->>'pendingCleanupAttemptId' = ${claimed}`)), { companyId: lease.companyId, runId: lease.heartbeatRunId ?? undefined });
       if (lease.heartbeatRunId) {
         // Delivery failure must not revert successful provider cleanup. A new
         // message can still use the persisted receipt on its next admission.
