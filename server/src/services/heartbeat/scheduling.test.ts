@@ -9,6 +9,8 @@ import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
+import { heartbeatService } from "../heartbeat.js";
+import { instanceSettingsService } from "../instance-settings.js";
 import { companyService } from "../companies.js";
 import { issueService } from "../issues.js";
 import { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
@@ -503,7 +505,7 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
       vi.useRealTimers(); vi.restoreAllMocks();
       expect(errors).toEqual([]);
     });
-    async function start(f: Awaited<ReturnType<typeof fixture>>) {
+    async function start(f: { scheduler: Pick<ReturnType<typeof createHeartbeatScheduling>, "tickIssueMonitors" | "nextIssueMonitorAt"> }) {
       coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => !draining,
         canReconcile: () => true, onError: error => errors.push(error) });
       const workers = registerScheduledWork(coordinator, { retryMs: 30_000, canRun: () => !draining,
@@ -540,6 +542,63 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
         mode: "normal", commentRequired: true, stages: [], monitor: { nextCheckAt: at.toISOString() },
       } });
     }
+
+    it.each(["commit", "rollback"] as const)("reconciles worktree activation only after its outer transaction %s", async outcome => {
+      const f = await fixture();
+      const deadline = now.getTime() + 3_600_000;
+      await db.update(issues).set({ monitorNextCheckAt: new Date(deadline),
+        executionPolicy: { monitor: { nextCheckAt: new Date(deadline).toISOString() } } }).where(eq(issues.id, f.issue.id));
+      const runtimeEnv = { PAPERCLIP_IN_WORKTREE: "true", PAPERCLIP_INSTANCE_ID: "monitor-activation-fixture" };
+      const settings = instanceSettingsService(db, { runtimeEnv });
+      await settings.updateExperimental({ enableWorktreeRunExecution: false });
+      const heartbeat = heartbeatService(db, { runtimeEnv });
+      await start({ scheduler: heartbeat });
+      await quiet();
+      let release!: () => void, entered!: () => void;
+      const held = new Promise<void>(resolve => { release = resolve; });
+      const ready = new Promise<void>(resolve => { entered = resolve; });
+      const writing = db.transaction(async tx => {
+        await instanceSettingsService(tx as unknown as Db, { runtimeEnv }).updateExperimental({ enableWorktreeRunExecution: true });
+        entered();
+        await held;
+        if (outcome === "rollback") throw new Error("rollback activation");
+      }).then(() => undefined, error => error as Error);
+      try {
+        await ready;
+        await advance(31_000);
+        // An unresolved transaction may arm an in-memory reconciliation retry,
+        // but its uncommitted setting must not make the monitor eligible.
+        expect(await heartbeat.nextIssueMonitorAt()).toBeNull();
+        expect((await readIssue(f.issue.id)).monitorAttemptCount).toBe(0);
+      } finally { release(); }
+      const error = await writing;
+      if (outcome === "rollback") {
+        expect(error?.message).toBe("rollback activation");
+        await quiet();
+      } else {
+        expect(error).toBeUndefined();
+        await advance(31_000);
+        await vi.waitFor(() => expect(coordinator!.nextWakeAt()).toBe(deadline), { timeout: 5000 });
+        await settings.updateExperimental({ enableWorktreeRunExecution: false });
+        await quiet();
+      }
+      expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: new Date(deadline), monitorAttemptCount: 0 });
+    });
+
+    it("uses fresh worktree activation for immediate monitor deadline inspection", async () => {
+      const f = await fixture();
+      const runtimeEnv = { PAPERCLIP_IN_WORKTREE: "true", PAPERCLIP_INSTANCE_ID: "monitor-fresh-fixture" };
+      const settings = instanceSettingsService(db, { runtimeEnv });
+      await settings.updateExperimental({ enableWorktreeRunExecution: false });
+      const heartbeat = heartbeatService(db, { runtimeEnv });
+      expect(await heartbeat.nextIssueMonitorAt()).toBeNull();
+      await settings.updateExperimental({ enableWorktreeRunExecution: true });
+      expect(await heartbeat.nextIssueMonitorAt()).toBe(dueAt.getTime());
+      await settings.updateExperimental({ enableWorktreeRunExecution: false });
+      expect(await heartbeat.nextIssueMonitorAt()).toBeNull();
+      expect(await heartbeat.tickIssueMonitors()).toEqual({ checked: 0, triggered: 0, skipped: 0 });
+      expect((await readIssue(f.issue.id)).monitorNextCheckAt).toEqual(dueAt);
+    });
 
     it("stays quiet with retained history, then a real producer schedules and consumes its deadline", async () => {
       const f = await fixture();
