@@ -220,3 +220,34 @@ Verification:
 Independent SQL writers and multiple replicas gain no new wake protocol. Cloud
 alarm coverage and sleep admission are unchanged. The full recurring-server stack,
 older failed gates/review findings and final master reconciliation remain open.
+
+## Quietness fixture settlement and isolation (October 26)
+
+The coordinator removes a due timer before it runs reconciliation. Therefore,
+`nextWakeAt() === null` alone does not establish that the worker has finished.
+The completed-history test now waits for both no scheduled deadline and zero
+tracked active work before starting its existing two-minute quiet measurement.
+It still requires zero database reads, zero transactions, and no provider writes.
+No production worker, deadline, or recovery policy changes in this repair.
+
+The same test previously restored its database spies only after all assertions
+passed. A failed quietness assertion left the transaction spy installed. The
+later audit fixture bound that existing spy, then replaced its implementation
+with a callback through the bound spy, causing recursive calls.
+
+A controlled experiment inserted one real SQL read inside the quiet measurement.
+Before cleanup was repaired, the quietness assertion failed and the subsequent
+`audit_insert` case failed with a stack overflow instead of its expected audit
+error (two failures and one pass). With the same intentional SQL read and
+unconditional spy restoration, only the quietness assertion failed; both audit
+failure cases passed. The temporary SQL read was removed before acceptance.
+This proves failure isolation without weakening the quietness assertion. It does
+not independently reproduce the original CI timing race.
+
+All 228 cases in the complete GitHub agent review, Discord automatic command
+registration, and resource-change audit groups then passed against a migrated,
+disposable PostgreSQL database. Other groups were excluded by the test selector;
+this is not a complete chat-file result. Logs:
+`/tmp/sleep-chat-quiet-contamination-red.log`,
+`/tmp/sleep-chat-quiet-contamination-contained.log`, and
+`/tmp/sleep-chat-quiet-owner-tests.log`.
