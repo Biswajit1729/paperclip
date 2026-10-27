@@ -88,3 +88,17 @@ This preserves the conservative Cloud sleep blocker for unknown external effects
 Related proposals: #7905 covers empty manifest sync; this migration needs that
 behavior on both activation paths. #11571 proposes company-scoped jobs; this
 migration retains the current instance-scoped contract and does not implement it.
+
+## Refresh/manual-dispatch test ordering (2026-10-27)
+
+CI job 122104710882 timed out in the manual-reservation concurrency case. Its
+setup created due work before installing the outstanding-run snapshot barrier.
+The creation notification could start dispatch first, leaving no runnable job
+for the later refresh to query and no read-barrier arrival. An isolated local
+run passed, so that retry alone did not establish the cause of the CI failure.
+
+The test now pauses background admission during setup and resumes it only after
+the barrier is installed. It still holds a real database snapshot across the
+manual dispatch, verifies the active reservation and concurrency bound, and
+checks that all three jobs finish. All 33 plugin scheduling cases pass with
+this ordering. Production scheduling, assertions, and test timeouts are unchanged.
