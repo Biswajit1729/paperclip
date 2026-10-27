@@ -14158,24 +14158,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "provider_account_id": {
-          "name": "provider_account_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "cleanup_confirmed_at": {
-          "name": "cleanup_confirmed_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "cleanup_next_attempt_at": {
-          "name": "cleanup_next_attempt_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
         "expires_at": {
           "name": "expires_at",
           "type": "timestamp with time zone",
@@ -14198,22 +14180,6 @@
         }
       },
       "indexes": {
-        "chat_voice_inbound_cleanup_idx": {
-          "name": "chat_voice_inbound_cleanup_idx",
-          "columns": [
-            {
-              "expression": "id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"chat_voice_inbound_calls\".\"cleanup_confirmed_at\" is null",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "chat_voice_inbound_expiry_idx": {
           "name": "chat_voice_inbound_expiry_idx",
           "columns": [
@@ -14963,28 +14929,6 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "chat_voice_sessions_report_window_idx": {
-          "name": "chat_voice_sessions_report_window_idx",
-          "columns": [
-            {
-              "expression": "ended_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"chat_voice_sessions\".\"state\" in ('ended', 'failed', 'expired') and \"chat_voice_sessions\".\"provider_session_id\" is not null",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -51292,6 +51236,18 @@
           "primaryKey": false,
           "notNull": false
         },
+        "git_authorization_grant_id": {
+          "name": "git_authorization_grant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "git_authorized_by_user_id": {
+          "name": "git_authorized_by_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "pause_reason": {
           "name": "pause_reason",
           "type": "text",
@@ -51429,6 +51385,19 @@
             "id"
           ],
           "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "projects_git_authorization_grant_id_connection_grants_id_fk": {
+          "name": "projects_git_authorization_grant_id_connection_grants_id_fk",
+          "tableFrom": "projects",
+          "tableTo": "connection_grants",
+          "columnsFrom": [
+            "git_authorization_grant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
           "onUpdate": "no action"
         }
       },
@@ -64288,6 +64257,6 @@
     "tables": {},
     "columns": {}
   },
-  "id": "5db1f039-3778-4473-bfce-211aacfceb62",
-  "prevId": "c6f680ef-ddfc-4ca7-93ae-4004d9a9e4b5"
+  "id": "04ffa8d3-0a3b-4875-b031-a114859c0efd",
+  "prevId": "bfa49dc9-6b3f-4282-9c8f-a5d410b6e1c9"
 }

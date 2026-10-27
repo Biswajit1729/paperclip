@@ -5719,28 +5719,6 @@
         }
       },
       "indexes": {
-        "approvals_pending_retention_idx": {
-          "name": "approvals_pending_retention_idx",
-          "columns": [
-            {
-              "expression": "updated_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"approvals\".\"status\" = 'pending'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "approvals_company_status_type_idx": {
           "name": "approvals_company_status_type_idx",
           "columns": [
@@ -42170,28 +42148,6 @@
         }
       },
       "indexes": {
-        "join_requests_pending_retention_idx": {
-          "name": "join_requests_pending_retention_idx",
-          "columns": [
-            {
-              "expression": "updated_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"join_requests\".\"status\" = 'pending_approval'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "join_requests_invite_unique_idx": {
           "name": "join_requests_invite_unique_idx",
           "columns": [
@@ -51236,6 +51192,18 @@
           "primaryKey": false,
           "notNull": false
         },
+        "git_authorization_grant_id": {
+          "name": "git_authorization_grant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "git_authorized_by_user_id": {
+          "name": "git_authorized_by_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "pause_reason": {
           "name": "pause_reason",
           "type": "text",
@@ -51373,6 +51341,19 @@
             "id"
           ],
           "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "projects_git_authorization_grant_id_connection_grants_id_fk": {
+          "name": "projects_git_authorization_grant_id_connection_grants_id_fk",
+          "tableFrom": "projects",
+          "tableTo": "connection_grants",
+          "columnsFrom": [
+            "git_authorization_grant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
           "onUpdate": "no action"
         }
       },
@@ -64232,6 +64213,6 @@
     "tables": {},
     "columns": {}
   },
-  "id": "4907ef38-1b97-48bb-a381-9f5a101c0841",
-  "prevId": "505bde78-5d36-407a-ba78-c6285359c3fc"
+  "id": "973d2543-9ef7-4bb4-84eb-9a637f640006",
+  "prevId": "a6249181-185e-49c6-bc36-0b2b5841b97f"
 }
