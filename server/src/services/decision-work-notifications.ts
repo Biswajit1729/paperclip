@@ -4,12 +4,12 @@ import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notificatio
 export async function notifyDecisionChange(transaction: object) {
   await notifyDeliveryWork(transaction, DELIVERY_QUEUES.decisionContinuation);
   await notifyDeliveryWork(transaction, DELIVERY_QUEUES.decisionExpiry);
-  await notifyDeliveryWork(transaction, DELIVERY_QUEUES.decisionEffectRecovery);
 }
 
 export function writeDecisionChange<T>(db: Db, write: (transaction: Db) => Promise<T>): Promise<T> {
   return db.transaction(async transaction => {
     await notifyDecisionChange(transaction);
+    await notifyDeliveryWork(transaction, DELIVERY_QUEUES.decisionEffectRecovery);
     return write(transaction as unknown as Db);
   });
 }
