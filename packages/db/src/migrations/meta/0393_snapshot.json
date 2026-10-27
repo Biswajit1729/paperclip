@@ -9615,38 +9615,6 @@
           "method": "btree",
           "with": {}
         },
-        "chat_actions_github_check_work_idx": {
-          "name": "chat_actions_github_check_work_idx",
-          "columns": [
-            {
-              "expression": "id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"chat_actions\".\"kind\" = 'github_review_check'\n      and (\"chat_actions\".\"status\" = 'received' or (\"chat_actions\".\"status\" = 'failed' and \"chat_actions\".\"result\"->>'retryable' = 'true'))",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "chat_actions_github_terminal_work_idx": {
-          "name": "chat_actions_github_terminal_work_idx",
-          "columns": [
-            {
-              "expression": "id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"chat_actions\".\"kind\" = 'github_response_comment'\n      and \"chat_actions\".\"status\" = 'processed' and \"chat_actions\".\"delivery_id\" is not null\n      and coalesce(\"chat_actions\".\"result\"->>'final', 'false') <> 'true'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "chat_actions_github_ack_work_idx": {
           "name": "chat_actions_github_ack_work_idx",
           "columns": [
@@ -51402,6 +51370,18 @@
           "primaryKey": false,
           "notNull": false
         },
+        "git_authorization_grant_id": {
+          "name": "git_authorization_grant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "git_authorized_by_user_id": {
+          "name": "git_authorized_by_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "pause_reason": {
           "name": "pause_reason",
           "type": "text",
@@ -51539,6 +51519,19 @@
             "id"
           ],
           "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "projects_git_authorization_grant_id_connection_grants_id_fk": {
+          "name": "projects_git_authorization_grant_id_connection_grants_id_fk",
+          "tableFrom": "projects",
+          "tableTo": "connection_grants",
+          "columnsFrom": [
+            "git_authorization_grant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
           "onUpdate": "no action"
         }
       },
@@ -64398,6 +64391,6 @@
     "tables": {},
     "columns": {}
   },
-  "id": "71e0becd-06e2-4d94-92e2-1b6edcc4ef88",
-  "prevId": "45c9c495-0ab8-455b-bdd3-826d0f6c0d8e"
+  "id": "4bf66f9a-29f1-4e45-a408-06feee5ebacf",
+  "prevId": "ada5241f-ded1-4bc3-9a03-fd458da9e08b"
 }
