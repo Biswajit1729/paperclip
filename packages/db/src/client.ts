@@ -521,6 +521,7 @@ const MIGRATIONS_WITH_TOP_LEVEL_STATEMENTS = new Set([
   "0396_late_cerise.sql",
   "0397_lumpy_talos.sql",
   "0380_funny_adam_warlock.sql",
+  "0402_tool_review_company_expiry.sql",
 ]);
 
 async function applyPendingMigrationsManually(
