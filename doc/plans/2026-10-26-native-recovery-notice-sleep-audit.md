@@ -193,3 +193,13 @@ publication comparison remain. All 17 cases now pass; server typechecking also
 passes. The existing external-test-database convention permits a real database
 replay without requiring another embedded PostgreSQL instance. No production
 lock, recovery eligibility, retry policy, or projection was weakened.
+
+## Startup readiness follow-up (2026-10-27)
+
+A held recovery-notice sweep reproduced HTTP startup waiting for task locks.
+Registration now tracks its readiness promise through the existing heartbeat
+shutdown owner instead of awaiting it on the readiness path. The coordinator
+continues to own worker cancellation. The regression proves HTTP readiness and
+subsequent registration proceed while shutdown waits for the held work. All 86
+startup cases pass on the master-integrated branch; no timer or persistence is
+added. Full integrated typechecking and head-specific CI remain separate gates.
