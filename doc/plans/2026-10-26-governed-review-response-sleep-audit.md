@@ -405,3 +405,25 @@ server typechecking passed. Evidence: `/tmp/sleep-approval-links-{red,green}.log
 `/tmp/sleep-approval-links-root-types.log` with matching status files. Integrated
 stack verification and fresh remote acceptance are still required. This is a
 producer-correctness fix, not deployed host-sleep qualification.
+
+## Status replay and response recovery lock order (2026-10-27)
+
+Review found that scheduled response recovery locked the issue before restoring
+presentation under the finalization coordinator lock. Status commitment and
+replay acquire those locks in the opposite order. Concurrent operations could
+therefore deadlock even though each isolated path passed its tests.
+
+Recovery now acquires the scoped coordinator row before the issue. Its existing
+presentation owner still rechecks the accepted decision, result, assessment,
+claim, retry deadline and current authority. This changes no durable schema or
+polling behavior. The extra primary-key lock query occurs only for actual work.
+
+The regression holds a real coordinator lock, starts response recovery, observes
+PostgreSQL reporting that recovery is blocked, then calls the actual status
+committer inside the owning transaction. Before the fix that replay fails with
+55P03 while locking the issue. After the fix replay completes, recovery publishes
+one response after the transaction ends, and repeated recovery produces no second
+response. The nine targeted authority/concurrency/deadline cases and all 270
+cases in the complete external-chat wait suite pass. Server typechecking passes;
+an initial test-only persisted-JSON type assertion error was corrected separately.
+Latest-head CI and integration with downstream changes remain required.
