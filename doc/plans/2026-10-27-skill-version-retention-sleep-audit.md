@@ -205,3 +205,31 @@ suite and server typechecking pass after it on the owning slice-64 branch.
 Evidence: `sleep64-interrupted-page-red`, `sleep64-interrupted-page-green`, and
 `sleep64-interrupted-page-types` local logs. Earlier suite/build receipts remain
 at their recorded revisions; current remote CI/review is required after the push.
+
+## Ponytail repair: remaining deletion producer and bounded fresh scans
+
+The full deletion-writer audit found `reconcileLocalPathSkillSources`, in addition
+to the already covered explicit delete/fork/company paths. A normal list refresh
+after a local source disappears reproduced the orphan leak: the row was deleted,
+but its cache remained after the worker became quiet. The reconciliation delete
+now registers its company hint in the owning transaction.
+
+Repeated instruction-collection transactions also reproduced multiple fresh
+company scans inside thirty seconds. The worker now limits fresh scans of a
+successfully observed company to one per thirty seconds. Bounded directory-page
+continuations still run after one second. Already observed saved deadlines bypass
+the fresh-scan limit, as a five-second grace regression proves. Empty or uncertain
+passes do not consume that limit: a first materialization can race an empty
+inspection or a held cache lock, and the publication must still reconcile promptly.
+No speculative recurring timer is armed merely to retain the limit in memory.
+Disposal also removes the cache-change subscription idempotently.
+
+The missing-source and busy-notification cases fail before repair. The initial
+five-second test used a new wall-clock read rather than the stored access marker;
+it was corrected to read the authoritative marker. An intermediate full run then
+caught the empty/uncertain materialization race introduced by applying the new
+scan limit indiscriminately. The original materialization/grace assertions remain
+intact and now pass. Final owning verification passes all 37 retention cases and
+server typechecking. See local logs `sleep64-pony-red`, `sleep64-pony-green`,
+`sleep64-pony-final`, `sleep64-pony-focused`, `sleep64-pony-acceptance`, and
+`sleep64-pony-final-types` for the failure and repair sequence.
