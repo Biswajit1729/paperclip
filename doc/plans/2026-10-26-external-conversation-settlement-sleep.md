@@ -169,3 +169,29 @@ already exhausted embedded PostgreSQL semaphore capacity during earlier full-sui
 runs. The specifically approved 11 orphan sets were removed once; this slice uses
 validated dedicated external test database overrides, not more shared-OS cleanup.
 Fresh CI must run the complete suite. No local full-suite success is claimed.
+
+## Coalesced monitor recovery receipts (October 27 follow-up)
+
+Review identified a second accepted receipt form. The ordinary queue admission
+writer can join recovery to an existing execution and persist the same monitor
+schedule key with reason `issue_execution_same_name` and status `coalesced`.
+The monitor's acceptance query previously required `issue_monitor_recovery`.
+After a restart between admission and monitor consumption, it could miss the
+receipt and enqueue recovery again after the joined run finished.
+
+A new real PostgreSQL regression calls `createWakeAdmissionWriter` inside its
+transaction scope, checks the persisted coalesced receipt, finishes the joined
+run, and retries the monitor. Before the fix, the enqueue spy was called once,
+contrary to the no-duplicate expectation. The fix accepts both receipt reasons.
+It preserves the company, agent, issue payload, admitted-run join, exact current
+or legacy schedule key, and non-skipped status checks. A receipt for a different
+schedule remains ineligible for either reason. No new timer, table, or wrapper
+is added.
+
+At owner source based on `cd618c6effd8d071f61c28a8f55121d36bc081b0`, both complete
+`slack-conversation-lifecycle` and `issue-monitor-scheduler` suites pass all 96
+cases with no skips, using separate disposable PostgreSQL databases. Server
+typechecking passes. The failed pre-fix regression remains in the verification
+record; this is a deterministic query correction, not a flaky-test retry. Remote
+checks still must pass on the published follow-up head. No additional provider
+execution or deployed sleep qualification is claimed.

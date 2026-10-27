@@ -9,7 +9,7 @@ import { createChatPublicationResolution } from "../services/chat-channels/publi
 import { createChatPublicationTaskControl } from "../services/chat-channels/publications/task-control.js";
 import { chatCredentialMutationLease } from "../services/chat-credential-mutation-lease.js";
 import { createHeartbeatLifecycle, type HeartbeatLifecycleDependencies } from "../services/heartbeat/run-lifecycle.js";
-import { createPostgresWakeQueueAdapter } from "../modules/wake-queue/adapters/postgres.js";
+import { createAdmissionTransactionScope, createPostgresWakeQueueAdapter, createWakeAdmissionWriter } from "../modules/wake-queue/adapters/postgres.js";
 import { applyRunnerGoalPrpEvent } from "../services/runner-goals.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 import { setTimeout as delay } from "node:timers/promises";
@@ -168,14 +168,39 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]!.monitorNextCheckAt).toBeNull();
   });
 
-  it("does not consume a recovery receipt for a different monitor schedule", async () => {
+  it("consumes monitor recovery coalesced by the real queue writer after the joined run finishes", async () => {
+    const f = await fixture();
+    const enqueue = vi.fn<HeartbeatSchedulingDependencies["enqueueWakeup"]>(async () => null);
+    const scheduler = await exhaustedMonitor(f, enqueue);
+    const [issue] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+    const key = `issue-monitor-recovery:${f.issueId}:${issue!.monitorNextCheckAt!.toISOString()}`;
+    await db.update(heartbeatRuns).set({ status: "running", finishedAt: null }).where(eq(heartbeatRuns.id, f.runId));
+    await db.transaction(async tx => {
+      await createWakeAdmissionWriter().coalesceIntoActiveExecutionRun(createAdmissionTransactionScope(f.companyId, tx as unknown as typeof db), {
+        companyId: f.companyId, agentId: f.agentId, activeExecutionRunId: f.runId,
+        mergedContextSnapshot: { issueId: f.issueId }, source: "automation", triggerDetail: "system",
+        payload: { issueId: f.issueId }, requestedByActorType: "system", requestedByActorId: null,
+        idempotencyKey: key,
+      });
+    });
+    const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey, key));
+    expect(receipt).toMatchObject({ reason: "issue_execution_same_name", status: "coalesced", runId: f.runId });
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, f.runId));
+    // Simulate restart after admission committed but before the monitor cleared.
+    await scheduler.triggerIssueMonitor(f.issueId);
+    expect(enqueue).not.toHaveBeenCalled();
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]!.monitorNextCheckAt).toBeNull();
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey, key))).toHaveLength(1);
+  });
+
+  it.each(["issue_monitor_recovery", "issue_execution_same_name"])("does not consume a %s receipt for a different monitor schedule", async reason => {
     const f = await fixture();
     const enqueue = vi.fn<HeartbeatSchedulingDependencies["enqueueWakeup"]>(async () => null);
     const scheduler = await exhaustedMonitor(f, enqueue);
     const [issue] = await db.select().from(issues).where(eq(issues.id, f.issueId));
     const previousSchedule = new Date(issue!.monitorNextCheckAt!.getTime() - 60_000).toISOString();
     await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId,
-      source: "automation", status: "completed", runId: f.runId, reason: "issue_monitor_recovery",
+      source: "automation", status: "completed", runId: f.runId, reason,
       idempotencyKey: `issue-monitor-recovery:${f.issueId}:${previousSchedule}`,
       payload: { issueId: f.issueId } });
     await scheduler.triggerIssueMonitor(f.issueId);
