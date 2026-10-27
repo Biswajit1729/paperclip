@@ -108,6 +108,13 @@ export function createPluginJobScheduler(options: PluginJobSchedulerOptions): Pl
   }
 
   async function dispatch(job: Job, trigger: Trigger, signal?: AbortSignal): Promise<TriggerJobResult | null> {
+    // Reserve synchronously at the one dispatch boundary. A refresh may have
+    // yielded since filtering its snapshot; it cannot borrow a manual run's slot.
+    if (activeJobs.has(job.id) || pendingSettlements.has(job.id)) {
+      if (trigger !== "schedule") throw new Error(`Job "${job.jobKey}" is already running`);
+      return null;
+    }
+    if (trigger === "schedule" && activeJobs.size >= maxConcurrentJobs) return null;
     activeJobs.add(job.id);
     try {
       const run = await db.transaction(async tx => {
@@ -148,7 +155,7 @@ export function createPluginJobScheduler(options: PluginJobSchedulerOptions): Pl
     next = null;
     for (const job of runnable) {
       if (!canRun() || signal?.aborted) break;
-      if (blocked.has(job.id)) continue;
+      if (blocked.has(job.id) || activeJobs.has(job.id) || pendingSettlements.has(job.id)) continue;
       if (!job.nextRunAt) {
         const deadline = nextCron(job.schedule, now);
         if (!deadline) continue;
@@ -219,10 +226,16 @@ export function createPluginJobScheduler(options: PluginJobSchedulerOptions): Pl
         eq(pluginJobRuns.pluginId, pluginId), inArray(pluginJobRuns.status, ["pending", "queued", "running"]),
       ));
       for (const run of runs) {
-        if (!activeJobs.has(run.jobId) && ["running", "queued", "pending"].includes(run.status)) {
-          await jobStore.completeRun(run.id, { status: "cancelled", error: "Plugin unregistered",
-            durationMs: run.startedAt ? Date.now() - run.startedAt.getTime() : null });
-        }
+        if (activeJobs.has(run.jobId) || pendingSettlements.has(run.jobId)) continue;
+        await db.transaction(async tx => {
+          const [current] = await tx.select().from(pluginJobRuns).where(eq(pluginJobRuns.id, run.id)).for("update");
+          // A completion may have committed after the discovery read. Never
+          // overwrite its result, or the result still retained for persistence.
+          if (!current || !["running", "queued", "pending"].includes(current.status)
+            || activeJobs.has(current.jobId) || pendingSettlements.has(current.jobId)) return;
+          await pluginJobStore(tx).completeRun(current.id, { status: "cancelled", error: "Plugin unregistered",
+            durationMs: current.startedAt ? Date.now() - current.startedAt.getTime() : null });
+        });
       }
     },
     triggerJob(jobId, trigger = "manual") {
@@ -232,17 +245,14 @@ export function createPluginJobScheduler(options: PluginJobSchedulerOptions): Pl
         if (!job) throw new Error(`Job not found: ${jobId}`);
         if (job.status !== "active") throw new Error(`Job "${job.jobKey}" is not active (status: ${job.status})`);
         if (activeJobs.has(jobId) || pendingSettlements.has(jobId)) throw new Error(`Job "${job.jobKey}" is already running`);
-        activeJobs.add(jobId);
-        try {
-          const runs = await db.select({ id: pluginJobRuns.id }).from(pluginJobRuns).where(and(
-            eq(pluginJobRuns.jobId, jobId), inArray(pluginJobRuns.status, ["pending", "queued", "running"]),
-          )).limit(1);
-          if (runs.length) throw new Error(`Job "${job.jobKey}" already has a running execution`);
-          if (unregistered.has(job.pluginId) || !workerManager.isRunning(job.pluginId)) throw new Error(`Worker for plugin "${job.pluginId}" is not running`);
-          const result = await dispatch(job, trigger);
-          if (!result) throw new Error(`Job "${job.jobKey}" is no longer available`);
-          return result;
-        } catch (err) { activeJobs.delete(jobId); throw err; }
+        const runs = await db.select({ id: pluginJobRuns.id }).from(pluginJobRuns).where(and(
+          eq(pluginJobRuns.jobId, jobId), inArray(pluginJobRuns.status, ["pending", "queued", "running"]),
+        )).limit(1);
+        if (runs.length) throw new Error(`Job "${job.jobKey}" already has a running execution`);
+        if (unregistered.has(job.pluginId) || !workerManager.isRunning(job.pluginId)) throw new Error(`Worker for plugin "${job.pluginId}" is not running`);
+        const result = await dispatch(job, trigger);
+        if (!result) throw new Error(`Job "${job.jobKey}" is no longer available`);
+        return result;
       })());
     },
     tick,
