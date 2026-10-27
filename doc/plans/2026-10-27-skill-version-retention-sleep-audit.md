@@ -183,3 +183,25 @@ adds keepalive for an actively held skill-cache advisory-lock transaction. That 
 an independent lock-liveness repair. This slice preserves that lock boundary and
 does not duplicate its implementation. An active-operation keepalive is distinct
 from the hourly idle discovery removed here.
+
+## Review repair: interrupted pages and operator reports
+
+Greptile identified unfinished page work that the old hourly sweep had recovered.
+Controlled drain during byte inspection reproduced a retained old cache; drain
+immediately after rename reproduced an abandoned trash directory behind the
+continuation cursor. Both cases resumed, reached apparent quiet, and still left
+work behind before this repair. A third regression confirmed that dry-run
+candidate/byte reports were absent.
+
+The prune result now records whether its continuation predicate was ever denied.
+The worker restarts that company's scan after interruption, even if admission
+reopens before the page returns. This recovers both candidates and trash before
+disarming. Ordinary bounded-page continuation still resumes its cursor. Successful
+pages again log the existing counters, company scope, and dry-run mode, so an
+operator can inspect a dry run before enabling deletion.
+
+All three controlled regressions fail before the fix. The full 34-case retention
+suite and server typechecking pass after it on the owning slice-64 branch.
+Evidence: `sleep64-interrupted-page-red`, `sleep64-interrupted-page-green`, and
+`sleep64-interrupted-page-types` local logs. Earlier suite/build receipts remain
+at their recorded revisions; current remote CI/review is required after the push.
