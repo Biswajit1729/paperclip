@@ -195,3 +195,13 @@ typechecking passes. The failed pre-fix regression remains in the verification
 record; this is a deterministic query correction, not a flaky-test retry. Remote
 checks still must pass on the published follow-up head. No additional provider
 execution or deployed sleep qualification is claimed.
+
+## Startup readiness follow-up (2026-10-27)
+
+External conversation settlement can wait on endpoint or task locks. A held-worker
+regression reproduced HTTP startup waiting for that recovery. Registration now
+tracks its readiness promise through the existing heartbeat shutdown owner rather
+than awaiting it before HTTP becomes ready. Coordinator cancellation and shutdown
+joining remain intact; no polling, timer, or durable state is added. All 89 startup
+cases pass on the master-integrated branch, including the failing-before-fix case.
+Full integrated typechecking and current-head CI remain separate gates.
