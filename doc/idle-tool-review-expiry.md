@@ -107,7 +107,7 @@ The grouped startup inventory remains unchanged. Existing company signals,
 authority checks, expiry settlement, paging, backoff, and sleep gates remain
 owned by their existing services.
 
-The additive company-expiry index is migration `0382_tool_review_company_expiry`.
+The additive company-expiry index is migration `0383_tool_review_company_expiry`.
 It builds the index concurrently and idempotently through the existing top-level
 migration executor. Initially reserving number 0402 passed per-branch checks but
 caused CI to reject descendants whose migrations preceded their target branch.
