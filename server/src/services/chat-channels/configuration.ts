@@ -1,4 +1,6 @@
 import { notifyChatConnectionHealth } from "./connection-health-notifications.js";
+import type { ConnectionManagementContext } from "../connection-management.js";
+import { CHAT_HUMAN_CREDENTIAL_FIELDS } from "./credentials.js";
 import { preparePhotonConfiguration, createPhotonConfiguration } from "./imessage-photon/setup.js";
 import { slackRuntimeConfig } from "./slack/setup.js";
 import { createTelegramSetup } from "./telegram/setup.js";
@@ -8,9 +10,7 @@ import { createGitHubAppSetup } from "./github/app-setup.js";
 
 import type { VerifiedProviderIdentity } from "./runtime-types.js";
 
-import { isProvisionedSlackSetup } from "@paperclipai/shared";
-
-import { slackCallbackMatchesPublicUrl } from "./slack/callback-verification.js";
+import { preservesProvisionedSlackVerification } from "./slack/callback-verification.js";
 
 import { createDiscordCommands } from "./discord/commands.js";
 
@@ -27,9 +27,6 @@ import { chatCredentialMutationLease, type CredentialMutationLeaseGuard } from "
 
 import { slackChatRegistrationService } from "../chat-slack-registration.js";
 
-import {
-  createHash,
-} from "node:crypto";
 import {
   and,
   eq,
@@ -62,6 +59,7 @@ import {
 import {
   badRequest,
   conflict,
+  forbidden,
   notFound,
   unprocessable,
 } from "../../errors.js";
@@ -94,6 +92,7 @@ type ChatConfigurationOptions = Pick<ReturnType<typeof createChatCredentials>, "
   leasedChatProvider: (provider: string) => boolean;
   PROVIDER_LABELS: Record<ChatProvider, string>;
   SUPPLIED_CREDENTIAL_KEYS: Record<ChatProvider, readonly string[]>;
+  RECONNECT_CREDENTIAL_KEYS?: Partial<Record<ChatProvider, readonly string[]>>;
   PROVIDER_CREDENTIAL_CHECK_TIMEOUT_MS: number;
   isSupportedTelegramWebhookBaseUrl: (url: string | null) => boolean;
   slackRegistration: Pick<ReturnType<typeof slackChatRegistrationService>, "cleanup">;
@@ -114,7 +113,9 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
     endpointId: string,
     input: ConfigureChatEndpointInput,
     actorUserId?: string | null,
+    managementContext?: ConnectionManagementContext,
   ) {
+    await managementContext?.reauthorize();
     const record = await endpointRecord(endpointId);
     if (!record) throw notFound("Chat endpoint not found");
     if (record.endpoint.provider === "agentmail") throw badRequest("Use the email inbox API for AgentMail");
@@ -125,7 +126,7 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
         input.action === "configure" || input.action === "reconnect";
       const allowedKeys = new Set(
         credentialAction
-          ? SUPPLIED_CREDENTIAL_KEYS[record.endpoint.provider]
+          ? (input.action === "reconnect" ? options.RECONNECT_CREDENTIAL_KEYS?.[record.endpoint.provider] : undefined) ?? SUPPLIED_CREDENTIAL_KEYS[record.endpoint.provider]
           : [],
       );
       const unsupportedKeys = suppliedCredentialKeys.filter(
@@ -142,6 +143,15 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
           },
         );
       }
+      // These keys establish provider authentication or inbound trust. They
+      // must come from the human setup step or a verified provider handoff.
+      const credentialFields = CHAT_HUMAN_CREDENTIAL_FIELDS.filter(key => suppliedCredentialKeys.includes(key));
+      if (managementContext?.actor.type === "agent" && credentialFields.length) {
+        throw forbidden("The responsible user must enter provider verification credentials in the saved setup", {
+          code: "chat_endpoint_credential_entry_requires_human",
+          credentialFields,
+        });
+      }
     }
     return withCredentialMutationLease(record.endpoint, (credentialLease) =>
       configureWithCredentialLease(
@@ -149,6 +159,7 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
         input,
         credentialLease,
         actorUserId,
+        managementContext,
       ),
     );
   }
@@ -158,7 +169,9 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
     input: ConfigureChatEndpointInput,
     credentialLease: CredentialMutationLeaseGuard,
     actorUserId?: string | null,
+    managementContext?: ConnectionManagementContext,
   ) {
+    await managementContext?.reauthorize();
     const record = await endpointRecord(endpointId);
     if (!record) throw notFound("Chat endpoint not found");
     const endpoint = record.endpoint;
@@ -168,6 +181,7 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
           code: "chat_endpoint_not_active",
         });
       }
+      await managementContext?.reauthorize();
       await db.transaction(async (tx) => {
         await credentialLease.assertOwned(tx);
         const pausedAt = new Date();
@@ -221,8 +235,7 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
       await invalidateRuntime(endpoint.id);
       await logActivity(db, {
         companyId: endpoint.companyId,
-        actorType: "user",
-        actorId: actorUserId ?? "board",
+        ...(managementContext?.audit ?? { actorType: "user" as const, actorId: actorUserId ?? "board" }),
         action: "chat_endpoint.paused",
         entityType: "tool_connection",
         entityId: endpoint.connectionId,
@@ -271,6 +284,7 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
           prepared.credentials,
           credentialLease,
           actorUserId,
+          managementContext ? async () => managementContext.reauthorize() : undefined,
         );
       }
       credentials = prepared.credentials;
@@ -282,7 +296,8 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
         );
       let activatedEndpoint!: EndpointRow;
       try {
-        await db.transaction(async (tx) => {
+        await managementContext?.reauthorize();
+      await db.transaction(async (tx) => {
           await credentialLease.assertOwned(tx);
           const resumedAt = new Date();
           const current = await tx
@@ -365,7 +380,8 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
         if (activatedEndpoint) {
           const failure = redactError(error);
           const failedAt = new Date();
-          await db.transaction(async (tx) => {
+          await managementContext?.reauthorize();
+      await db.transaction(async (tx) => {
             await credentialLease.assertOwned(tx);
             await notifyChatEndpointWork(tx, endpoint.connectionId);
             await tx
@@ -419,8 +435,7 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
       }
       await logActivity(db, {
         companyId: endpoint.companyId,
-        actorType: "user",
-        actorId: actorUserId ?? "board",
+        ...(managementContext?.audit ?? { actorType: "user" as const, actorId: actorUserId ?? "board" }),
         action: "chat_endpoint.resumed",
         entityType: "tool_connection",
         entityId: endpoint.connectionId,
@@ -458,6 +473,7 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
           code: "chat_endpoint_already_removed",
         });
       }
+      await managementContext?.reauthorize();
       await db.transaction(async (tx) => {
         await credentialLease.assertOwned(tx);
         const current = await tx
@@ -663,6 +679,7 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
               `${PROVIDER_LABELS[endpoint.provider]} credentials are required`,
             );
           });
+    await managementContext?.reauthorize();
     if (endpoint.provider === "imessage-photon") {
       credentials = preparePhotonConfiguration(endpoint, input, credentials);
     }
@@ -701,6 +718,7 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
     // it never leaves credentials bound to the losing endpoint.
     if (!endpoint.botExternalId) {
       try {
+        await managementContext?.reauthorize();
         const claimed = await db.transaction(async (tx) => {
           await credentialLease.assertOwned(tx);
           await notifyChatEndpointWork(tx, endpoint.connectionId);
@@ -755,6 +773,7 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
         credentials,
         credentialLease,
         actorUserId,
+        managementContext ? async () => managementContext.reauthorize() : undefined,
       );
     if (prepared.inventory)
       await reconcileProviderResourceRows(
@@ -767,6 +786,7 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
       endpoint.provider === "slack" &&
       (input.action === "configure" || input.action === "reconnect");
     try {
+      await managementContext?.reauthorize();
       await db.transaction(async (tx) => {
         await credentialLease.assertOwned(tx);
         const current = await tx
@@ -779,10 +799,7 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
         if (endpoint.provider === "speko") {
         await installSpekoVoiceTools(tx, endpoint, actorUserId);
       }
-        const observedSlackUrl = (current.setup as InternalSetupState).slackCallbackSurfaces?.events?.url;
-        const preserveSlackVerification = isProvisionedSlackSetup(current.setup.slackSetupMethod)
-          && (current.setup as InternalSetupState).slackVerificationSigningFingerprint === createHash("sha256").update(credentials.signingSecret ?? "").digest("hex")
-          && Boolean(observedSlackUrl && slackCallbackMatchesPublicUrl(observedSlackUrl, `${getWebhookPublicBaseUrl()}/api/chat-webhooks/${endpoint.publicId}/slack`));
+        const preserveSlackVerification = preservesProvisionedSlackVerification(current.setup, credentials.signingSecret ?? "", `${getWebhookPublicBaseUrl()}/api/chat-webhooks/${endpoint.publicId}/slack`);
         await notifyChatEndpointWork(tx, endpoint.connectionId);
         await tx
           .update(chatEndpoints)
@@ -867,6 +884,7 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
     } catch (error) {
       const failure = redactError(error);
       await invalidateRuntime(endpoint.id).catch(() => undefined);
+      await managementContext?.reauthorize();
       await db.transaction(async (tx) => {
         await credentialLease.assertOwned(tx);
         await notifyChatEndpointWork(tx, endpoint.connectionId);
@@ -895,12 +913,12 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
       throw unprocessable(failure, { code: "chat_provider_setup_failed" });
     }
 
-    await db.transaction(async (tx) => {
+    await managementContext?.reauthorize();
+      await db.transaction(async (tx) => {
       await credentialLease.assertOwned(tx);
       await logActivity(tx as unknown as Db, {
         companyId: endpoint.companyId,
-        actorType: "user",
-        actorId: actorUserId ?? "board",
+        ...(managementContext?.audit ?? { actorType: "user" as const, actorId: actorUserId ?? "board" }),
         action:
           input.action === "reconnect"
             ? "chat_endpoint.reconnected"
