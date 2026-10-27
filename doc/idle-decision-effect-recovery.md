@@ -104,3 +104,32 @@ text for cursor comparisons, leaving business grace deadlines unchanged. The
 invalid claim remains durable debt and is revisited after paging wraps; the valid
 claim progresses without repeating its completed effect.
 All 18 effect-recovery lifecycle cases and server typechecking pass after repair.
+
+### Foreground join test timing
+
+CI exposed a timing assumption in the foreground/recovery overlap test: it
+expected exactly two lifetime recovery sweeps. A controlled PostgreSQL replay
+waited for the committed claim's deadline discovery before advancing time. It
+recorded two completed, zero-resumption scans before the deadline (startup and
+claim notification), followed by the legitimate deadline scan. The old assertion
+then failed deterministically with three calls. No recurring idle poll or duplicate
+effect was found in that sequence.
+
+The test now waits for discovery, measures the deadline recovery relative to that
+point, and proves that its promise stays pending while foreground execution holds
+the effect lock. Advancing through several retry periods cannot start another
+sweep or effect. After release, recovery completes, one comment and one continuation
+wake exist, and the worker performs no SQL through the existing hour-long quiet
+check. Counting actual lock attempts also distinguishes joining from a second
+execution blocked on the same PostgreSQL advisory lock. A temporary mutation that
+removed flight joining made this stronger assertion fail; production code was
+restored before final verification. No runtime code, retry policy, timeout, or
+business deadline changed.
+
+All 123 tests across the four complete effect-recovery, decision-service, expiry,
+and startup suites passed, followed by server typechecking. Evidence:
+`/tmp/sleep-effect-join-red.log`, `/tmp/sleep-effect-join-green.log`,
+`/tmp/sleep-effect-join-mutation.log`, `/tmp/sleep-effect-join-owning-tests.log`,
+and `/tmp/sleep-effect-join-root-types.log` with their status files. The initial
+failure and mutation failure are expected evidence, not passing runs. Remaining
+review findings and fresh stack CI remain separate acceptance requirements.
