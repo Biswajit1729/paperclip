@@ -10,7 +10,7 @@ import { promisify } from "node:util";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { and, asc, desc, eq, gt, inArray, lte, or, isNull, sql } from "drizzle-orm";
-import { agents, heartbeatRuns, agentInstructionWorkingCopies as copies, type Db } from "@paperclipai/db";
+import { agents, heartbeatRuns, agentInstructionWorkingCopies as copies, databaseWorkScopeKey, type Db } from "@paperclipai/db";
 import {
   prepareAdapterExecutionTargetRuntime,
   runAdapterExecutionTargetShellCommand,
@@ -37,6 +37,23 @@ const MAX_COLLECTION_ATTEMPTS = 3;
 // supply one. These handles are optional: durable captured bytes survive restart.
 const liveTargets = new Map<string, AdapterExecutionTarget>();
 const targetKey = (companyId: string, runId: string) => `${companyId}:${runId}`;
+const copySaves = new WeakMap<object, Map<string, Promise<void>>>();
+
+function serializeCopySave<T>(db: Db, companyId: string, runId: string, save: () => Promise<T>): Promise<T> {
+  const scope = databaseWorkScopeKey(db);
+  let active = copySaves.get(scope);
+  if (!active) copySaves.set(scope, active = new Map());
+  const key = targetKey(companyId, runId);
+  // Share ownership across services and dedicated pools. A live operation
+  // retains it until completion; elapsed time cannot authorize a second save.
+  const operation = (active.get(key) ?? Promise.resolve()).then(save);
+  const settled = operation.then(() => undefined, () => undefined);
+  active.set(key, settled);
+  return operation.finally(() => {
+    if (active.get(key) === settled) active.delete(key);
+  });
+}
+
 
 /** Finish only bounded immediate collection work; deferred ownership remains pending. */
 export async function collectStoppedInstructionCopyWithRetries<T extends Pick<Copy, "state" | "attempts" | "nextAttemptAt">>(collect: () => Promise<T | null>): Promise<T | null> {
@@ -295,7 +312,10 @@ export function agentInstructionWorkingCopyService(db: Db, options: { environmen
   }
 
   /** Caller must have joined the owned provider process before granting this proof. */
-  async function collectStopped(input: { companyId: string; runId: string; target?: AdapterExecutionTarget | null }) {
+  function collectStopped(input: { companyId: string; runId: string; target?: AdapterExecutionTarget | null }): Promise<Copy | null> {
+    return serializeCopySave(db, input.companyId, input.runId, () => collectStoppedOnce(input));
+  }
+  async function collectStoppedOnce(input: Parameters<typeof collectStopped>[0]) {
     let row = await get(input.companyId, input.runId);
     if (!row) return row;
     if (isAgentDirectoryCopy(row)) return directories.collectStopped(row, input.target);
@@ -470,7 +490,10 @@ export function agentInstructionWorkingCopyService(db: Db, options: { environmen
     }
     throw new Error("Instruction commit reconstruction stopped");
   }
-  async function recoverCommit(entry: CommitEntry, admitted: () => boolean) {
+  function recoverCommit(entry: CommitEntry, admitted: () => boolean): Promise<CommitEntry | null> {
+    return serializeCopySave(db, entry.companyId, entry.id, () => recoverCommitOnce(entry, admitted));
+  }
+  async function recoverCommitOnce(entry: CommitEntry, admitted: () => boolean) {
     const row = await get(entry.companyId, entry.id);
     const current = commitEntry(row);
     if (!row || !current || current.dueAt > Date.now()) return current;
