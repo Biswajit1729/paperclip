@@ -118,3 +118,24 @@ The settlement helper now lets real SQL settle and advances only to an actually
 armed follow-up within the coalescing window. All 12 credential expiry tests pass
 on the owning gateway branch with the existing exact-deadline and transaction
 assertions intact. This follow-up changes the test fixture only.
+
+
+## One-shot cleanup preserves complete backlog removal
+
+Review found that bounding worker passes also truncated startup cleanup when the
+heartbeat scheduler was disabled. That path calls cleanup only once, so it could
+leave every expired token or session after the first 500 rows indefinitely.
+
+`cleanupExpiredSessions` now drains the existing backlog in 500-row SQL batches
+by default, using one fixed expiry cutoff for the invocation. The deadline worker
+opts into `singleBatch: true` and retains its existing coalescing and next-page
+deadline. Future and nonexpiring credentials survive both paths. The return value
+still counts deleted sessions, as before. No periodic fallback was added.
+
+Three real-PostgreSQL regressions reproduced the truncation with 1,001 expired
+sessions, tokens, or both, without registering a worker. They pass after the fix.
+All 55 expiry/startup cases pass, including the existing worker's 501-row bounded
+pass and commit/rollback tests. The original explicit-cleanup compatibility case
+and server typecheck also pass. Evidence is in `/tmp/sleep-master-gateway-manual-`
+logs: `red`, `green`, `compatibility`, and `types`. This fixes one-shot behavior;
+it does not establish provider suspension or complete the stack's CI acceptance.
