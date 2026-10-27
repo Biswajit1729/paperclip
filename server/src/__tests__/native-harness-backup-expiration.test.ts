@@ -1,8 +1,14 @@
+import { applyPendingMigrations } from "@paperclipai/db";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
+import { registerNativeRunnerEvidenceRetentionWork } from "../services/native-runtime/native-runner-evidence-retention-work.js";
+import { noteNativeRunnerEvidence } from "../services/native-runtime/native-runner-evidence-signal.js";
+import { idleWorkSnapshot } from "../services/task-admission.js";
 import { createHash, randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { promises as fs } from "node:fs";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import {
   agents,
@@ -20,7 +26,8 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { nativeHarnessBackupExpirationService } from "../services/native-runtime/native-harness-backup-expiration.ts";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_NATIVE_RETENTION_TEST_DATABASE_URL");
+const embeddedPostgresSupport = external ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
@@ -42,11 +49,17 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
   const now = new Date();
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-native-backup-expiration-");
-    db = createDb(tempDb.connectionString);
+    if (!external) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-native-backup-expiration-");
+    if (external) await applyPendingMigrations(external);
+    db = createDb(external ?? tempDb!.connectionString);
   }, 20_000);
 
+  let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
+  let worker: ReturnType<typeof registerNativeRunnerEvidenceRetentionWork> | undefined;
+  let admitted = true;
   afterEach(async () => {
+    worker?.unsubscribe(); await coordinator?.stop(); coordinator = undefined; worker = undefined; admitted = true;
+    vi.useRealTimers(); vi.restoreAllMocks();
     await db.delete(agentTaskSessions);
     await db.delete(nativeRunFinalizations);
     await db.delete(environmentLeases);
@@ -59,6 +72,7 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
   });
 
@@ -341,6 +355,105 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
     if (!stateBase) stateBase = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-durable-sessions-"));
     return createHash("sha256").update(randomUUID()).digest("hex");
   }
+
+  async function startEvidence(options: Parameters<typeof nativeHarnessBackupExpirationService>[1] = {}) {
+    if (!vi.isFakeTimers()) {
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      vi.setSystemTime(now);
+    }
+    coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => admitted, canReconcile: () => true,
+      onError: error => { throw error; } });
+    worker = registerNativeRunnerEvidenceRetentionWork(coordinator, db, { stateBase, isSessionBusy: () => false, ...options }, () => admitted);
+    await worker.ready;
+  }
+  async function settled(deadline: number | null = null) {
+    await vi.waitFor(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(idleWorkSnapshot().active).toBe(0); expect(coordinator!.nextWakeAt()).toBe(deadline);
+    }, { timeout: 5000 });
+  }
+  async function quiet(ms = 3 * 60 * 60_000) {
+    const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction"), directories = vi.spyOn(fs, "readdir");
+    await vi.advanceTimersByTimeAsync(ms);
+    expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled(); expect(directories).not.toHaveBeenCalled();
+    reads.mockRestore(); writes.mockRestore(); directories.mockRestore();
+  }
+
+  it("leaves empty evidence and retained backups quiet without invoking backup SQL", async () => {
+    const session = await seedSession();
+    const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction");
+    await startEvidence(); await settled(); expect(await exists(session.current)).toBe(true);
+    expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
+    reads.mockRestore(); writes.mockRestore(); await quiet();
+  });
+
+  it("reconstructs and replaces the saved evidence deadline after a publication signal", async () => {
+    const session = await seedSession({ issueStatus: "in_progress" });
+    const first = await seedArchive(session.root, { stampedDaysAgo: 2 });
+    const firstDeadline = now.getTime() + 5 * DAY_MS + 1;
+    await startEvidence(); await settled(firstDeadline); await quiet();
+    const writtenAt = Date.now();
+    const next = await seedArchive(session.root, { name: `${writtenAt}-${randomUUID()}` });
+    noteNativeRunnerEvidence(writtenAt);
+    await settled(firstDeadline);
+    await vi.advanceTimersByTimeAsync(firstDeadline - Date.now());
+    await settled(writtenAt + 7 * DAY_MS + 1); expect(await exists(first)).toBe(false);
+    await vi.advanceTimersByTimeAsync(writtenAt + 7 * DAY_MS + 1 - Date.now()); await settled();
+    expect(await exists(next)).toBe(false); expect(await exists(session.current)).toBe(true); await quiet();
+  });
+
+  it.each(["session root", "archive directory"])("preserves an evidence inspection failure at %s until its concrete retry succeeds", async location => {
+    const session = await seedSession({ issueStatus: "in_progress" });
+    const archive = await seedArchive(session.root);
+    const original = fs.lstat;
+    const denied = vi.spyOn(fs, "lstat").mockImplementation(async (...args) => {
+      if (String(args[0]) === (location === "session root" ? session.root : path.join(session.root, "continuity-breaks"))) throw Object.assign(new Error("unavailable"), { code: "EACCES" });
+      return original(...args);
+    });
+    await startEvidence(); expect(coordinator!.nextWakeAt()).not.toBeNull();
+    const retryAt = coordinator!.nextWakeAt()!; expect(await exists(archive)).toBe(true);
+    denied.mockRestore(); await quiet(5000);
+    await vi.advanceTimersByTimeAsync(retryAt - Date.now()); await settled();
+    expect(await exists(archive)).toBe(false); await quiet();
+  });
+
+  it("retries a busy evidence obligation and disarms after the session releases it", async () => {
+    const session = await seedSession({ issueStatus: "in_progress" });
+    const archive = await seedArchive(session.root); let busy = true;
+    await startEvidence({ isSessionBusy: () => busy });
+    const retryAt = coordinator!.nextWakeAt()!; expect(retryAt).toBeGreaterThan(Date.now());
+    await quiet(5000); busy = false;
+    await vi.advanceTimersByTimeAsync(retryAt - Date.now()); await settled();
+    expect(await exists(archive)).toBe(false); await quiet();
+  });
+
+  it("retains the first publication during drain and cleans up on resume", async () => {
+    const session = await seedSession({ issueStatus: "in_progress" });
+    await startEvidence(); await settled(); admitted = false;
+    const archive = await seedArchive(session.root);
+    noteNativeRunnerEvidence(now.getTime() - 10 * DAY_MS);
+    await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(1000); expect(idleWorkSnapshot().active).toBe(0); });
+    await quiet(60_000); expect(await exists(archive)).toBe(true);
+    admitted = true; await settled(); expect(await exists(archive)).toBe(false); await quiet();
+  });
+
+  it("reconstructs the same retained deadline after restart", async () => {
+    const scope = await emptyStateBase(); await seedQuarantine(scope, { stampedDaysAgo: 6 });
+    const deadline = now.getTime() + DAY_MS + 1;
+    await startEvidence(); await settled(deadline);
+    worker!.unsubscribe(); await coordinator!.stop();
+    await startEvidence(); await settled(deadline); await quiet(60_000);
+    expect(coordinator!.nextWakeAt()).toBe(deadline);
+  });
+
+  it("uses bounded continuations without recounting an evidence session forever", async () => {
+    const session = await seedSession({ issueStatus: "in_progress" });
+    const archives = [await seedArchive(session.root), await seedArchive(session.root)];
+    const quarantine = await seedQuarantine(session.scope);
+    await startEvidence({ maxEntries: 1 }); await settled();
+    for (const archive of [...archives, quarantine]) expect(await exists(archive)).toBe(false);
+    await quiet();
+  });
 
   it("removes continuity archives older than the retention window and keeps recent ones", async () => {
     const session = await seedSession({ issueStatus: "in_progress" });

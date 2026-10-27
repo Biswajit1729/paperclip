@@ -1,0 +1,91 @@
+# Runner evidence retention scheduling
+
+Slice 65, parent slice 64 (#17923) at
+`d2ccbcdfc9118b8841299da65e94e487807e73ab` before its review repair.
+This slice owns archived runner evidence. Native-harness backup expiration is a
+separate remaining duty, although the old implementation inspects both in one loop.
+The default branch was observed at `50b932a142216331b8d476042b454bc123739c40`.
+The stack's pinned integration baseline remains `8548173fc9efdc0fa07644fb92dcc0b6851a95e5`;
+the later default-branch changes require final stack integration and verification.
+
+## Obligation and existing persistence
+
+Continuity-break archives and identity quarantine directories preserve evidence
+from a retired native session. Their names contain the creation timestamp. The
+existing retention service falls back to mtime for a timestamp in the future,
+preserves cleanup-source quarantine archives, refuses symlinks, checks session
+activity twice before removal, and moves eligible evidence to a unique expired
+name before recursive removal. Interrupted expired directories are recovered.
+
+These filesystem facts already persist the retention obligation. There is no
+reason to add a database table. No database work is needed for evidence inspection.
+The existing hourly tick still invokes the backup-expiration path, whose eligibility
+also depends on issues, runs, finalizations, and leases. Moving those two duties
+independently keeps each PR's trigger and correctness claim reviewable.
+
+## Triggers and module ownership
+
+- Startup reconstructs evidence once using the existing bounded session/archive/
+  quarantine continuation state.
+- `quarantineRunnerdStateRoot` publishes `noteNativeRunnerEvidence` after the
+  quarantine rename. `archiveContinuityState` publishes the same signal when it
+  creates the continuity archive, before it moves the retired state. The saved
+  retention deadline is days later; the signal does not authorize immediate
+  deletion or claim that the archive's write is complete.
+- A publication adds its timestamp to the existing earliest evidence deadline and
+  wakes the registered worker. Earlier deadlines continue to win. The next due
+  inspection reconstructs all retained evidence, including multiple writes.
+- A recent item contributes its saved creation time plus the configured retention
+  window and one millisecond, because the existing protection comparison is
+  inclusive at the window boundary.
+- Busy sessions, incomplete scans, and failed inspection/removal retain actual
+  recovery obligations. Bounded continuations run after one second. Concrete
+  failed or busy evidence retries use the shared 30-second retry behavior.
+- Empty evidence, ignored cleanup-source archives, and fully processed history
+  leave no evidence deadline or recurring filesystem/SQL calls.
+
+The existing retention owner exposes `nextEvidenceAt()` and a per-instance duty
+selection. Legacy callers that omit the selection keep combined behavior. Startup
+selects `backups` for the existing backup timer and registers an `evidence` instance
+with the delivery coordinator. The shared scheduler/coordinator owns overlap,
+admission, drain, retries, deadlines, and shutdown. No feature logic moves into
+`index.ts`. The worker's first promise stays tracked without delaying readiness;
+shutdown unsubscribes the local signal before stopping/joining delivery work.
+
+The backup interval remains deliberately visible for the next independent slice.
+This PR removes evidence from that interval; it does not claim that the instance
+as a whole is idle while backup and other recurring duties remain.
+
+Supported publication is the existing server-owned session executor in one
+process. Unrelated filesystem writers need an explicit signal/ingress contract.
+Startup reconstructs restart state; it is not cross-process live notification.
+Cloud sleep gates and external alarm coverage are unchanged. Expiration can wait
+for a supported host wake when compute is stopped.
+
+## Failure record and local evidence
+
+Two regressions failed before repair: the saved deadline was one millisecond
+before the first removable instant, and an EACCES reading an archive directory
+was treated as an empty directory and disarmed retention. Missing paths remain
+quiet; other inspection failures now retain recovery.
+
+A further controlled EACCES at the session root reproduced a lost cursor: retry
+continued after the failed scope and left its evidence behind. The owner now
+records that concrete failed inspection for a new full evidence pass. Healthy
+scopes continue, and the failed scope is revisited after the bounded retry.
+
+An intermediate full run exposed a compatibility regression in the existing
+manual dry-run notification case. The publication timestamp's original due
+semantics were restored; the inclusive boundary adjustment applies to the
+observed recent item's next inspection. The old test and deletion protections
+were preserved rather than weakened.
+
+Final local acceptance: 158 cases pass across native-harness/evidence retention,
+retention configuration, and startup. The retention suite uses a guarded isolated
+PostgreSQL database; all selected cases execute. Tests measure quiet filesystem
+and SQL behavior, saved deadlines, local publication, restart, busy/failure retry,
+first work during drain, one-entry continuation, absence of backup SQL in the
+evidence worker, disabled registration, and tracked startup after HTTP readiness.
+Existing backup, manifest, lease, issue, dry-run, symlink, and cleanup-archive
+cases still pass. Server TypeScript checking and the full server build also pass.
+Remote review/CI and whole-stack acceptance remain pending.
