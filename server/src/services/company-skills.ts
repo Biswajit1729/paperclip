@@ -3229,7 +3229,10 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
 
       await removeRuntimeSkillCache(resolveManagedSkillsRoot(companyId), skill.id, async () => {
         await fs.rm(resolveRuntimeSkillMaterializedPath(companyId, skill), { recursive: true, force: true });
-        await db.delete(companySkills).where(eq(companySkills.id, skill.id));
+        await db.transaction(async tx => {
+          await notifySkillVersionRetention(tx, companyId);
+          await tx.delete(companySkills).where(eq(companySkills.id, skill.id));
+        });
       });
     }
   }

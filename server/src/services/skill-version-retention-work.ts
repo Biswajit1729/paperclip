@@ -8,7 +8,7 @@ import { onSkillVersionCacheChange } from "./skill-version-retention-notificatio
 import type { skillVersionRetentionService, SkillVersionPruneResult } from "./skill-version-retention.js";
 
 type RetentionService = ReturnType<typeof skillVersionRetentionService>;
-type ActiveCompany = { id: string; cursor: SkillVersionPruneResult["cursor"]; nextRunAt: number | null };
+type ActiveCompany = { id: string; cursor: SkillVersionPruneResult["cursor"]; nextRunAt: number | null; uncertain: boolean; observed: boolean };
 
 export function registerSkillVersionRetentionWork(
   coordinator: ReturnType<typeof createDeliveryWorkCoordinator>,
@@ -19,9 +19,12 @@ export function registerSkillVersionRetentionWork(
   const dirty = new Set<string>();
   const deadlines = new Map<string, number>();
   const failures = new Map<string, number>();
+  const freshScanAfter = new Map<string, number>();
   let discovery: { after?: string; retryAt: number } | null = { retryAt: 0 };
   let active: ActiveCompany | null = null;
   let continuationAt = 0;
+  const readyAt = (id: string) => Math.max(failures.get(id) ?? 0,
+    (deadlines.get(id) ?? Infinity) <= Date.now() ? 0 : freshScanAfter.get(id) ?? 0);
   const changed = (hints?: ReadonlySet<string>) => {
     for (const hint of hints ?? ["*"]) {
       if (hint === "*") discovery = { retryAt: 0 };
@@ -35,7 +38,8 @@ export function registerSkillVersionRetentionWork(
     onSettled: changed,
     run: async signal => {
       const admitted = () => !signal.aborted && canRun();
-      for (const [id, at] of deadlines) if (at <= Date.now()) { deadlines.delete(id); dirty.add(id); }
+      for (const [id, at] of freshScanAfter) if (at <= Date.now()) freshScanAfter.delete(id);
+      for (const [id, at] of deadlines) if (at <= Date.now()) dirty.add(id);
       let inspected = 0;
       let companies = 0;
       const scope = discovery;
@@ -51,10 +55,10 @@ export function registerSkillVersionRetentionWork(
       }
       while (companies < 50 && inspected < 50 && admitted()) {
         if (!active) {
-          const id = [...dirty].find(id => (failures.get(id) ?? 0) <= Date.now());
+          const id = [...dirty].find(id => readyAt(id) <= Date.now());
           if (!id) break;
           dirty.delete(id);
-          active = { id, cursor: null, nextRunAt: null };
+          active = { id, cursor: null, nextRunAt: null, uncertain: false, observed: false };
           deadlines.delete(id);
         }
         const company = active;
@@ -65,6 +69,9 @@ export function registerSkillVersionRetentionWork(
           if (result.checked > 0 || result.failed > 0 || Object.keys(result.skipped).length > 0) {
             logger.info({ ...result, companyId: company.id, dryRun: service.dryRun }, "skill version snapshot retention");
           }
+          company.observed ||= result.candidates > 0 || result.kept > 0 || result.skippedRecent > 0 || Object.keys(result.skipped).length > 0;
+          company.uncertain ||= result.failed > 0 || ["cache_busy", "scan_busy", "unknown_run_pins", "unavailable_pins", "unsafe_or_unavailable", "cache_changed"]
+            .some(reason => result.skipped[reason] > 0);
           inspected += result.checked;
           companies++;
           if (result.nextRunAt !== null) company.nextRunAt = Math.min(company.nextRunAt ?? Infinity, result.nextRunAt);
@@ -77,6 +84,7 @@ export function registerSkillVersionRetentionWork(
             return;
           }
           if (result.truncated) break;
+          if (company.observed && !company.uncertain) freshScanAfter.set(company.id, Date.now() + 30_000);
           if (company.nextRunAt !== null) deadlines.set(company.id, company.nextRunAt);
           active = null;
         } catch (err) {
@@ -94,7 +102,7 @@ export function registerSkillVersionRetentionWork(
       const take = (at: number) => { next = Math.min(next ?? Infinity, at); };
       if (discovery) take(Math.max(continuationAt, discovery.retryAt));
       if (active) take(continuationAt);
-      for (const id of dirty) take(Math.max(continuationAt, failures.get(id) ?? 0));
+      for (const id of dirty) take(Math.max(continuationAt, readyAt(id)));
       for (const at of deadlines.values()) take(at);
       return next;
     },
@@ -104,5 +112,5 @@ export function registerSkillVersionRetentionWork(
     dirty.add(companyId);
     worker.wake();
   });
-  return { ...worker, unsubscribe, dispose: () => service.dispose() };
+  return { ...worker, unsubscribe, dispose: () => { unsubscribe(); return service.dispose(); } };
 }

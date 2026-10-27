@@ -12,7 +12,7 @@ import { notifyNativeEnvironmentSettlement } from "../services/native-environmen
 import { idleWorkSnapshot } from "../services/task-admission.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { applyPendingMigrations } from "@paperclipai/db";
-import { touchSkillVersionCache } from "../services/skill-version-cache.js";
+import { touchSkillVersionCache, lastUsedAt, skillVersionCachePaths } from "../services/skill-version-cache.js";
 import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
@@ -443,6 +443,46 @@ describeEmbeddedPostgres("skill version snapshot retention", () => {
       candidates: 1, candidateBytes: expect.any(Number), dryRun: true }), "skill version snapshot retention"]]));
     const report = reported.mock.calls.find(([value]) => value && typeof value === "object" && "candidateBytes" in value)![0] as { candidateBytes: number };
     expect(report.candidateBytes).toBeGreaterThan(0); expect(await exists(directory)).toBe(true); await quiet();
+  });
+
+  it("wakes the missing-local-source reconciliation deletion path", async () => {
+    const companyId = await createCompany();
+    const { skillId, versionIds } = await createSkill(companyId, 1);
+    const source = path.join(paperclipHome!, "local-source");
+    await fs.mkdir(source, { recursive: true }); await fs.writeFile(path.join(source, "SKILL.md"), "# Local source");
+    await db.update(companySkills).set({ sourceType: "local_path", sourceLocator: source }).where(eq(companySkills.id, skillId));
+    const service = companySkillService(db); await service.list(companyId);
+    const directory = await writeSnapshot(companyId, skillId, versionIds[0]!);
+    await startRetention(); await settled(); await quiet();
+    await fs.rm(source, { recursive: true, force: true }); await service.list(companyId);
+    expect(await db.select().from(companySkills).where(eq(companySkills.id, skillId))).toEqual([]);
+    await settled(); expect(await exists(directory)).toBe(false); await quiet();
+  });
+
+  it("coalesces repeated run settlement into one fresh company scan per thirty seconds", async () => {
+    const companyId = await createCompany();
+    const { skillId, versionIds } = await createSkill(companyId, 1);
+    await writeSnapshot(companyId, skillId, versionIds[0]!);
+    const service = skillVersionRetentionService(db), pruned = vi.spyOn(service, "pruneCompany");
+    await startRetention(20_000, service); await settled();
+    for (let index = 0; index < 10; index++) {
+      await db.transaction(tx => notifyInstructionCollection(tx, { companyId }));
+      await vi.advanceTimersByTimeAsync(1000);
+    }
+    await vi.waitFor(() => expect(idleWorkSnapshot().active).toBe(0));
+    expect(pruned).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(30_000); await settled(); expect(pruned).toHaveBeenCalledTimes(2); await quiet();
+  });
+
+  it("lets an actual five-second grace deadline preempt the fresh scan limit", async () => {
+    const companyId = await createCompany();
+    const { skillId, versionIds } = await createSkill(companyId, 2);
+    const directory = await writeSnapshot(companyId, skillId, versionIds[0]!, 0);
+    const deadline = (await lastUsedAt(skillVersionCachePaths(companyId, skillId, versionIds[0]!).access))! + 5000;
+    await startRetention(5000); await settled(deadline);
+    await db.transaction(tx => notifyInstructionCollection(tx, { companyId }));
+    await vi.advanceTimersByTimeAsync(deadline - Date.now()); await settled();
+    expect(await exists(directory)).toBe(false); await quiet();
   });
 
   it("waits for an admitted page before disposing its scan on shutdown", async () => {
