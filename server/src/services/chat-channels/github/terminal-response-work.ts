@@ -6,6 +6,7 @@ import { DELIVERY_QUEUES } from "../../delivery-work-notifications.js";
 import type { ChatResponseScope } from "../../chat-response-availability.js";
 import { registerScopedDeadlineWork } from "../../scoped-deadline-work.js";
 import { githubResponseExecution } from "./response-execution.js";
+import { HttpError } from "../../../errors.js";
 
 type Scope = ChatResponseScope & { endpointId?: string; repositoryId?: string; number?: number };
 type Entry = { id: string; companyId: string; endpointId: string; deliveryId: string;
@@ -56,13 +57,21 @@ export function registerGitHubTerminalResponseWork(
       )).orderBy(asc(chatActions.id)).limit(100);
   }
   async function entry(row: Awaited<ReturnType<typeof page>>[number]): Promise<Entry | null> {
-    const execution = await githubResponseExecution(db, { ...row, agentId: row.agentId!, deliveryId: row.deliveryId! });
-    if (execution.body === undefined || execution.reply === "unsettled" ||
-        (execution.paused && row.result?.pausedVersion === execution.version)) return null;
-    return { id: row.id, companyId: row.companyId, endpointId: row.endpointId, deliveryId: row.deliveryId!,
+    const pending: Entry = { id: row.id, companyId: row.companyId, endpointId: row.endpointId, deliveryId: row.deliveryId!,
       issueId: row.issueId, conversationId: row.conversationId, repositoryId: row.repositoryId,
       number: row.number ? Number(row.number) : null, dueAt: row.leaseExpiresAt ? Date.parse(row.leaseExpiresAt) : 0 };
+    try {
+      const execution = await githubResponseExecution(db, { ...row, agentId: row.agentId!, deliveryId: row.deliveryId! });
+      if (execution.body === undefined || execution.reply === "unsettled" ||
+          (execution.paused && row.result?.pausedVersion === execution.version)) return null;
+    } catch (error) {
+      if (!(error instanceof HttpError) || error.status !== 403) throw error;
+      // Keep this request eligible for the acknowledgement owner's authority
+      // check and cancellation; it must not poison discovery for other requests.
+    }
+    return pending;
   }
+
   return registerScopedDeadlineWork(coordinator, {
     queue: DELIVERY_QUEUES.chatGitHubTerminalResponses,
     decodeScope: (hint: string): Scope | undefined => hint === "*" ? undefined : JSON.parse(hint),

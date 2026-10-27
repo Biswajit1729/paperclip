@@ -4019,10 +4019,11 @@ export function environmentRuntimeService(
     return driver;
   }
 
-  async function destroyScopedReusableSandboxLease(input: {
+  async function destroyClaimedSandboxLease(input: {
     environment: Environment;
     leaseRow: typeof environmentLeases.$inferSelect;
     scopeCondition?: ReturnType<typeof and>;
+    runId?: string;
     failureReason: string;
   }): Promise<EnvironmentLease | null> {
     if (await nativeWorkspaceExportPendingForLease(db, input.leaseRow)) return null;
@@ -4047,11 +4048,14 @@ export function environmentRuntimeService(
       eq(environmentLeases.id, input.leaseRow.id),
       eq(environmentLeases.companyId, input.leaseRow.companyId),
       eq(environmentLeases.environmentId, input.environment.id),
-      eq(environmentLeases.leasePolicy, "reuse_by_environment"),
+      input.runId ? eq(environmentLeases.heartbeatRunId, input.runId)
+        : eq(environmentLeases.leasePolicy, "reuse_by_environment"),
       eq(environmentLeases.status, input.leaseRow.status),
       input.scopeCondition,
       sql`coalesce(${environmentLeases.metadata}->>'pendingCleanupInFlight', 'false') != 'true'`,
-      sql`NOT EXISTS (
+      // Scope closures must leave live holders alone. A run's own explicit
+      // release keeps its existing authority, fenced to that exact run binding.
+      input.runId ? undefined : sql`NOT EXISTS (
         SELECT 1 FROM ${heartbeatRuns}
         WHERE ${heartbeatRuns.id} = ${environmentLeases.heartbeatRunId}
           AND ${heartbeatRuns.status} IN ('queued', 'scheduled_retry', 'running')
@@ -4078,12 +4082,14 @@ export function environmentRuntimeService(
     try {
       const driver = getDriver(getLeaseDriverKey(lease, input.environment));
       if (!driver?.destroyRunLease) return lease;
-      return await driver.destroyRunLease({
+      const released = await driver.destroyRunLease({
         environment: input.environment,
         lease,
         failureReason: input.failureReason,
-      }) ?? lease;
-    } catch {
+      });
+      return released ?? (input.runId ? null : lease);
+    } catch (error) {
+      if (input.runId) throw error;
       // Even a failed settlement write leaves the durable provider handle for
       // the sweep. Continue with later leases without logging provider errors.
       return lease;
@@ -4239,7 +4245,7 @@ export function environmentRuntimeService(
           let preparedStopAttemptId: unknown;
           if (hasNativeWorkspaceExportResume(leaseSnapshot) && providerResourceDisposition === "destroy") {
             const completed = await releaseCompletedNativeWorkspaceExportRetention(db, leaseSnapshot);
-            if (completed) leaseSnapshot = toEnvironmentLeaseSnapshot(completed);
+            if (completed) { leaseRow = completed; leaseSnapshot = toEnvironmentLeaseSnapshot(completed); }
           }
           if (providerResourceDisposition === "stop_and_retain" && !hasStopOnlyCleanup(leaseSnapshot)
             && getLeaseDriverKey(leaseSnapshot, environment) === "sandbox") {
@@ -4339,9 +4345,10 @@ export function environmentRuntimeService(
             );
           }
           const lease = providerResourceDisposition === "destroy" && driver?.destroyRunLease
-            ? await driver.destroyRunLease({
-                environment,
-                lease: leaseSnapshot,
+            ? await destroyClaimedSandboxLease({
+                environment, leaseRow, runId: heartbeatRunId,
+                scopeCondition: and(pendingRunLeaseReleaseCondition(true),
+                  releaseOptions?.respectCleanupDeadlines ? dueRunLeaseReleaseCondition() : undefined),
                 failureReason: "paperclip_runner_destroy_after_turn",
               })
             : driver
@@ -4502,7 +4509,7 @@ export function environmentRuntimeService(
           ? await environmentsSvc.getById(leaseRow.environmentId)
           : null;
         if (!environment) continue;
-        const lease = await destroyScopedReusableSandboxLease({
+        const lease = await destroyClaimedSandboxLease({
           environment,
           leaseRow,
           scopeCondition: and(...scopeConditions),
@@ -4583,7 +4590,7 @@ export function environmentRuntimeService(
           skippedLiveRun += 1;
           continue;
         }
-        const lease = await destroyScopedReusableSandboxLease({ environment, leaseRow, failureReason });
+        const lease = await destroyClaimedSandboxLease({ environment, leaseRow, failureReason });
         if (!lease) {
           // Lost to a racing resume or a concurrent terminal transition — the
           // lease is no longer ours to destroy.
