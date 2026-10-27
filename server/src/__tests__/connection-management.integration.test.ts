@@ -234,7 +234,7 @@ describe("connection management with production default agents", () => {
     expect(bindings.map(binding => binding.targetId)).toEqual([f.agentId]);
   });
 
-  it.each(["none", "other-agent", "other-agent-no-access", "other-agent-allow-policy", "other-agent-explicit-grant", "other-agent-caller-ask", "other-agent-caller-rate", "other-agent-shared-rate", "other-agent-credential", "other-agent-credential-none", "other-agent-caller-revoked", "private-status", "agent", "user", "cancelled", "project-block", "rate-limit", "agent-rate-approval", "authorized-policy-edit"] as const)("keeps delegated test policy and approval continuation bounded (%s)", async revocation => {
+  it.each(["none", "other-agent", "other-agent-no-access", "other-agent-allow-policy", "other-agent-explicit-grant", "other-agent-caller-ask", "other-agent-new-rate", "other-agent-new-shared-rate", "other-agent-new-rate-target-block", "other-agent-caller-rate", "other-agent-shared-rate", "other-agent-credential", "other-agent-credential-none", "other-agent-caller-revoked", "private-status", "agent", "user", "cancelled", "project-block", "rate-limit", "agent-rate-approval", "authorized-policy-edit"] as const)("keeps delegated test policy and approval continuation bounded (%s)", async revocation => {
     const f = await fixture();
     let targetAgentId = f.agentId;
     if (revocation.startsWith("other-agent")) {
@@ -247,7 +247,7 @@ describe("connection management with production default agents", () => {
       await lifecycle.process(targetAgentId);
       await vi.waitFor(async () => expect((await agentService(server.db).getById(targetAgentId))?.status).toBe("idle"));
     }
-    const allowed = revocation === "none" || revocation === "other-agent" || revocation === "other-agent-caller-ask";
+    const allowed = revocation === "none" || revocation === "other-agent" || revocation === "other-agent-caller-ask" || ["other-agent-new-rate", "other-agent-new-shared-rate"].includes(revocation);
     let calls = 0;
     const remote = createServer(async (req, res) => {
       const chunks: Buffer[] = [];
@@ -264,7 +264,7 @@ describe("connection management with production default agents", () => {
     const address = remote.address();
     if (!address || typeof address === "string") throw new Error("Fixture did not listen");
     const mcpUrl = `http://127.0.0.1:${address.port}/mcp`;
-    const freezeRateClock = ["other-agent-caller-rate", "other-agent-shared-rate", "rate-limit", "agent-rate-approval"].includes(revocation);
+    const freezeRateClock = revocation.startsWith("other-agent-new-") || ["other-agent-caller-rate", "other-agent-shared-rate", "rate-limit", "agent-rate-approval"].includes(revocation);
     if (freezeRateClock) vi.useFakeTimers({ toFake: ["Date"] });
     try {
       const created = await f.request("POST", `/companies/${f.companyId}/tools/connections`, { name: "Governed test", transport: "mcp_remote", authKind: "none", transportConfig: { url: mcpUrl } });
@@ -381,6 +381,16 @@ describe("connection management with production default agents", () => {
       if (revocation === "cancelled") await server.db.update(issues).set({ status: "cancelled" }).where(eq(issues.id, f.issueId));
       if (revocation === "other-agent-caller-revoked") await server.db.insert(toolPolicies).values({ companyId: f.companyId, name: "Caller access revoked", policyType: "block", selectors: { connectionId: created.body.id, agentId: f.agentId }, priority: 0 });
       if (revocation === "project-block") await server.db.insert(toolPolicies).values({ companyId: f.companyId, name: "New project block", policyType: "block", selectors: { connectionId: created.body.id, projectId: f.projectId }, priority: 0 });
+      if (revocation.startsWith("other-agent-new-")) {
+        await server.db.insert(toolPolicies).values({ companyId: f.companyId, name: "New delegated test admission", policyType: "rate_limit",
+          selectors: { connectionId: created.body.id, ...(revocation === "other-agent-new-shared-rate" ? {} : { agentId: f.agentId }) },
+          priority: -2, config: { limit: 1, windowSeconds: 60, keyBy: revocation === "other-agent-new-shared-rate" ? ["company", "tool"] : ["agent", "tool"] } });
+        if (revocation === "other-agent-new-rate") await server.db.insert(toolPolicies).values({ companyId: f.companyId, name: "New test target admission", policyType: "rate_limit",
+          selectors: { connectionId: created.body.id, agentId: targetAgentId }, priority: -2,
+          config: { limit: 1, windowSeconds: 60, keyBy: ["agent", "tool"] } });
+        if (revocation === "other-agent-new-rate-target-block") await server.db.insert(toolPolicies).values({ companyId: f.companyId, name: "New test target block", policyType: "block",
+          selectors: { connectionId: created.body.id, agentId: targetAgentId }, priority: -1 });
+      }
       const cookie = await server.humanSession(f.userId);
       const approve = () => fetch(server.apiUrl + "/api" + approvalPath, { method: "POST", headers: { cookie, origin: server.apiUrl, "Content-Type": "application/json" }, body: JSON.stringify({ companyId: f.companyId }) });
       const response = await approve();
@@ -390,6 +400,20 @@ describe("connection management with production default agents", () => {
       else expect(settled, JSON.stringify(settled)).toMatchObject({ status: allowed ? "succeeded" : "failed" });
       expect(calls).toBe(allowed ? 1 : 0);
       if (allowed) { expect((await approve()).status).toBe(200); expect(calls).toBe(1); }
+      if (revocation.startsWith("other-agent-new-")) {
+        const counters = await server.db.select().from(toolRateLimitCounters).where(eq(toolRateLimitCounters.companyId, f.companyId));
+        expect(counters).toHaveLength(allowed ? revocation === "other-agent-new-shared-rate" ? 1 : 2 : 0);
+        expect(counters.every(counter => counter.remaining === 0)).toBe(true);
+        if (allowed) {
+          expect(settled.policyExplanation?.consumedRateAdmissions).toHaveLength(1);
+          expect(settled.policyExplanation?.delegatedCallerConsumedRateAdmissions).toHaveLength(1);
+          const [nextRun] = await server.db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId,
+            status: "running", responsibleUserId: f.userId, contextSnapshot: { issueId: f.issueId } }).returning();
+          const nextJwt = createLocalAgentJwt(f.agentId, f.companyId, "paperclip_runner", nextRun.id, f.userId);
+          expect(await f.request("POST", path, body, nextJwt)).toMatchObject({ status: 200, body: { decision: "off", error: { reasonCode: "rate_limited" } } });
+          expect(calls).toBe(1);
+        }
+      }
     } finally { if (freezeRateClock) vi.useRealTimers(); remote.closeAllConnections(); await new Promise<void>((resolve, reject) => remote.close(error => error ? reject(error) : resolve())); }
   });
 
