@@ -11545,28 +11545,36 @@ export function createToolGatewayService(
       return row?.at == null ? null : new Date(row.at).getTime();
     },
 
-    async cleanupExpiredSessions(input: { now?: Date } = {}) {
+    async cleanupExpiredSessions(input: { now?: Date; singleBatch?: boolean } = {}) {
       const now = input.now ?? new Date();
-      const expiredTokens = await db.select({ id: toolMcpGatewayTokens.id })
-        .from(toolMcpGatewayTokens)
-        .where(lte(toolMcpGatewayTokens.expiresAt, now))
-        .orderBy(asc(toolMcpGatewayTokens.expiresAt), asc(toolMcpGatewayTokens.id))
-        .limit(500);
-      if (expiredTokens.length > 0) {
-        await db.delete(toolMcpGatewayTokens)
+      let deletedCount = 0;
+      while (true) {
+        const expiredTokens = await db.select({ id: toolMcpGatewayTokens.id })
+          .from(toolMcpGatewayTokens)
+          .where(lte(toolMcpGatewayTokens.expiresAt, now))
+          .orderBy(asc(toolMcpGatewayTokens.expiresAt), asc(toolMcpGatewayTokens.id))
+          .limit(500);
+        if (expiredTokens.length > 0) {
+          await db.delete(toolMcpGatewayTokens)
             .where(and(inArray(toolMcpGatewayTokens.id, expiredTokens.map((token) => token.id)), lte(toolMcpGatewayTokens.expiresAt, now)))
             .returning({ id: toolMcpGatewayTokens.id });
+        }
+        const expiredSessions = await db.select({ id: toolGatewaySessions.id })
+          .from(toolGatewaySessions)
+          .where(lte(toolGatewaySessions.expiresAt, now))
+          .orderBy(asc(toolGatewaySessions.expiresAt), asc(toolGatewaySessions.id))
+          .limit(500);
+        if (expiredSessions.length > 0) {
+          const rows = await db.delete(toolGatewaySessions)
+            .where(and(inArray(toolGatewaySessions.id, expiredSessions.map((session) => session.id)), lte(toolGatewaySessions.expiresAt, now)))
+            .returning({ id: toolGatewaySessions.id });
+          deletedCount += rows.length;
+        }
+        // The worker schedules the next page; one-shot startup/manual callers
+        // must finish the backlog without relying on another scheduled pass.
+        if (input.singleBatch || (expiredTokens.length < 500 && expiredSessions.length < 500)) break;
       }
-      const expiredSessions = await db.select({ id: toolGatewaySessions.id })
-        .from(toolGatewaySessions)
-        .where(lte(toolGatewaySessions.expiresAt, now))
-        .orderBy(asc(toolGatewaySessions.expiresAt), asc(toolGatewaySessions.id))
-        .limit(500);
-      if (expiredSessions.length === 0) return { deletedCount: 0 };
-      const rows = await db.delete(toolGatewaySessions)
-        .where(and(inArray(toolGatewaySessions.id, expiredSessions.map((session) => session.id)), lte(toolGatewaySessions.expiresAt, now)))
-        .returning({ id: toolGatewaySessions.id });
-      return { deletedCount: rows.length };
+      return { deletedCount };
     },
 
     async listRuntimeSlots(companyId?: string) {
