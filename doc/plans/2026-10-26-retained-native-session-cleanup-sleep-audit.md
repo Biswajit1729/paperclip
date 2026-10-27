@@ -518,3 +518,17 @@ same host load. This rerun does not erase the original full-suite failure or
 establish that its whole command passed. The original checkout remains unchanged
 while that command runs. Latest-head remote gates, complete suite disposition,
 and repaired-head review remain required before acceptance.
+
+
+## Master integration
+
+Master advanced the source-bound Copilot profile to v63 while this branch
+published a different v62 identity for retained maintenance settlement. The
+combined runtime preserves master's uncertain-process and controller-retirement
+behavior plus this worker's event-driven idle waiters. Its generated profile is
+v64. Master's v62/v63 fixtures stay byte-for-byte unchanged; the stack's former
+v62 is retained separately as `copilot-profile-v62-sleep-maintenance-historical-identity.json`.
+Tests verify their checksums and exact changed source fields, historical decoding,
+and refusal to launch any historical identity through current installation
+admission. TypeScript and Rust declarations are generated together. This is source
+identity validation, not a claim of live provider qualification.
