@@ -272,3 +272,15 @@ All 132 cases across the complete voice-session and inbound-cleanup suites pass
 on separate fresh databases, and server typechecking passes. Downstream
 integration and latest-head CI remain required. The separate company-deletion
 cleanup findings are not resolved by this correction.
+
+## Fairness-test clock follow-up (2026-10-27)
+
+CI's backlog test observed two provider failures where it expected one. A controlled
+30 ms provider delay reproduced the same failure: the assertion callback advanced
+fake time by one second on every retry, in addition to Vitest's ordinary clock
+advancement, reaching the failed provider's retry while the original backlog was
+still settling through PostgreSQL. Removing that extra clock jump makes the same
+controlled case pass. The five-second assertion budget and all product code remain
+unchanged. With the temporary provider delay removed, all 13 lifecycle tests pass.
+This repairs test clock ownership; it does not weaken provider retries or delivery
+fairness. Current-head CI remains required.
