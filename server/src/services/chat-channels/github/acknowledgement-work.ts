@@ -1,6 +1,8 @@
+import { readGitHubResponseRun } from "./response-run-state.js";
+import { githubRunReplyState } from "../../chat-run-publications.js";
 import { and, asc, eq, gt, isNotNull, or, sql } from "drizzle-orm";
 import { chatActions, chatConversations, chatEndpointLeases, chatEndpointResources,
-  chatPublications, fastResponseRequests, type Db } from "@paperclipai/db";
+  chatPublications, fastResponseRequests, chatEndpoints, chatMessageLinks, type Db } from "@paperclipai/db";
 import type { createDeliveryWorkCoordinator } from "../../delivery-work-coordinator.js";
 import { DELIVERY_QUEUES } from "../../delivery-work-notifications.js";
 import type { ChatResponseScope } from "../../chat-response-availability.js";
@@ -23,6 +25,10 @@ export function registerGitHubAcknowledgementWork(
   const selection = {
     id: chatActions.id, companyId: chatActions.companyId, endpointId: chatActions.endpointId,
     deliveryId: chatActions.deliveryId, conversationId: chatActions.conversationId, issueId: chatConversations.issueId,
+    agentId: chatEndpoints.assignedAgentId,
+    sourceMessageId: sql<string | null>`(select m.comment_id from ${chatMessageLinks} m
+      where m.company_id = ${chatActions.companyId} and m.endpoint_id = ${chatActions.endpointId}
+        and m.delivery_id = ${chatActions.deliveryId} and m.direction = 'inbound' limit 1)`,
     repositoryId, number, status: chatActions.status, result: chatActions.result,
     leaseExpiresAt: sql<string | null>`(select max(l.expires_at) from ${chatEndpointLeases} l
       where l.company_id = ${chatActions.companyId} and l.endpoint_id = ${chatActions.endpointId}
@@ -36,6 +42,7 @@ export function registerGitHubAcknowledgementWork(
   };
   async function page(scope?: Scope, cursor?: string, actionId?: string) {
     return db.select(selection).from(chatActions)
+      .innerJoin(chatEndpoints, and(eq(chatEndpoints.id, chatActions.endpointId), eq(chatEndpoints.companyId, chatActions.companyId)))
       .leftJoin(chatConversations, and(eq(chatConversations.id, chatActions.conversationId), eq(chatConversations.companyId, chatActions.companyId)))
       .leftJoin(chatEndpointResources, and(eq(chatEndpointResources.id, chatConversations.resourceId), eq(chatEndpointResources.companyId, chatActions.companyId)))
       .where(and(eq(chatActions.kind, "github_response_comment"), isNotNull(chatActions.deliveryId),
@@ -52,7 +59,16 @@ export function registerGitHubAcknowledgementWork(
         actionId ? eq(chatActions.id, actionId) : undefined,
       )).orderBy(asc(chatActions.id)).limit(100);
   }
-  function entry(row: Awaited<ReturnType<typeof page>>[number]): Entry | null {
+  async function entry(row: Awaited<ReturnType<typeof page>>[number]): Promise<Entry | null> {
+    const { latestRun, ownsLatestRequest } = await readGitHubResponseRun(db, {
+      companyId: row.companyId, endpointId: row.endpointId, agentId: row.agentId,
+      issueId: row.issueId, deliveryId: row.deliveryId!, sourceMessageId: row.sourceMessageId,
+    });
+    // Execution success alone does not decide whether a final response exists.
+    // Presentation/publication commits invalidate this parked request.
+    if (row.issueId && ownsLatestRequest && latestRun?.nativePresentationPending &&
+        await githubRunReplyState(db, { companyId: row.companyId, endpointId: row.endpointId,
+          issueId: row.issueId, runId: latestRun.id }) === "none") return null;
     let dueAt = row.status === "failed" ? Date.parse(String(row.result?.retryAt)) : 0;
     if (!Number.isFinite(dueAt)) throw new Error("GitHub acknowledgement has an invalid retry deadline");
     const fast = row.fast;
@@ -78,7 +94,7 @@ export function registerGitHubAcknowledgementWork(
       let cursor: string | undefined;
       while (canRun() && !signal?.aborted) {
         const rows = await page(scope, cursor);
-        for (const row of rows) { const value = entry(row); if (value) entries.push(value); }
+        for (const row of rows) { const value = await entry(row); if (value) entries.push(value); }
         if (rows.length < 100) return entries;
         cursor = rows[rows.length - 1].id;
       }
@@ -86,11 +102,11 @@ export function registerGitHubAcknowledgementWork(
     },
     check: async (value: Entry, signal?: AbortSignal) => {
       const [row] = await page(undefined, undefined, value.id);
-      const current = row ? entry(row) : null;
+      const current = row ? await entry(row) : null;
       if (!current || current.dueAt > Date.now() || !canRun() || signal?.aborted) return current;
       await acknowledge(current.deliveryId, () => canRun() && !signal?.aborted);
       const [remaining] = await page(undefined, undefined, value.id);
-      return remaining ? entry(remaining) : null;
+      return remaining ? await entry(remaining) : null;
     },
   }, canRun);
 }
