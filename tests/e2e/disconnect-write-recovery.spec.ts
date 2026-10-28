@@ -174,3 +174,33 @@ test("replaying an accepted comment does not reopen completed work", async ({ pa
     await request.patch(`/api/companies/${company.id}`, { data: { status: "archived" } });
   }
 });
+
+test("startup work retries a failed session lookup while other APIs stay healthy", async ({ page, request }) => {
+  const company = await json(await request.post("/api/companies", { data: { name: `Session recovery ${Date.now()}` } }));
+  const session = await json(await request.get("/api/auth/get-session"));
+  let healthy = false, saving = false, failedAfterSave = 0;
+  try {
+    const issue = await json(await request.post(`/api/companies/${company.id}/issues`, {
+      data: { title: "Before session recovery", status: "backlog" },
+    }));
+    await page.route("**/api/auth/get-session", async route => {
+      if (healthy) return route.fulfill({ status: 200, json: session });
+      if (saving) failedAfterSave += 1;
+      await route.fulfill({ status: 500, json: { error: "session_lookup_failed" } });
+    });
+    await page.goto(`/${company.issuePrefix}/issues/${issue.id}`);
+    const header = page.getByTestId("issue-detail-header");
+    await header.getByRole("heading", { name: issue.title, exact: true }).click();
+    await header.locator("textarea").fill("Saved after session recovery");
+    saving = true;
+    await header.locator("textarea").press("Enter");
+    await expect.poll(() => failedAfterSave).toBeGreaterThan(0);
+    healthy = true;
+    await expect.poll(async () => (await json(await request.get(`/api/issues/${issue.id}`))).title,
+      { timeout: 15_000 }).toBe("Saved after session recovery");
+    await page.reload();
+    await expect(header.getByRole("heading", { name: "Saved after session recovery", exact: true })).toBeVisible();
+  } finally {
+    await request.patch(`/api/companies/${company.id}`, { data: { status: "archived" } });
+  }
+});

@@ -20,6 +20,7 @@ import {
 import { CommentSubmissionUnknownError } from "../../lib/comment-submit-result";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { queryKeys } from "../../lib/queryKeys";
+import { useAccountBoundMutation } from "../../hooks/useAccountBoundMutation";
 
 // The session lookup never answers on its own; tests set the account directly.
 vi.mock("../../api/auth", async (importOriginal) => {
@@ -418,6 +419,40 @@ describe("TaskChatComposer", () => {
     expect(loadDraftSubmission(key)).toBeNull();
     expect(editable().textContent).toBe("");
     expect(onAdd).not.toHaveBeenCalled();
+  });
+
+  it("keeps the original key after account cancellation of an accepted initial send", async () => {
+    const key = "accepted-account-roundtrip";
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    let accepted!: () => void;
+    const post = vi.fn<(body: string, requestId?: string) => Promise<void>>()
+      .mockImplementationOnce(() => new Promise<void>(resolve => { accepted = resolve; })).mockResolvedValue(undefined);
+    function OwnedComposer() {
+      const mutation = useAccountBoundMutation({ mutationFn: ({ body, requestId }: { body: string; requestId?: string }) => post(body, requestId) });
+      return <TaskChatComposer draftKey={key} workMode="standard"
+        onAdd={(body, _reopen, _reassign, _files, requestId) => mutation.mutateAsync({ body, requestId })} />;
+    }
+    render(<QueryClientProvider client={client}><OwnedComposer /></QueryClientProvider>);
+    typeText("Accepted before the account changed");
+    pressKey("Enter", { metaKey: true });
+    await flushAsync();
+    const requestId = post.mock.calls[0][1]!;
+    flushSync(() => {
+      client.setQueryData(queryKeys.auth.session, { user: { id: "user-2" } });
+      client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    });
+    accepted();
+    await flushAsync();
+    expect(loadDraftSubmission(key)?.attemptId).toBe(requestId);
+    expect(editable().textContent).toBe("Accepted before the account changed");
+    const retry = Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Resend now")!;
+    flushSync(() => retry.click());
+    await flushAsync();
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(post.mock.calls[1][1]).toBe(requestId);
+    expect(loadDraftSubmission(key)).toBeNull();
+    client.clear();
   });
 
   it.each([false, true])("does not retry from a stale account render (returns to original=%s)", async (returns) => {

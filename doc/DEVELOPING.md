@@ -3445,13 +3445,18 @@ Document editors remount on subject changes, and a message attempt settles only
 once when a server receipt races its HTTP retry. Startup autosaves bind to the
 first resolved account; a later known-account change still cancels old work.
 Account-bound status changes and decisions also wait for the first lookup rather
-than rejecting an action made while it loads. Comment retries check the original
+than rejecting an action made while it loads. Waiting work starts a bounded retry
+of a failed session lookup; exhaustion reaches the original error callback instead
+of leaving the operation pending. Removing that session scope cancels its lookup
+work. Account cancellation after an uncertain POST keeps the original request key.
+Comment retries check the original
 account generation at the click and again immediately before their POST, including
 after optimistic cache cancellation or conversation creation. A retained accepted
 comment returns its existing receipt before the route can reopen a completed task.
 `server/src/services/issue-comment-receipt.ts` completes reference and activity
-records for keyed board comments. It locks the same-company task and comment in
-that order, repairs references and inserts a missing activity record in one
+records for keyed board comments. It locks the same-company comment and task in
+that order, matching comment removal and tombstoning. It repairs references and
+inserts a missing activity record in one
 transaction, and publishes after commit. The task uses `FOR NO KEY UPDATE` so
 concurrent comments can reference each other without blocking foreign-key checks. Both the initial send and a retained
 receipt use this owner so concurrent completion cannot duplicate the activity.

@@ -11,6 +11,8 @@ import {
   type MutationFunctionContext,
 } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queryKeys";
+import { authApi } from "@/api/auth";
+import { classifySendFailure, PendingSendAccountChangedError } from "@/lib/pending-send";
 
 type AccountGeneration = { owner: string | undefined; generation: number };
 const accounts = new WeakMap<QueryClient, AccountGeneration>();
@@ -26,29 +28,44 @@ function bindAccount(client: QueryClient) {
     account = { owner: currentOwner(client), generation: 0 };
     accounts.set(client, account);
     const tracked = account;
-    client.getQueryCache().subscribe(() => {
+    client.getQueryCache().subscribe(event => {
       const owner = currentOwner(client);
-      if (owner !== tracked.owner) {
-        if (tracked.owner !== undefined || tracked.generation !== 0) tracked.generation += 1;
+      const removed = event.type === "removed" && JSON.stringify(event.query.queryKey) === JSON.stringify(queryKeys.auth.session);
+      if (owner !== tracked.owner || removed) {
+        if (removed || tracked.owner !== undefined || tracked.generation !== 0) tracked.generation += 1;
         tracked.owner = owner;
       }
     });
   }
   const { owner, generation } = account;
-  const isCurrentAccount = () => account.owner !== undefined && account.generation === generation
-    && (owner === undefined ? generation === 0 : account.owner === owner);
-  const whenAccountReady = () => {
-    if (account.owner !== undefined || account.generation !== generation) return Promise.resolve();
-    return new Promise<void>(resolve => {
-      const unsubscribe = client.getQueryCache().subscribe(() => {
-        if (account.owner !== undefined || account.generation !== generation) {
-          unsubscribe();
-          resolve();
-        }
+  const isCurrentScope = () => account.generation === generation && (owner === undefined ? generation === 0 : account.owner === owner);
+  const isCurrentAccount = () => account.owner !== undefined && isCurrentScope();
+  const whenAccountReady = async () => {
+    if (account.owner !== undefined || !isCurrentScope()) return;
+    let stopped = false;
+    let unsubscribe = () => {};
+    const ready = new Promise<void>(resolve => {
+      unsubscribe = client.getQueryCache().subscribe(() => {
+        if (account.owner !== undefined || !isCurrentScope()) resolve();
       });
     });
+    const lookup = async () => {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        if (stopped || account.owner !== undefined || !isCurrentScope()) return;
+        try {
+          await client.fetchQuery({ queryKey: queryKeys.auth.session, queryFn: () => authApi.getSession(), retry: false });
+          return;
+        } catch (error) {
+          if (stopped || account.owner !== undefined || !isCurrentScope()) return;
+          if (attempt === 2 || classifySendFailure(error) !== "pending") throw error;
+          await new Promise(resolve => setTimeout(resolve, 250 * 2 ** attempt));
+        }
+      }
+    };
+    try { await Promise.race([ready, lookup()]); }
+    finally { stopped = true; unsubscribe(); }
   };
-  return { isCurrentAccount, whenAccountReady };
+  return { isCurrentAccount, isCurrentScope, whenAccountReady };
 }
 
 export function useCurrentAccountGuard(): () => boolean {
@@ -74,7 +91,11 @@ export function useAccountBoundMutation<TData = unknown, TError = DefaultError, 
       await whenAccountReady();
       await operation.waitForTurn?.(input);
       const assertCurrentAccount = () => {
-        if (!isCurrentAccount()) throw new DOMException("Your account changed. Retry this action from your current account.", "AbortError");
+        if (!isCurrentAccount()) {
+          const error = new PendingSendAccountChangedError();
+          error.name = "AbortError";
+          throw error;
+        }
       };
       assertCurrentAccount();
       if (!operation.mutationFn) throw new Error("Missing account-bound mutation function");
@@ -87,16 +108,16 @@ export function useAccountBoundMutation<TData = unknown, TError = DefaultError, 
       return isCurrentAccount() ? operation.onMutate?.(input, context) : undefined;
     },
     onSuccess: (data, { input, isCurrentAccount, operation }, result, context) => isCurrentAccount() ? operation.onSuccess?.(data, input, result as TContext, context) : undefined,
-    onError: (error, { input, isCurrentAccount, operation }, result, context) => isCurrentAccount() ? operation.onError?.(error, input, result, context) : undefined,
-    onSettled: async (data, error, { input, operation, isCurrentAccount }, result, context) => {
+    onError: (error, { input, isCurrentScope, operation }, result, context) => isCurrentScope() ? operation.onError?.(error, input, result, context) : undefined,
+    onSettled: async (data, error, { input, operation, isCurrentScope }, result, context) => {
       operation.onFinished?.(input, result);
-      if (isCurrentAccount()) await operation.onSettled?.(data, error, input, result, context);
+      if (isCurrentScope()) await operation.onSettled?.(data, error, input, result, context);
     },
   });
   const wrapOptions = (callbacks?: MutateOptions<TData, TError, TVariables, TContext>): MutateOptions<TData, TError, OwnedVariables, TContext | undefined> => ({
     onSuccess: (data, { input, isCurrentAccount }, result, context) => { if (isCurrentAccount()) callbacks?.onSuccess?.(data, input, result, context); },
-    onError: (error, { input, isCurrentAccount }, result, context) => { if (isCurrentAccount()) callbacks?.onError?.(error, input, result, context); },
-    onSettled: (data, error, { input, isCurrentAccount }, result, context) => { if (isCurrentAccount()) callbacks?.onSettled?.(data, error, input, result, context); },
+    onError: (error, { input, isCurrentScope }, result, context) => { if (isCurrentScope()) callbacks?.onError?.(error, input, result, context); },
+    onSettled: (data, error, { input, isCurrentScope }, result, context) => { if (isCurrentScope()) callbacks?.onSettled?.(data, error, input, result, context); },
   });
   const mutate = useCallback((input: TVariables, callbacks?: MutateOptions<TData, TError, TVariables, TContext>) => {
     mutation.mutate({ input, ...bindAccount(client), operation: options }, wrapOptions(callbacks));

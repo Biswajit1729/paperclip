@@ -18,6 +18,7 @@ import type { Agent } from "@paperclipai/shared";
 import { CommentSubmissionUnknownError } from "../lib/comment-submit-result";
 import { loadDraft, saveDraft, saveDraftSubmission, loadDraftSubmission, preserveDraftInTab, settleDraftSubmission } from "../lib/composer-draft";
 import { queryKeys } from "../lib/queryKeys";
+import { useAccountBoundMutation } from "../hooks/useAccountBoundMutation";
 import {
   IssueAssigneePausedNotice,
   IssueChatThread,
@@ -2913,6 +2914,44 @@ describe("IssueChatThread", () => {
       act(() => root.unmount());
     }
     expect(localStorage.getItem(key)).toBe(nextDraft);
+  });
+
+  it("keeps the original key after account cancellation of an accepted initial send", async () => {
+    const key = "accepted-thread-account-roundtrip";
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    let accepted!: () => void;
+    const post = vi.fn<(body: string, requestId?: string) => Promise<void>>()
+      .mockImplementationOnce(() => new Promise<void>(resolve => { accepted = resolve; })).mockResolvedValue(undefined);
+    function OwnedThread() {
+      const mutation = useAccountBoundMutation({ mutationFn: ({ body, requestId }: { body: string; requestId?: string }) => post(body, requestId) });
+      return <IssueChatThread comments={[]} currentUserId="user-1" linkedRuns={[]} timelineEvents={[]} liveRuns={[]}
+        draftKey={key} enableLiveTranscriptPolling={false}
+        onAdd={(body, _reopen, _reassign, _files, requestId) => mutation.mutateAsync({ body, requestId })} />;
+    }
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<QueryClientProvider client={client}><MemoryRouter><OwnedThread /></MemoryRouter></QueryClientProvider>));
+      const editor = () => container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Issue chat editor"]')!;
+      act(() => {
+        Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!.call(editor(), "Accepted before the account changed");
+        editor().dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      const button = (label: string) => Array.from(container.querySelectorAll("button")).find(item => item.textContent === label)!;
+      await act(async () => button("Send").click());
+      const requestId = post.mock.calls[0][1]!;
+      act(() => {
+        client.setQueryData(queryKeys.auth.session, { user: { id: "user-2" } });
+        client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+      });
+      await act(async () => accepted());
+      expect(loadDraftSubmission(key)?.attemptId).toBe(requestId);
+      expect(editor().value).toBe("Accepted before the account changed");
+      await act(async () => button("Resend now").click());
+      expect(post).toHaveBeenCalledTimes(2);
+      expect(post.mock.calls[1][1]).toBe(requestId);
+      expect(loadDraftSubmission(key)).toBeNull();
+    } finally { act(() => root.unmount()); client.clear(); }
   });
 
   it.each([false, true])("does not retry a stale account render (returns to original=%s)", async (returns) => {

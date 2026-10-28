@@ -91,7 +91,10 @@ server title after account resolution and reload. The accepted-comment journey
 then completes and assigns a task before repeating its saved comment request;
 the original receipt must return once, its activity must appear once, and the task must stay Done. Reusing that
 key with different text must return a conflict without changing the task. This
-uses a disposable process agent and makes no provider call.
+uses a disposable process agent and makes no provider call. A separate healthy-API
+startup journey fails the session endpoint with JSON 500 responses, then restores
+it while an edit waits; the same edit must save and survive reload without a
+network reconnect or another user action.
 
 ### `source-task`
 
