@@ -48,7 +48,7 @@ moved after pagination.
 Run the real service benchmark with a pinned source baseline:
 
 ```sh
-pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-task-privacy.ts \
+pnpm --filter @paperclipai/server exec tsx scripts/benchmark-task-privacy.ts \
   --baseline-ref=71b448b9cb841e6fa18fe883585430c5081245da \
   --evidence-dir=/tmp/task-privacy-proof
 ```
@@ -184,3 +184,15 @@ bootstrap failures, then was stopped with exit 143. An independent empty native
 `initdb` failed with `semget` semaphore exhaustion before Paperclip schema or SQL
 ran. This is a failed/incomplete local full-suite result, not a pass. A focused
 Docker PostgreSQL retry and exact-head CI results are recorded in the PR.
+
+## Review follow-up
+
+The review requested a direct test of project-based ancestry. The added case
+uses a private child, an open parent in a private project, and a grant on the
+private grandparent. It checks access, changes the parent project to open and
+back, and revokes the ancestor grant. The six-test ancestry suite passes.
+
+The benchmark now lives in `server/scripts/` and imports `sql` from the package
+name. A small real-PostgreSQL smoke verifies the relocated command. Runtime and
+query-owner source hashes stay unchanged, so the original 36-case measurements
+and the retained failed stretch goals still apply.

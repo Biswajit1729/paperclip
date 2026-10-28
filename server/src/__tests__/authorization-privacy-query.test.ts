@@ -102,4 +102,27 @@ describe("privacy ancestry query work", () => {
     expect(await query()).toEqual([]);
   });
 
+  it("follows an open ancestor in a private project and rechecks its restriction and inherited grant", async () => {
+    const companyId = randomUUID(), userId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Project ancestor", issuePrefix: `P${companyId.slice(0, 7)}` });
+    const [project] = await db.insert(projects).values({ companyId, name: "Private ancestor project", visibility: "private" }).returning();
+    const [grandparent] = await db.insert(issues).values({ companyId, title: "Granted grandparent", visibility: "private", createdByUserId: "other-user" }).returning();
+    const [parent] = await db.insert(issues).values({ companyId, title: "Open parent in private project", visibility: "open", projectId: project!.id, privacyParentIssueId: grandparent!.id, createdByUserId: "other-user" }).returning();
+    const [child] = await db.insert(issues).values({ companyId, title: "Private child", visibility: "private", privacyParentIssueId: parent!.id, createdByUserId: "other-user" }).returning();
+    const actor: AuthorizationActor = { type: "board", userId, authorizingUserId: userId };
+    const condition = await issueReadSqlCondition(db, actor);
+    const read = async () => (await db.select({ id: issues.id }).from(issues).where(and(eq(issues.id, child!.id), condition))).map(row => row.id);
+    expect(await canActorReadIssuePrivacy(db, actor, child!)).toBe(false);
+    const [grant] = await db.insert(issueAccessGrants).values({ issueId: grandparent!.id, subjectType: "user", subjectId: userId, source: "explicit" }).returning();
+    expect(await read()).toEqual([child!.id]);
+    expect(await canActorReadIssuePrivacy(db, actor, child!)).toBe(true);
+    await db.update(projects).set({ visibility: "open" }).where(eq(projects.id, project!.id));
+    expect(await read()).toEqual([]);
+    await db.update(projects).set({ visibility: "private" }).where(eq(projects.id, project!.id));
+    expect(await read()).toEqual([child!.id]);
+    await db.update(issueAccessGrants).set({ revokedAt: new Date() }).where(eq(issueAccessGrants.id, grant!.id));
+    expect(await read()).toEqual([]);
+    expect(await canActorReadIssuePrivacy(db, actor, child!)).toBe(false);
+  });
+
 });
