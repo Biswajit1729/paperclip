@@ -81,7 +81,7 @@ rows, with a newer creation time. Thus a sequential scan and the existing
 creation-time index can both find it first. This prevents a misleading fast-path
 control in which the matching run is actually last in physical storage.
 
-## Acceptance selected before treatment
+## Acceptance and selection timing
 
 The original eight-comment, 300-run regression fixture used 35,711 shared buffer
 accesses. The pre-change guard failed against a budget of 10,600, which permits
@@ -89,7 +89,9 @@ accesses. The pre-change guard failed against a budget of 10,600, which permits
 that same revision. The preliminary single-scan assertion passed the baseline
 and is not counted as a red result.
 
-The explicit local benchmark requires at least a 1.5-fold SQL improvement for
+After the initial projection trial, the final timing criteria were selected
+before the quiet measurement matrices. The explicit local benchmark requires
+at least a 1.5-fold SQL improvement for
 the forty-run, eight-unconsumed-comment case. Zero/empty/small/one-comment and
 immediately consumed service controls must add no more than 25 percent or 2 ms,
 whichever permits more overhead. These wall-clock limits belong to the explicit
