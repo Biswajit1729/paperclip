@@ -18,6 +18,7 @@ import {
   type Db,
 } from "@paperclipai/db";
 
+import { notifyChatRunMilestones } from "./chat-run-milestone-notifications.js";
 import { sanitizeQuarantinedCommentForHigherTrust } from "./source-trust.js";
 import { evaluateAgentInvokabilityFromDb } from "./agent-invokability.js";
 import { isAgentAwaitingSetup } from "../modules/agent-lifecycle/index.js";
@@ -173,6 +174,7 @@ export async function prepareConversationTurn(
     }
     // The boundary lives on the command comment. A crash/retry reuses it instead of resetting twice.
     if (reset && comment && comment.conversationSessionGeneration == null) {
+      await notifyChatRunMilestones(tx, { companyId: issue.companyId, issueId: issue.id });
       generation += 1;
       await tx
         .update(issues)
