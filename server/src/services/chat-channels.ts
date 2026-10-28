@@ -1,3 +1,4 @@
+import { notifyChatConnectionHealth } from "./chat-channels/connection-health-notifications.js";
 import { credentialFingerprint } from "./chat-channels/credential-fingerprint.js";
 import { createChatSdkMessageReceiver } from "./chat-channels/runtime/sdk-messages.js";
 import { admitDiscordSdkMessage } from "./chat-channels/discord/messages.js";
@@ -2295,6 +2296,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             updatedAt: new Date(),
           })
           .where(eq(chatConversations.id, conversation!.id));
+        await notifyChatConnectionHealth(taskTx, taskEndpoint);
         await taskTx
           .update(toolConnections)
           .set({

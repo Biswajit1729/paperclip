@@ -2731,6 +2731,27 @@
       "when": 1793142971791,
       "tag": "0391_third_roulette",
       "breakpoints": true
+    },
+    {
+      "idx": 392,
+      "version": "7",
+      "when": 1793143372644,
+      "tag": "0392_small_frightful_four",
+      "breakpoints": true
+    },
+    {
+      "idx": 393,
+      "version": "7",
+      "when": 1793145214502,
+      "tag": "0393_open_grandmaster",
+      "breakpoints": true
+    },
+    {
+      "idx": 394,
+      "version": "7",
+      "when": 1793152860397,
+      "tag": "0394_conscious_whizzer",
+      "breakpoints": true
     }
   ]
 }
