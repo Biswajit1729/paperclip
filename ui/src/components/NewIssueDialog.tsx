@@ -739,11 +739,14 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
 
   // Debounced draft saving
   const scheduleSave = useCallback((draft: IssueDraft) => {
-    if (draftOwner === undefined && (draft.title.trim() || draft.description.trim())) unboundFormDraft.current = draft;
+    if (draftOwner === undefined && (unboundFormDraft.current || draft.title.trim() || draft.description.trim())) unboundFormDraft.current = draft;
     if (draftTimer.current) clearTimeout(draftTimer.current);
     draftTimer.current = setTimeout(() => {
       const owner = readOwner();
-      if (owner !== undefined && (draftOwner === undefined || owner === draftOwner) && (draft.title.trim() || draft.description.trim())) saveDraft(owner, draft);
+      if (owner !== undefined && (draftOwner === undefined || owner === draftOwner)) {
+        if (draft.title.trim() || draft.description.trim()) saveDraft(owner, draft);
+        else clearDraft(owner);
+      }
     }, DEBOUNCE_MS);
   }, [draftOwner, readOwner]);
 
@@ -856,7 +859,8 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
     executionWorkspaceDefaultProjectId.current = null;
 
     if (draftOwner !== undefined && unboundFormDraft.current) {
-      saveDraft(draftOwner, unboundFormDraft.current);
+      if (unboundFormDraft.current.title.trim() || unboundFormDraft.current.description.trim()) saveDraft(draftOwner, unboundFormDraft.current);
+      else clearDraft(draftOwner);
       unboundFormDraft.current = null;
       return;
     }

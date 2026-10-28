@@ -1717,6 +1717,29 @@ describe("NewIssueDialog", () => {
     } finally { act(() => root.unmount()); queryClient.clear(); }
   });
 
+  it.each([false, true])("keeps erased task text erased after reopening (session known=%s)", async (sessionKnown) => {
+    if (!sessionKnown) mockAuthApi.getSession.mockReturnValue(new Promise(() => {}));
+    localStorage.setItem("paperclip:issue-draft:user-1", JSON.stringify({ title: "", description: "Older saved text" }));
+    const { root, queryClient } = renderDialog(container);
+    try {
+      await flush();
+      const editor = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe a task…"]')!;
+      await typeTextareaValue(editor, "Erase this task text");
+      await typeTextareaValue(editor, "");
+      if (!sessionKnown) queryClient.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 850)); });
+      await waitForAssertion(() => expect(localStorage.getItem("paperclip:issue-draft:user-1")).toBeNull());
+      dialogState.newIssueOpen = false;
+      act(() => root.render(<QueryClientProvider client={queryClient}><NewIssueDialog /></QueryClientProvider>));
+      await flush();
+      dialogState.newIssueOpen = true;
+      act(() => root.render(<QueryClientProvider client={queryClient}><NewIssueDialog /></QueryClientProvider>));
+      await flush();
+      expect(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe a task…"]')?.value).toBe("");
+      expect(container.textContent).not.toContain("Erase this task text");
+    } finally { act(() => root.unmount()); queryClient.clear(); }
+  });
+
   it.each([false, true])("keeps task typing through the first session lookup (storage unavailable=%s)", async (unavailable) => {
     mockAuthApi.getSession.mockReturnValue(new Promise(() => {}));
     const { root, queryClient } = renderDialog(container);
