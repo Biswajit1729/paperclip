@@ -40,6 +40,7 @@ const fixtureDefinitions = [
   { name: "eight-mixed", comments: 8, history: 40, payloadBytes: 72 * 1024, matched: 4 },
   { name: "large-queue", comments: 64, history: 40, payloadBytes: 72 * 1024, matched: 0 },
   { name: "deep-stress", comments: 8, history: 1400, payloadBytes: 32 * 1024, matched: 0 },
+  { name: "deep-consumed-first", comments: 8, history: 1400, payloadBytes: 32 * 1024, matched: 8 },
 ];
 try {
   if (!targetUrl) database = await startEmbeddedPostgresTestDatabase("queued-comment-benchmark-");
@@ -48,10 +49,15 @@ try {
   if (process.argv.includes("--jit-off")) await db.$client.unsafe("set jit = off");
   const version = await db.$client.unsafe("select version()");
   const settings = await db.$client.unsafe("select name, setting from pg_settings where name in ('shared_buffers', 'work_mem', 'jit', 'jit_above_cost', 'jit_inline_above_cost', 'jit_optimize_above_cost', 'random_page_cost') order by name");
+  await db.$client.unsafe("TRUNCATE companies CASCADE");
   const results = [];
   const budgetFailures: string[] = [];
   let waitedForSlot = false;
-  for (const fixture of fixtureDefinitions.filter(value => !process.argv.includes("--representative-only") || value.name === "representative-eight")) {
+  const fixtureSelectors = process.argv.filter(value => value.startsWith("--fixture=")).map(value => value.slice(10));
+  const selectedFixtures = fixtureDefinitions.filter(value => (!fixtureSelectors.length || fixtureSelectors.includes(value.name)) &&
+    (!process.argv.includes("--representative-only") || value.name === "representative-eight"));
+  assert.ok(selectedFixtures.length, "No benchmark fixtures match the requested selectors");
+  for (const fixture of selectedFixtures) {
     const f = await seedQueuedCommentConsumption(db, { ...fixture, unrelatedHistory: fixture.history ? 1400 : 0 });
     const before = await captureQueuedCommentQuery(db, f, old.getExecutionBlocker), after = await captureQueuedCommentQuery(db, f);
     assert.deepEqual(after.result, before.result, `${fixture.name}: complete execution blocker differs`);
@@ -92,8 +98,15 @@ try {
     }
     const medians = Object.fromEntries(Object.entries(samples).map(([arm, values]) => [arm, median(values)]));
     if (fixture.name === "representative-eight" && medians.sqlBefore! < medians.sqlAfter! * 1.5) budgetFailures.push(`${fixture.name}: SQL gain below 1.5x`);
-    if (["no-comments", "empty-history", "small", "one-unconsumed", "eight-consumed-first"].includes(fixture.name) &&
+    if (["no-comments", "empty-history", "small", "one-unconsumed", "eight-consumed-first", "deep-consumed-first"].includes(fixture.name) &&
       medians.serviceAfter! > Math.max(medians.serviceBefore! * 1.25, medians.serviceBefore! + 2)) budgetFailures.push(`${fixture.name}: service overhead exceeds 25% or 2 ms`);
+    if (fixture.name === "deep-consumed-first") {
+      const buffers = (arm: string) => {
+        const plan = (plans[arm] as { Plan: Record<string, number> }[])[0]!.Plan;
+        return Number(plan["Shared Hit Blocks"]) + Number(plan["Shared Read Blocks"]);
+      };
+      if (buffers("after") > buffers("before") * 1.25 + 32) budgetFailures.push(`${fixture.name}: lost early-exit buffer work`);
+    }
     const equality = { completePositionalSqlRows: expected.length, completeServiceResult: before.result };
     results.push({ fixture, before: before.query, after: after.query, equality, samples, medians, runScanLoops, plans });
     process.stderr.write(`${fixture.name}: SQL ${medians.sqlBefore!.toFixed(2)} -> ${medians.sqlAfter!.toFixed(2)} ms; service ${medians.serviceBefore!.toFixed(2)} -> ${medians.serviceAfter!.toFixed(2)} ms; history scan loops ${JSON.stringify(runScanLoops)}\n`);

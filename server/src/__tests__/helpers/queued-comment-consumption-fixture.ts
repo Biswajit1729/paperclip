@@ -19,9 +19,9 @@ export async function seedQueuedCommentConsumption(db: Db, options: { comments?:
     payload: { issueId, _paperclipWakeContext: { wakeCommentIds: commentIds } } }).returning();
   const [action] = await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issueId, kind: "active_run_watchdog", status: "active",
     ownerType: "board", cause: "legacy_execution_requires_reconciliation", fingerprint: randomUUID(), evidence: {}, nextAction: "Inspect saved work.", createdAt: fixtureTime, updatedAt: fixtureTime }).returning();
-  if (options.matched) await db.insert(heartbeatRuns).values({ companyId, agentId, status: "succeeded", startedAt: fixtureTime,
-    contextSnapshot: { issueId, wakeCommentIds: commentIds.slice(0, options.matched) } });
   const payload = randomBytes(Math.ceil((options.payloadBytes ?? 0) * 3 / 4)).toString("base64");
+  if (options.matched) await db.insert(heartbeatRuns).values({ companyId, agentId, status: "succeeded", startedAt: fixtureTime,
+    contextSnapshot: { issueId, wakeCommentIds: commentIds.slice(0, options.matched), prompt: payload } });
   if (options.history) await db.$client.unsafe(`insert into heartbeat_runs (company_id, agent_id, status, started_at, context_snapshot, created_at)
     select $1::uuid, $2::uuid, 'succeeded', $3::timestamptz,
       jsonb_build_object('issueId', $4::text, 'wakeCommentId', case when $7::boolean then $8::text else gen_random_uuid()::text end,

@@ -33,7 +33,8 @@ or cast to UUID. Non-array JSON therefore retains the original meaning.
 ## Reproduction
 
 Use a disposable PostgreSQL database with current repository migrations. An
-explicit external database must have a `queued_comments_` name. Without the
+explicit external database must have a `queued_comments_` name. The script
+clears its company graph before setup and after each fixture. Without the
 external URL the benchmark starts a disposable embedded PostgreSQL database.
 
 ```sh
@@ -101,8 +102,12 @@ The final quiet measurements used PostgreSQL 17.11 on ARM64 Linux, with 128 MiB
 shared buffers and 4 MiB work memory. JIT was enabled at its default 100,000-cost
 threshold for the primary matrix, but no measured query used JIT. The control
 explicitly disabled JIT. Two warmups and five alternating samples were used for
-each arm in each of eleven cases. All twenty-two cells returned equal complete
-positional SQL rows and equal full service objects. Every selected budget passed.
+each arm. The initial matrix had eleven cases. Review added a twelfth deep
+first-consumed case and repeated the two existing consumed cases with a wide
+consuming-run context. All twenty-four final fixture/JIT cells returned equal
+complete positional SQL rows and equal full service objects. Every selected
+budget passed. The initial thin consuming-row results remain in private raw
+evidence and are superseded by the wide-row controls below.
 
 | Fixture | SQL before → after, ms | Full blocker before → after, ms | Shared buffers before → after |
 | --- | ---: | ---: | ---: |
@@ -113,10 +118,11 @@ positional SQL rows and equal full service objects. Every selected budget passed
 | 40 runs, 72 KiB | 11.47 → 3.82 | 29.48 → 18.85 | 7,686 → 966 |
 | 69 runs, 200 KiB | 43.35 → 8.41 | 68.43 → 31.60 | 31,623 → 3,959 |
 | One saved comment | 4.31 → 4.63 | 29.09 → 29.00 | 965 → 965 |
-| Eight immediately consumed | 2.17 → 2.48 | 22.90 → 22.17 | 4 → 4 |
-| Half consumed | 8.36 → 4.13 | 27.52 → 21.84 | 3,845 → 965 |
+| Eight immediately consumed, wide run | 1.60 → 1.28 | 13.90 → 16.59 | 196 → 28 |
+| Half consumed, wide run | 3.13 → 1.75 | 14.44 → 11.49 | 4,038 → 990 |
 | 64 saved comments | 80.88 → 6.98 | 111.08 → 39.90 | 61,446 → 966 |
 | 1,400-run stress | 172.82 → 44.27 | 212.60 → 73.94 | 175,089 → 37,889 |
+| 1,400 runs, first wide run consumes all | 1.54 → 1.99 | 19.00 → 18.23 | 122 → 24 |
 
 The forty-run SQL samples ranged from 10.36–12.33 ms before and 2.83–4.30 ms
 after. Full blocker samples ranged from 27.34–33.22 ms before and 18.58–21.81 ms
@@ -125,16 +131,35 @@ work is close to the hosted eight-comment shape, but hosted execution time is
 much higher. These local times do not predict a 131 ms hosted saving.
 
 Small and empty-history service medians rose 5.03 ms and 3.90 ms with JIT enabled.
-The small service ranges overlap: 18.49–36.48 ms before and 17.29–41.89 ms after.
-This permits a local difference but does not isolate a causal service regression.
+The accepted control budget is 25 percent or 2 ms, whichever permits more
+overhead. Small and empty-history medians are inside that budget. This accepts
+a possible small-path cost; it does not claim a universal improvement. The small
+service ranges overlap: 18.49–36.48 ms before and 17.29–41.89 ms after.
+These observations do not isolate the cause of the service difference. The
+higher medians remain visible as accepted local costs. Hosted before/after
+correlation still requires deployment acceptance.
 The unchanged no-comment path runs no changed SQL; its 0.21 ms difference cannot
-be attributed to the projection. One-comment and immediately consumed paths are
-neutral. These controls remain part of the report, not omitted slower cases.
+be attributed to the projection. One-comment results are neutral. The widened immediately consumed service
+median rose 2.69 ms (19 percent), inside the selected control budget; its ranges
+overlap at 13.34–27.72 ms before and 13.18–18.10 ms after. These controls remain part of the report, not omitted slower cases.
 
 With JIT disabled, the forty-run SQL median was 10.96 → 3.63 ms and the service
 median was 32.18 → 24.75 ms. Small service medians were 15.58 → 14.68 ms; empty
-history was 18.74 → 18.23 ms; immediately consumed was 14.77 → 15.35 ms. Plans had
+history was 18.74 → 18.23 ms; the widened immediately consumed control was 13.59 → 14.64 ms. Plans had
 no JIT work in either matrix, so this change addresses repeated JSON reads.
+
+The reviewer-requested 1,400-run first-consumed case reads exactly one underlying
+run row in both arms. Each materialization returns one row and is revisited eight
+times; neither arm eagerly reads the remaining history. Shared buffer accesses
+fall from 122 to 24. Its JIT-on SQL ranges overlap at 0.86–2.79 ms before and
+0.77–4.38 ms after, so this is an early-exit work proof, not a latency win.
+With JIT disabled it is 1.08 → 1.07 ms of SQL and 11.36 → 11.53 ms of service
+time, with the same buffer counts. The consuming row has the same 32 KiB random
+payload as the deep history. The forty-run consuming controls use 72 KiB random
+payloads on the consuming row too. This fixes the original thin-row fixture.
+`--fixture=deep-consumed-first` selects this case; repeat `--fixture=` to select
+more than one case. The six affected review-control cells passed in a coordinated
+40-second quiet window. Production source did not change during this follow-up.
 
 The final runtime source SHA-256 is
 `f750b3d12be73ed49b0a3be9ca9c769514eb561b98a17c1ff0bb909d9f880809`.
@@ -180,3 +205,12 @@ skipped six cases. Docker PostgreSQL 17.11 then ran all 91 targeted and assemble
 cases through the repository database allocation, migration and client path.
 Only the native server process constructor was replaced in private test setup.
 These local runtime limitations remain distinct from the Linux CI result.
+
+The required full native test command was attempted. Its unchanged execution
+suite completed 940 cases with 16 PostgreSQL startup failures and 924 passes.
+The command was stopped at that infrastructure boundary, so the full local run
+is incomplete and is not counted as a pass. An independent empty native initdb
+failed with `semget: No space left on device`, which identifies the macOS
+semaphore limit. Exactly those 16 cases then passed under Docker PostgreSQL
+17.11 in 181.22 seconds. The full workspace typecheck and build passed. Complete
+Linux CI remains a separate gate on the final PR head.
