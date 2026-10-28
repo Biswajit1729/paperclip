@@ -6,7 +6,12 @@ this predicate. This change preserves that owner and the current access rules.
 
 ## Cause and change
 
-Baseline commit: `8279c990080b15abdcd9981f5793290fab37f9ad`.
+Measured baseline commit: `8279c990080b15abdcd9981f5793290fab37f9ad`.
+The branch was later replayed onto `71b448b9cb841e6fa18fe883585430c5081245da`.
+Both commits have byte-identical pre-fix authorization, issue-service and
+participation-helper sources. The reproduction command uses the newer equivalent
+pre-fix baseline so unrelated upstream voice-schema changes stay constant in
+both arms. The measured source hashes below are unchanged by that replay.
 The previous recursive join can scan every company task and check its project
 for each privacy frontier. In the 1,200-open-task regression this reads 1,440,000
 task rows even though every parent is NULL. The semantic ID assertion passes;
@@ -44,7 +49,7 @@ Run the real service benchmark with a pinned source baseline:
 
 ```sh
 pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-task-privacy.ts \
-  --baseline-ref=8279c990080b15abdcd9981f5793290fab37f9ad \
+  --baseline-ref=71b448b9cb841e6fa18fe883585430c5081245da \
   --evidence-dir=/tmp/task-privacy-proof
 ```
 
@@ -173,4 +178,9 @@ Measured production source SHA-256: `a99faf974070a35f2786c92407e023c668c1f7b99b6
 
 The final-runtime focused PostgreSQL 17 run passed 44/44 tests across the dedicated work/ancestry suite, production privacy review, unread badge, and creation visibility suites in 70.44 seconds. This resolves the earlier skipped creation suite without discarding its 20-second setup failure. The scratch provider replaces only the native PostgreSQL process; normal repository database creation, migrations, clients, SQL and cleanup remain real. It is not part of this change.
 
-Workspace typecheck and full build passed. The full local test command and exact-head CI/review outcomes are recorded in the PR.
+Workspace typecheck and full build passed before replay. The full local
+`pnpm test:run` attempt completed 940 native executor cases with 16 database
+bootstrap failures, then was stopped with exit 143. An independent empty native
+`initdb` failed with `semget` semaphore exhaustion before Paperclip schema or SQL
+ran. This is a failed/incomplete local full-suite result, not a pass. A focused
+Docker PostgreSQL retry and exact-head CI results are recorded in the PR.
