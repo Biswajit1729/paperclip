@@ -163,7 +163,7 @@ function OwnedInlineEditor({
     if (!storageKey || restoredDraftRef.current === storageKey) return;
     restoredDraftRef.current = storageKey;
     if (unownedDraft.current) {
-      if (unownedDraft.current.draft.trim() !== value.trim()) saveStructuredDraft(storageKey, unownedDraft.current);
+      if (draft.trim() !== value.trim()) saveStructuredDraft(storageKey, { ...unownedDraft.current, draft });
       else clearStoredDraft();
       unownedDraft.current = null;
       return;

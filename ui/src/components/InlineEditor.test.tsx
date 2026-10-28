@@ -241,13 +241,46 @@ describe("InlineEditor", () => {
       });
       expect(container.querySelector("textarea")).toBe(input);
       expect(input.value).toBe("Typing while session loads");
-      expect(localStorage.getItem(`paperclip:inline-draft:v2:${owner}:initial-session`)).toContain("Typing while session loads");
+      await vi.waitFor(async () => {
+        await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+        expect(localStorage.getItem(`paperclip:inline-draft:v2:${owner}:initial-session`)).toContain("Typing while session loads");
+      });
       expect(onSave).not.toHaveBeenCalled();
     } finally {
       act(() => root.unmount());
       client.clear();
       localStorage.clear();
       mockSession.pending = null;
+    }
+  });
+
+  it("does not restore typing cancelled before the first session lookup", async () => {
+    localStorage.clear();
+    localStorage.setItem("paperclip:inline-draft:v2:user-1:cancel-before-session", JSON.stringify({ version: 1, draft: "Original", base: "Original" }));
+    let finish!: (session: { user: { id: string } }) => void;
+    mockSession.pending = new Promise(resolve => { finish = resolve; });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(
+        <QueryClientProvider client={client}>
+          <InlineEditor value="Original" draftKey="cancel-before-session" onSave={vi.fn()} />
+        </QueryClientProvider>,
+      ));
+      act(() => container.querySelector("span")!.click());
+      act(() => setNativeTextareaValue(container.querySelector("textarea")!, "Cancelled private text"));
+      act(() => container.querySelector("textarea")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+      await act(async () => {
+        finish({ user: { id: "user-1" } });
+        await new Promise(resolve => setTimeout(resolve, 0));
+      });
+      expect(container.textContent).not.toContain("Cancelled private text");
+      await vi.waitFor(async () => {
+        await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+        expect(localStorage.getItem("paperclip:inline-draft:v2:user-1:cancel-before-session")).toBeNull();
+      });
+    } finally {
+      act(() => root.unmount()); client.clear(); localStorage.clear(); mockSession.pending = null;
     }
   });
 
