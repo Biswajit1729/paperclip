@@ -1,3 +1,4 @@
+import { readTaskPanelActivations } from "../services/plugin-task-panels.js";
 import { latestFailedRunsByAgent } from "@paperclipai/shared";
 import { prepareRuntimeSettingsPatch } from "../services/agent-runtime-settings.js";
 import { completeSetupTokenAiConnection } from "../services/setup-token-ai-connection.js";
@@ -7579,6 +7580,11 @@ export function agentRoutes(
     if (!run) return;
     if (!(await assertRunTelemetryReadAllowed(req, res, run.companyId))) return;
     if (!(await assertRunReadAllowed(req, res, run))) return;
+
+    if (req.query.view === "plugin-panels") {
+      res.json(await readTaskPanelActivations(db, run.companyId, run.id));
+      return;
+    }
 
     const afterSeq = Number(req.query.afterSeq ?? 0);
     const limit = Number(req.query.limit ?? 200);
