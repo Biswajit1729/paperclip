@@ -19,6 +19,7 @@ import {
 import { assertTaskWorkspaceExecutionAccess, assertTaskWorkspaceSourceProjectAccess } from "../task-workspace-access.js";
 import { isBoundIsolatedTaskDirectory, shouldUseIsolatedTaskDirectory } from "../isolated-task-directory.js";
 import { readTaskDirectoryRetention } from "../isolated-task-directory-retention.js";
+import { isBoundFreshPluginTaskDirectory } from "../provider-fresh-workspace.js";
 import {
   findNativeChatWorkspaceScope,
   nativeChatWorkspaceCwd,
@@ -485,8 +486,14 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
     !workspaceProjectContext?.hasWorkspace && !issueRef.projectWorkspaceId &&
     taskWorkspaceIntent?.selection.kind !== "configured_source" &&
     (taskWorkspaceIntent?.selection.kind !== "existing" || taskWorkspaceIntent.selection.workspaceId === issueRef.executionWorkspaceId) &&
-    await isBoundIsolatedTaskDirectory({ companyId: agent.companyId, issueId,
-      workspaceId: issueRef.executionWorkspaceId, workspace: reusableExistingExecutionWorkspace });
+    (await isBoundIsolatedTaskDirectory({ companyId: agent.companyId, issueId,
+      workspaceId: issueRef.executionWorkspaceId, workspace: reusableExistingExecutionWorkspace }) ||
+      (selectedEnvironmentForConfig?.driver === "plugin" && agent.adapterType === "paperclip_runner" &&
+        isBoundFreshPluginTaskDirectory({ companyId: agent.companyId, issueId,
+          workspaceId: issueRef.executionWorkspaceId, workspace: reusableExistingExecutionWorkspace,
+          owner: { agentId: agent.id, environmentId: selectedEnvironmentForConfig.id,
+            pluginKey: parseObject(selectedEnvironmentForConfig.config).pluginKey ?? null,
+            driverKey: parseObject(selectedEnvironmentForConfig.config).driverKey ?? null } })));
   const reuseTaskDirectory = boundTaskDirectory && explicitDirectoryStrategies.every(value => {
     const strategy = parseObject(value);
     return Object.keys(strategy).length === 0 || (Object.keys(strategy).length === 1 && strategy.type === "project_primary");
