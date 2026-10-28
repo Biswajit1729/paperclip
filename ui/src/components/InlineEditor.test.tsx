@@ -218,6 +218,45 @@ describe("InlineEditor", () => {
     localStorage.clear();
   });
 
+  it.each([false, true])("isolates a mounted private edit after an account change (multiline=%s)", async (multiline) => {
+    mockSession.userId = "user-1";
+    localStorage.clear();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(
+        <QueryClientProvider client={client}>
+          <InlineEditor value="Original" multiline={multiline} defaultEditing={multiline} draftKey="private-switch" onSave={onSave} />
+        </QueryClientProvider>,
+      ));
+      if (!multiline) act(() => container.querySelector("span")!.click());
+      act(() => setNativeTextareaValue(container.querySelector("textarea")!, "Private account A draft"));
+      const storedA = localStorage.getItem("paperclip:inline-draft:v2:user-1:private-switch");
+      expect(storedA).toContain("Private account A draft");
+      mockSession.userId = "user-2";
+      await act(async () => {
+        client.setQueryData(queryKeys.auth.session, { user: { id: "user-2" } });
+        await new Promise(resolve => setTimeout(resolve, 0));
+      });
+      expect(container.querySelector("textarea")?.value ?? "").not.toContain("Private account A draft");
+      expect(container.textContent).not.toContain("Private account A draft");
+      expect(localStorage.getItem("paperclip:inline-draft:v2:user-1:private-switch")).toBe(storedA);
+      expect(localStorage.getItem("paperclip:inline-draft:v2:user-2:private-switch")).toBeNull();
+      expect(onSave).not.toHaveBeenCalled();
+      if (!multiline) act(() => container.querySelector("span")!.click());
+      act(() => setNativeTextareaValue(container.querySelector("textarea")!, "Account B edit"));
+      expect(localStorage.getItem("paperclip:inline-draft:v2:user-2:private-switch")).toContain("Account B edit");
+      expect(localStorage.getItem("paperclip:inline-draft:v2:user-2:private-switch")).not.toContain("Private account A draft");
+    } finally {
+      act(() => root.unmount());
+      client.clear();
+      localStorage.clear();
+      mockSession.userId = "user-1";
+    }
+  });
+
   it("does not call onSave when nullable is false/omitted and the field is cleared", () => {
     const onSave = vi.fn().mockResolvedValue(undefined);
     const root = createRoot(container);

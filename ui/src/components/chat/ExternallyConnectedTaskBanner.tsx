@@ -1,6 +1,6 @@
 import { TaskVoiceLauncher } from "@/components/voice/TaskVoiceLauncher";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ExternalLink, Paperclip, Radio } from "lucide-react";
 import type {
   ChatPublicationState,
@@ -25,6 +25,8 @@ import { issuesApi } from "@/api/issues";
 import { describeError } from "@/api/errors";
 import { classifySendFailure, type SendOutcome } from "@/lib/pending-send";
 import { useAutoResend } from "@/hooks/useDurableSubmit";
+import { useDraftOwner, useDraftOwnerReader } from "@/hooks/useDraftOwner";
+import { useAccountBoundMutation } from "@/hooks/useAccountBoundMutation";
 import {
   boardSendDraftKey,
   clearBoardSendDraft,
@@ -139,11 +141,13 @@ type ConnectedTaskProps = {
 
 export function ExternallyConnectedTaskBanner(props: ConnectedTaskProps) {
   const { binding } = useIssueChatBinding(props.companyId, props.issueId);
+  const draftOwner = useDraftOwner();
   return <>
-    {binding && binding.provider !== "speko" && binding.provider !== "agentmail" && <ConnectedTaskComposer
-      key={boardSendDraftKey(props.companyId, props.issueId, binding.endpointId, binding.conversationId)}
+    {draftOwner !== undefined && binding && binding.provider !== "speko" && binding.provider !== "agentmail" && <ConnectedTaskComposer
+      key={boardSendDraftKey(props.companyId, props.issueId, binding.endpointId, binding.conversationId, draftOwner)}
       {...props}
       binding={binding}
+      draftOwner={draftOwner}
     />}
     <TaskVoiceLauncher companyId={props.companyId} issueId={props.issueId} agentId={props.assigneeAgentId} boundEndpointId={binding?.provider === "speko" ? binding.endpointId : undefined} />
   </>;
@@ -156,7 +160,9 @@ function ConnectedTaskComposer({
   issueId,
   issueCacheRefs,
   binding,
-}: ConnectedTaskProps & { binding: ExternalChannelBindingSummary }) {
+  draftOwner,
+}: ConnectedTaskProps & { binding: ExternalChannelBindingSummary; draftOwner: string }) {
+  const readOwner = useDraftOwnerReader();
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
   const [composing, setComposing] = useState(false);
@@ -197,6 +203,7 @@ function ConnectedTaskComposer({
         issueId,
         binding.endpointId,
         binding.conversationId,
+        draftOwner,
       )
     : null;
   const loadedStorageKey = useRef<string | null>(null);
@@ -204,6 +211,12 @@ function ConnectedTaskComposer({
     if (!storageKey || loadedStorageKey.current === storageKey) return;
     loadedStorageKey.current = storageKey;
     try {
+      const legacyKey = boardSendDraftKey(companyId, issueId, binding.endpointId, binding.conversationId);
+      if (sessionStorage.getItem(legacyKey) !== null) {
+        setStorageError("An earlier update has an unknown sender. Open Activity to check its delivery before starting a new update.");
+        setComposing(true);
+        return;
+      }
       const saved = readBoardSendDraft(storageKey);
       retainedScopeKey.current = storageKey;
       retainedSend.current = saved;
@@ -268,6 +281,7 @@ function ConnectedTaskComposer({
   const publicationStatus = useQuery({
     queryKey: [
       "chat-publication-batch",
+      draftOwner,
       companyId,
       binding?.endpointId,
       binding?.conversationId,
@@ -297,21 +311,23 @@ function ConnectedTaskComposer({
       finishPublication();
     }
   }, [publication, publicationStatus.data, finishPublication]);
-  const publish = useMutation({
+  const publish = useAccountBoundMutation({
     mutationFn: (input: {
       attachmentIds: string[];
       body: string;
       idempotencyKey: string;
       endpointId: string;
       conversationId: string;
-    }) =>
-      chatEndpointsApi.publishBoardMessage(
+    }) => {
+      if (readOwner() !== draftOwner) throw new DOMException("Your account changed. Reopen this task to send from your current account.", "AbortError");
+      return chatEndpointsApi.publishBoardMessage(
         input.endpointId,
         input.conversationId,
         input.body,
         input.idempotencyKey,
         input.attachmentIds,
-      ),
+      );
+    },
     onSuccess: (result) => {
       invalidateTask();
       const feedback = publicationFeedback[result.state];
@@ -398,7 +414,7 @@ function ConnectedTaskComposer({
     active: resendWaiting,
     resend: async (): Promise<SendOutcome> => {
       const input = retainedSend.current;
-      if (!input) return "sent";
+      if (!input || readOwner() !== draftOwner) return "rejected";
       try {
         await publish.mutateAsync({
           ...input,
@@ -690,7 +706,8 @@ function ConnectedTaskComposer({
           )}
           {storageError && (
             <p role="alert" className="text-xs text-destructive">
-              {storageError}
+              {storageError}{" "}
+              <Link className="underline underline-offset-4" to={activityPath}>Open Activity</Link>
             </p>
           )}
           {rejection && (
@@ -891,6 +908,7 @@ function ConnectedTaskComposer({
               onClick={() => {
                 if (
                   uploadInFlight.current ||
+                  readOwner() !== draftOwner ||
                   !storageKey ||
                   loadedStorageKey.current !== storageKey ||
                   retainedScopeKey.current !== storageKey

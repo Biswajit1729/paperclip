@@ -64,7 +64,12 @@ export function queueContainedBlurCommit(container: HTMLDivElement, onCommit: ()
   };
 }
 
-export function InlineEditor({
+export function InlineEditor(props: InlineEditorProps) {
+  const draftOwner = useDraftOwner();
+  return <OwnedInlineEditor key={draftOwner ?? "unknown"} {...props} draftOwner={draftOwner} />;
+}
+
+function OwnedInlineEditor({
   value,
   onSave,
   as: Tag = "span",
@@ -80,7 +85,8 @@ export function InlineEditor({
   defaultEditing = false,
   onEditingChange,
   draftKey,
-}: InlineEditorProps) {
+  draftOwner,
+}: InlineEditorProps & { draftOwner: string | undefined }) {
   const [editing, setEditing] = useState(false);
   const [multilineEditing, setMultilineEditing] = useState(multiline && defaultEditing);
   const [multilineFocused, setMultilineFocused] = useState(false);
@@ -108,7 +114,6 @@ export function InlineEditor({
   // Unsaved edits are stored with the value they were based on, so a restored
   // edit never silently overwrites a newer server value, and per signed-in
   // account, so another account in this browser never sees or saves them.
-  const draftOwner = useDraftOwner();
   const storageKey = draftKey && draftOwner !== undefined ? `paperclip:inline-draft:v2:${draftOwner}:${draftKey}` : null;
   const clearStoredDraft = useCallback(() => {
     if (!storageKey) return;
