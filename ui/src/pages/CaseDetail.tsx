@@ -69,7 +69,7 @@ export function CaseDetail() {
 
   if (!caseIdentifier) return <Navigate to={listPath} replace />;
   if (caseQuery.isLoading || caseView.kind === "reconnecting") return <div data-testid="case-pages"><PageSkeleton variant="detail" /></div>;
-  if (caseQuery.isError || !caseData) {
+  if (caseView.kind === "error" || !caseData) {
     // "Not found" only for a real 403/404; an outage never looks like a missing case.
     const unavailable = caseQuery.error instanceof ApiError && [403, 404].includes(caseQuery.error.status);
     return <div data-testid="case-pages" className="space-y-4">
