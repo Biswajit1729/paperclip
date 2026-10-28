@@ -49,6 +49,7 @@ const RESERVED: &[&str] = &[
     "GITHUB_ENTERPRISE_TOKEN",
     "GITHUB_TOKEN",
     "HOME",
+    "KIMI_API_KEY",
     "NODE_OPTIONS",
     "NODE_PATH",
     "OPENAI_API_KEY",
@@ -199,6 +200,7 @@ mod tests {
             "[\"PAPERCLIP_API_KEY\"]",
             "[\"PAPERCLIP_RUNNER_BOOTSTRAP_TICKET\"]",
             "[\"OPENAI_API_KEY\"]",
+            "[\"KIMI_API_KEY\"]",
             "[\"LD_PRELOAD\"]",
             "[\"bad=name\"]",
             "[\"CUSTOM\",\"CUSTOM\"]",
@@ -215,6 +217,14 @@ mod tests {
             );
             assert_eq!(command.get_envs().count(), 0);
         }
+        let mut command = Command::new("unused");
+        assert!(apply_configured_environment(&mut command, |key| match key {
+            MARKER => Some("[\"KIMI_API_KEY\"]".into()),
+            "KIMI_API_KEY" => Some("selected-code-key".into()),
+            _ => None,
+        })
+        .is_err());
+        assert_eq!(command.get_envs().count(), 0);
         let mut command = Command::new("unused");
         assert!(
             apply_configured_environment(&mut command, |key| Some(if key == MARKER {

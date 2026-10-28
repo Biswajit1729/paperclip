@@ -209,6 +209,37 @@ describe("Codex ACPX harness driver", () => {
     await session.close({ reason: "native attribution verified" });
   });
 
+  it.each(["exact-final", "tool-only", "empty-final", "missing-end", "cancelled", "filtered", "paused", "max-tokens"])("Kimi native step boundaries separate commentary from the actual final response: %s", async scenario => {
+    const id = (n: number) => `kimi-message-${String(n).padStart(64, "0")}`;
+    const chunk = (n: number, kind: string, text = "", stream: "output" | "thought" = "output"): AcpRuntimeEvent => ({
+      type: "text_delta", text, stream, messageId: id(n), meta: { origin: "kimi-native-assistant", source: "kimi-turn-step-v1", kind },
+    });
+    const runtimeEvents = [chunk(1, "start"), chunk(1, "delta", "Calling finish."), chunk(1, "end:tool_use")];
+    if (scenario !== "tool-only") {
+      runtimeEvents.push(chunk(2, "start"), chunk(2, "delta", "private thought", "thought"));
+      if (scenario !== "empty-final") runtimeEvents.push(chunk(2, "delta", "EXACT_"), chunk(2, "delta", "MARKER"));
+      if (scenario !== "missing-end" && scenario !== "cancelled") runtimeEvents.push(chunk(2,
+        `end:${scenario === "filtered" || scenario === "paused" ? scenario : scenario === "max-tokens" ? "max_tokens" : "end_turn"}`));
+    }
+    const fixture = driverFixture({ agent: "kimi", model: "kimi-for-coding", providerPolicy: { readOnly: true } }, { runtimeEvents });
+    const session = await fixture.driver.openSession({ runId: "run-kimi-boundaries", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
+    const { turnId } = await session.startTurn({ message: { text: "Answer exactly" } });
+    fixture.finishTurn({ status: scenario === "cancelled" ? "cancelled" : "completed" });
+    const events = await collectUntil(session.events(), scenario === "missing-end" ? "turn.failed" : scenario === "cancelled" ? "turn.interrupted" : "turn.completed");
+    const progress = events.find(event => event.eventType === "item.delta" && event.payload.text === "Calling finish.")!;
+    expect(progress).toBeDefined();
+    expect(progress.itemId).toBe(`${turnId}:assistant-message:${id(1)}`);
+    const commentary = events.filter(event => event.eventType === "item.completed" && event.payload.kind === "agentMessage" && event.payload.channel === "commentary");
+    expect(commentary.filter(event => event.payload.text === "Calling finish.")).toHaveLength(1);
+    expect(commentary[0]!.itemId).toBe(progress.itemId);
+    const final = events.filter(event => event.eventType === "item.completed" && event.payload.kind === "agentMessage" && event.payload.channel === "final");
+    expect(final.map(event => event.payload.text)).toEqual(["exact-final", "max-tokens"].includes(scenario) ? ["EXACT_MARKER"] : []);
+    if (final.length) expect(final[0]!.itemId).toBe(`${turnId}:assistant-message:${id(2)}`);
+    expect(events.filter(event => event.payload.kind === "agentMessage").some(event => event.payload.text === "private thought")).toBe(false);
+    expect(events.filter(event => event.eventType === "item.delta" && event.payload.text === "").length).toBeGreaterThanOrEqual(2);
+    await session.close({ reason: "Kimi native final attribution verified" });
+  });
+
   it("delivers negotiated steering and follow-up distinctly, once, for the active turn", async () => {
     const fixture = driverFixture({ agent: "pi", model: "openrouter/deepseek/deepseek-v4-flash-0731", providerPolicy: { readOnly: true } }, { runtimeEvents: [] });
     fixture.host.steeringCapability.mockReturnValue({ steering: true, queuedFollowUp: true });

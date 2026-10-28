@@ -15,7 +15,7 @@ import {
 
 import { ACPX_CAPABILITY_PROFILES } from "./capability-profiles.js";
 
-const ACPX_AGENTS = ["claude", "codex", "grok", "pi", "cursor", "copilot"] as const;
+const ACPX_AGENTS = ["claude", "codex", "grok", "pi", "cursor", "copilot", "kimi"] as const;
 const ACPX_PERMISSION_MODES = [
   "approve-all",
   "approve-paperclip",
@@ -105,7 +105,7 @@ export function validateAcpxDriverConfig(
     return invalid(
       "agent",
       "invalid_agent",
-      "ACPX agent must be claude, codex, grok, cursor, copilot, or pi.",
+      "ACPX agent must be claude, codex, grok, cursor, copilot, kimi, or pi.",
     );
   }
   if (ACPX_CAPABILITY_PROFILES[agent].qualification !== "qualified") {

@@ -9,12 +9,12 @@ export const QUALIFIED_ACPX_PROFILE_DATA = {
     "protocolVersion": 1,
     "acpxVersion": "0.13.1",
     "agent": "grok",
-    "agentProfileVersion": 7,
+    "agentProfileVersion": 11,
     "agentServerPackage": "builtin:grok-acp",
     "agentServerVersion": "1",
     "agentRuntimePackage": "native:grok",
     "agentRuntimeVersion": "1.0.13",
-    "commandDigest": "sha256:6fcf754bf85aaca0b35ba6bad9926f11c60bdda5f7b180158c8f8b1be5e57d36",
+    "commandDigest": "sha256:22ddacd11dcae288b889f7eba4d0dd3ef47f991a237b6e1086f67ca5b77ccb45",
     "permissionPolicy": "interactive"
   },
   "pi": {
@@ -22,12 +22,12 @@ export const QUALIFIED_ACPX_PROFILE_DATA = {
     "protocolVersion": 1,
     "acpxVersion": "0.13.1",
     "agent": "pi",
-    "agentProfileVersion": 30,
+    "agentProfileVersion": 31,
     "agentServerPackage": "pi-acp",
     "agentServerVersion": "0.0.33",
     "agentRuntimePackage": "@earendil-works/pi-coding-agent",
     "agentRuntimeVersion": "1.0.0",
-    "commandDigest": "sha256:4517ab123dd89140ef462fc1905ac7a16a0dfcbaf21d67299a3c62de29c08a4d",
+    "commandDigest": "sha256:f9a18db021026bd94fd3b2f3d9c4be57da44121c5b58f55dfa7cb9acb9c77450",
     "permissionPolicy": "interactive"
   },
   "cursor": {
@@ -48,12 +48,12 @@ export const QUALIFIED_ACPX_PROFILE_DATA = {
     "protocolVersion": 1,
     "acpxVersion": "0.13.1",
     "agent": "copilot",
-    "agentProfileVersion": 71,
+    "agentProfileVersion": 73,
     "agentServerPackage": "@github/copilot",
     "agentServerVersion": "1.0.88",
     "agentRuntimePackage": null,
     "agentRuntimeVersion": null,
-    "commandDigest": "sha256:b7a25fe627daf3857ac8097d9a374b1ba15355176389b92457838bf19e9d91bd",
+    "commandDigest": "sha256:fc72d9cabbf83af638d15ce2a659bbc09e6c6e5d2478994baaf593b79e8740e3",
     "permissionPolicy": "interactive"
   },
   "claude": {
@@ -80,6 +80,20 @@ export const QUALIFIED_ACPX_PROFILE_DATA = {
     "agentRuntimePackage": "@openai/codex",
     "agentRuntimeVersion": "0.160.0",
     "commandDigest": "sha256:443491f4e814501a5dc47347e4510e84faeec9c9382e2d4e53bfe69386d5aabc",
+    "permissionPolicy": "interactive"
+  },
+  "kimi": {
+    "driverKind": "acpx_runtime",
+    "protocolVersion": 1,
+    "acpxVersion": "0.13.1",
+    "agent": "kimi",
+    "agentProfileVersion": 8,
+    "agentServerPackage": "@moonshot-ai/kimi-code",
+    "agentServerVersion": "2.3.3",
+    "agentRuntimePackage": null,
+    "agentRuntimeVersion": null,
+    "commandDigest": "sha256:53c63af8722894e14d48ed55526f99fcd79e06c86ae1c7aa384ef7ee8c56efd4",
+    "qualificationStatus": "pending",
     "permissionPolicy": "interactive"
   }
 } as const;

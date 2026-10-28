@@ -13,6 +13,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createAcpxSidecarHostEnvironment, createSanitizedAcpxSpawnInput } from "../drivers/acpx/environment.js";
+import { createKimiMessageProjection } from "../drivers/acpx/kimi-message-boundary.js";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -559,6 +560,31 @@ describe("qualified ACPX runtime sidecar", () => {
       captureNormalizedInput: capture })).rejects.toThrow("cannot be encoded without changing its identity");
     expect(capture).not.toHaveBeenCalled(); expect(tools.size).toBe(0); expect(emitted).toEqual([]);
     expect(wire.writes).toEqual([]); expect(wire.sequence()).toBe(0);
+  });
+
+  it("preserves validated native assistant boundaries without exposing Kimi provenance metadata", () => {
+    const source = readFileSync(fileURLToPath(new URL("./acpx-runtime-sidecar.ts", import.meta.url)), "utf8");
+    const start = source.indexOf('  if (event.type === "text_delta") {', source.indexOf("function sanitizeRuntimeEvent"));
+    const end = source.indexOf('  if (event.type === "status") {', start);
+    const sanitize = new Function("boundedOptionalText", "stableProviderIdentity", `return event => {${source.slice(start, end)} return null;}`)(
+      (value: string) => value, (value: string) => `stable-${value}`,
+    );
+    const projection = createKimiMessageProjection<{ type: string; text: string; stream: string; messageId: string; meta: Record<string, string> }>();
+    const event = (kind: string, text = "", stream = "output") => ({ type: "text_delta", text, stream,
+      messageId: `kimi-message-${"a".repeat(64)}`,
+      meta: { origin: "kimi-native-assistant", source: "kimi-turn-step-v1", kind, secret: "PRIVATE_PROVENANCE" } });
+    const frames = [sanitize(projection.normalize(event("start"))),
+      sanitize(projection.normalize(event("delta", "Working."))),
+      sanitize(projection.normalize(event("delta", "Private reasoning", "thought"))),
+      sanitize(projection.normalize(event("end:tool_use")))];
+    expect(frames[0]).toMatchObject({ text: "", assistantMessageBoundary: { phase: "start" } });
+    expect(frames[1]).toMatchObject({ type: "text_delta", text: "Working." });
+    expect(frames[2]).toMatchObject({ type: "thinking" });
+    expect(frames[3]).toMatchObject({ text: "", assistantMessageBoundary: { phase: "end", stopReason: "toolUse" } });
+    expect(new Set(frames.map(frame => frame.messageId)).size).toBe(1);
+    expect(JSON.stringify(frames)).not.toContain("PRIVATE_PROVENANCE");
+    expect(JSON.stringify(frames)).not.toContain("kimi-native-assistant");
+    projection.settle();
   });
 
   it("passes only validated Pi native boundaries and history through the real text sanitizer", () => {
@@ -1258,6 +1284,7 @@ describe("qualified ACPX runtime sidecar", () => {
   it.each([
     ["cursor", "explicit-cursor-model"],
     ["copilot", "explicit-copilot-model"],
+    ["kimi", "explicit-kimi-model"],
   ] as const)("initializes the declared %s profile with its current admission status", async (agent, model) => {
     const sidecar = startSidecar();
     sidecar.write(initializeRequest(1, agent, model));
@@ -1286,7 +1313,7 @@ describe("qualified ACPX runtime sidecar", () => {
       ok: false,
       error: {
         code: "acpx_sidecar_command_failed",
-        message: "ACPX agent must be claude, codex, grok, cursor, copilot, or pi",
+        message: "ACPX agent must be claude, codex, grok, cursor, copilot, kimi, or pi",
         retryable: false,
       },
     });

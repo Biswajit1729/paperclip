@@ -1,3 +1,4 @@
+import { verifyKimiInstallation } from "./kimi-installation.js";
 import { assertCopilotCredentials, classifyCopilotFailure } from "./copilot-profile.js";
 import { verifyCopilotInstallation } from "./copilot-installation.js";
 import { verifyCursorInstallation } from "./cursor-installation.js";
@@ -8,6 +9,7 @@ import { verifyQualifiedAcpxInstallation, type VerifiedAcpxInstallation } from "
 
 /** Closed build-owned registry. Provider branches add their pinned installations here. */
 export async function verifyAcpxProfileInstallation(profile: QualifiedAcpxProfile): Promise<VerifiedAcpxInstallation> {
+  if (profile.agent === "kimi") return verifyKimiInstallation(profile);
   if (profile.agent === "pi") return verifyPiInstallation(profile);
   if (profile.agent === "copilot") return verifyCopilotInstallation(profile);
   if (profile.agent === "cursor") {
@@ -31,6 +33,9 @@ export async function assertAcpxProfileWorkspace(agent: QualifiedAcpxAgent, work
 /** Called with the sanitized launch environment, never ambient process.env. */
 export function assertAcpxProfileEnvironment(agent: QualifiedAcpxAgent, environment: Readonly<NodeJS.ProcessEnv>): void {
   if (agent === "copilot") assertCopilotCredentials(environment);
+  if (agent === "kimi" && !environment.KIMI_API_KEY?.trim()) {
+    throw Object.assign(new Error("Kimi Code credentials are missing. Bind a company secret to KIMI_API_KEY in the agent environment."), { code: "KIMI_CREDENTIALS_MISSING", retryable: false });
+  }
   if (agent === "cursor" && !environment.CURSOR_API_KEY?.trim() && !environment.CURSOR_AUTH_TOKEN?.trim()) {
     throw Object.assign(new Error("Cursor credentials are missing. Bind a company secret to CURSOR_API_KEY or CURSOR_AUTH_TOKEN in the agent environment."), { code: "CURSOR_CREDENTIALS_MISSING", retryable: false });
   }
@@ -68,5 +73,10 @@ export async function probeAcpxCursorInstallation(model: string): Promise<void> 
 
 export async function probeAcpxPiInstallation(model: string): Promise<void> {
   const installation = await verifyAcpxProfileInstallation(resolveQualifiedAcpxProfile("pi", model));
+  await (await installation.openCommand()).close();
+}
+
+export async function probeAcpxKimiInstallation(model: string): Promise<void> {
+  const installation = await verifyAcpxProfileInstallation(resolveQualifiedAcpxProfile("kimi", model));
   await (await installation.openCommand()).close();
 }

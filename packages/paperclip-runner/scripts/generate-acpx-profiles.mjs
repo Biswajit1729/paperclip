@@ -1,3 +1,4 @@
+import { kimiProfileIdentity, KIMI_PROFILE_VERSION } from "./kimi-profile-identity.mjs";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
@@ -17,6 +18,10 @@ assert.deepEqual(await readJson(`test/fixtures/grok-profile-v${GROK_PROFILE_VERS
 assert.equal(manifest.profiles.grok.agentProfileVersion, GROK_PROFILE_VERSION);
 assert.equal(manifest.profiles.grok.commandDigest, grokIdentity.commandDigest);
 assert.equal(`sha256:${createHash("sha256").update(await readFile(new URL("src/providers/grok/launcher.cjs", root))).digest("hex")}`, grokIdentity.commandDigest, "Grok launcher source stamp is stale");
+const kimiIdentity = kimiProfileIdentity();
+assert.deepEqual(await readJson(`test/fixtures/kimi-profile-v${KIMI_PROFILE_VERSION}-identity.json`), kimiIdentity, "Kimi source identity is stale; advance its profile before regeneration");
+assert.equal(manifest.profiles.kimi.agentProfileVersion, KIMI_PROFILE_VERSION);
+assert.equal(manifest.profiles.kimi.commandDigest, kimiIdentity.commandDigest);
 const entries = Object.entries(manifest.profiles);
 for (const [agent, profile] of entries) {
   assert.match(agent, /^[a-z]+$/);

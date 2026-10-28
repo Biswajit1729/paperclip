@@ -171,6 +171,7 @@ export interface AcpxRuntimePortOpenOptions {
   stateDirectory: string;
   providerSessionKey: string;
   permissionMode: NativeAcpxPermissionMode;
+  readOnly?: boolean;
   mode?: string;
   piThinkingLevel?: PiThinkingLevel;
   claudeEffort?: "low" | "medium" | "high" | "xhigh" | "max";
@@ -381,7 +382,7 @@ export class AcpxRuntimeHost {
           grokEffort: resolveGrokEffort(options.agent, options.grokEffort),
           grokDisableWebSearch: resolveGrokDisableWebSearch(options.agent, options.grokDisableWebSearch),
           ...(preconfigured ? { homeBinding: preconfiguredHomeEnvironment(options.environment) } : {}),
-          ...(["cursor", "copilot", "pi"].includes(options.agent) && options.providerPolicy !== undefined
+          ...(["cursor", "copilot", "pi", "kimi"].includes(options.agent) && options.providerPolicy !== undefined
             ? { providerPolicy: options.providerPolicy } : {}),
         }),
       dependencies.retainAdmissionCleanup,
@@ -534,7 +535,7 @@ export class AcpxRuntimeHost {
       // agent and run. Environment/config values cannot widen the grant. Each
       // resumed process receives the newly registered copy; collection already
       // requires verified provider shutdown in the native executor.
-      const agentFiles = ["cursor", "copilot", "pi"].includes(options.agent)
+      const agentFiles = ["cursor", "copilot", "pi", "kimi"].includes(options.agent)
         ? bindAcpxAgentFiles(options.runtimeContext, [sandbox.root,
           ...(installation.agentServerPackageJsonPath === null ? [] : [dirname(installation.agentServerPackageJsonPath)]),
         ]) : null;
@@ -577,7 +578,7 @@ export class AcpxRuntimeHost {
           PAPERCLIP_PI_READ_ROOTS: JSON.stringify([...(options.providerPolicy?.readRoots ?? []), ...skills.readRoots]),
         });
       }
-      if (!preconfigured && (options.agent === "claude" || options.agent === "grok")) {
+      if (!preconfigured && (options.agent === "claude" || options.agent === "grok" || options.agent === "kimi")) {
         // The lifetime lease proves the previous provider has stopped. Refresh
         // the assigned snapshot before every launch, including durable resume;
         // Claude discovers user skills beneath its isolated CLAUDE_CONFIG_DIR.
@@ -641,6 +642,7 @@ export class AcpxRuntimeHost {
             providerSessionKey: binding.profileSessionKey,
             restoringSession: options.expectedIdentity !== undefined,
             permissionMode: binding.permissionMode,
+            readOnly: options.providerPolicy?.readOnly,
             mode: binding.mode,
             piThinkingLevel: binding.piThinkingLevel,
             claudeEffort: binding.claudeEffort,

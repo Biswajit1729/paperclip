@@ -8,6 +8,7 @@ import type { QualifiedAcpxAgent } from "./qualified-profiles.js";
 export const ACPX_CREDENTIAL_BINDING_ENV = "PAPERCLIP_ACPX_CREDENTIAL_BINDING";
 export const ACPX_CREDENTIAL_NAMES: Readonly<Record<QualifiedAcpxAgent, readonly string[]>> = {
   grok: ["XAI_API_KEY"],
+  kimi: ["KIMI_API_KEY"],
   pi: PI_CREDENTIAL_NAMES,
   cursor: ["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"],
   copilot: ["COPILOT_GITHUB_TOKEN"],
@@ -25,7 +26,17 @@ function removePiIamCredentials(environment: NodeJS.ProcessEnv): void {
   }
 }
 
-const isCandidate = (agent: QualifiedAcpxAgent) => agent === "pi" || agent === "cursor" || agent === "copilot";
+function removeKimiRuntimeOverrides(environment: NodeJS.ProcessEnv): void {
+  const isOverride = (name: string) => /^KIMI_MODEL_/.test(name.toUpperCase())
+    || ["KIMI_SECONDARY_MODEL", "KIMI_CODE_HOME"].includes(name.toUpperCase());
+  const names = configuredEnvironmentKeys(environment);
+  for (const name of Object.keys(environment)) if (isOverride(name)) delete environment[name];
+  if (environment[CONFIGURED_ENVIRONMENT_KEYS] !== undefined) {
+    environment[CONFIGURED_ENVIRONMENT_KEYS] = JSON.stringify(names.filter(name => !isOverride(name)));
+  }
+}
+
+const isCandidate = (agent: QualifiedAcpxAgent) => agent === "pi" || agent === "cursor" || agent === "copilot" || agent === "kimi";
 
 /** Mint only at the controller's explicit task-environment boundary, never by copying a marker. */
 export function createAcpxCredentialBinding(
@@ -77,6 +88,7 @@ export function createAcpxSidecarHostEnvironment(
     }
   }
   if (agent === "pi") removePiIamCredentials(result);
+  if (agent === "kimi") removeKimiRuntimeOverrides(result);
   return result;
 }
 
@@ -152,6 +164,7 @@ export function createSanitizedAcpxSpawnInput(
     result[key] = value;
   }
   if (agent === "pi") removePiIamCredentials(result);
+  if (agent === "kimi") removeKimiRuntimeOverrides(result);
   if (agent === "claude" && isOpenRouterUrl(result.ANTHROPIC_BASE_URL)) {
     result.ANTHROPIC_CUSTOM_HEADERS = openRouterClaudeHeaders(result.ANTHROPIC_CUSTOM_HEADERS);
   }
