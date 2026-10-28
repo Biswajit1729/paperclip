@@ -607,7 +607,7 @@ outage. `<QueryErrorState>` is the error presentation on its own, in `page`,
 `usePluginLaunchers`) is the one exception: it never reports a transient
 failure and stays collapsed instead.
 
-`pnpm check:query-error-rendering` reports UI code that renders raw query errors
+`node scripts/check-query-error-rendering.mjs --summary` reports UI code that renders raw query errors
 (`{error.message}`, `isError ?`) or sets `retry: false`. It is report-only for
 the long tail; pass `--enforce` to fail on every finding. Files listed in
 `ENFORCED_FILES` in the script have already migrated, and a finding in one of

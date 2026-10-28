@@ -111,7 +111,7 @@ jobs:
 
       # Report-only for now (always exits 0); --enforce turns findings into failures.
       - name: Report raw query-error rendering
-        run: pnpm check:query-error-rendering
+        run: node scripts/check-query-error-rendering.mjs --summary
 
       - name: Test query-error rendering check
         run: node --test ./scripts/check-query-error-rendering.test.mjs
