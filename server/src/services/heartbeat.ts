@@ -1296,6 +1296,7 @@ export function heartbeatService(
     resumeQueuedRuns,
     parseHeartbeatPolicy,
     claimDueTimerHeartbeat,
+    startNextQueuedRunsForCompany,
   } = heartbeatQueue;
 
   // Earlier factories capture these callbacks before queue construction.
@@ -3941,6 +3942,12 @@ export function heartbeatService(
             });
         }
         await startNextQueuedRunForAgent(run.agentId);
+        void startNextQueuedRunsForCompany(run.companyId, run.agentId).catch(err => {
+          logger.warn(
+            { err, runId: run.id, companyId: run.companyId },
+            "failed to promote queued heartbeat runs for company",
+          );
+        });
       }
     }
   }

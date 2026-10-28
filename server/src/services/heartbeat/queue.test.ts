@@ -1,8 +1,8 @@
 import { claimNativeSessionResumptions } from "../native-runtime/native-finalization-reconciler.js";
 import type { Db } from "@paperclipai/db";
 import { agents, agentWakeupRequests, caseHandoffs, cases, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issueComments, issues, nativeRunFinalizations } from "@paperclipai/db";
-import { eq, inArray, sql } from "drizzle-orm";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { and, eq, inArray, sql } from "drizzle-orm";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { createPostgresWakeQueueAdapter } from "../../modules/wake-queue/adapters/postgres.js";
 import { createReleaseIssueExecution } from "../../modules/wake-queue/application/use-cases.js";
@@ -90,6 +90,7 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
   beforeEach(async () => {
     await db.execute(sql`truncate table companies restart identity cascade`);
   });
+  afterEach(() => vi.unstubAllEnvs());
 
   async function fixture(status = "running") {
     const [company] = await db.insert(companies).values({ name: "Queue module", issuePrefix: "QM" }).returning();
@@ -99,6 +100,56 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     const [run] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent.id, status, invocationSource: "assignment", wakeupRequestId: wake.id, startedAt: status === "running" ? new Date() : null, contextSnapshot: { issueId: issue.id } }).returning();
     await db.update(issues).set({ executionRunId: run.id, executionAgentNameKey: agent.name, executionLockedAt: new Date() }).where(eq(issues.id, issue.id));
     return { company, agent, issue, wake, run };
+  }
+
+  async function queuedAgents(companyId: string, count: number) {
+    const seeded = [];
+    for (let index = 0; index < count; index++) {
+      const [agent] = await db.insert(agents).values({
+        companyId,
+        name: `Concurrency agent ${index}`,
+        role: "engineer",
+        status: "idle",
+        adapterType: "process",
+        adapterConfig: {},
+        runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } },
+      }).returning();
+      const [issue] = await db.insert(issues).values({
+        companyId,
+        title: `Concurrency issue ${index}`,
+        status: "todo",
+        assigneeAgentId: agent.id,
+      }).returning();
+      const [wake] = await db.insert(agentWakeupRequests).values({
+        companyId,
+        agentId: agent.id,
+        source: "assignment",
+        status: "claimed",
+        claimedAt: new Date(),
+      }).returning();
+      const [run] = await db.insert(heartbeatRuns).values({
+        companyId,
+        agentId: agent.id,
+        status: "queued",
+        invocationSource: "assignment",
+        wakeupRequestId: wake.id,
+        contextSnapshot: { issueId: issue.id },
+      }).returning();
+      await db.update(heartbeatRuns).set({ responsibleUserId: "queue-test-user" }).where(eq(heartbeatRuns.id, run.id));
+      seeded.push({ agent, issue, run });
+    }
+    return seeded;
+  }
+
+  function queueDependenciesFor(...seededCompanies: Awaited<ReturnType<typeof queuedAgents>>[]) {
+    const deps = callbacks(db);
+    const agentsById = new Map(seededCompanies.flat().map(({ agent }) => [agent.id, agent]));
+    deps.getAgent.mockImplementation(async (agentId) => {
+      const agent = agentsById.get(agentId);
+      if (!agent) throw new Error(`Missing queue test agent ${agentId}`);
+      return agent;
+    });
+    return deps;
   }
 
   async function strandedMention(runtimeMode = "legacy") {
@@ -140,6 +191,118 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
       expect(row.updatedAt.getTime()).toBeGreaterThan(0);
     }
   }
+
+  it("serializes concurrent claims against the company cap and leaves excess runs queued", async () => {
+    const [company] = await db.insert(companies).values({
+      name: "Company concurrency cap",
+      issuePrefix: "QCC",
+      status: "active",
+    }).returning();
+    const seeded = await queuedAgents(company.id, 4);
+    for (const { agent } of seeded.slice(0, 2)) {
+      await db.insert(heartbeatRuns).values({
+        companyId: company.id,
+        agentId: agent.id,
+        status: "running",
+        invocationSource: "assignment",
+        startedAt: new Date(),
+      });
+    }
+    vi.stubEnv("PAPERCLIP_COMPANY_MAX_CONCURRENT_RUNS", undefined);
+    vi.stubEnv("PAPERCLIP_COMPANY_MAX_CONCURRENT_RUNS_OVERRIDES", `${company.id}=3`);
+    const deps = queueDependenciesFor(seeded);
+    const queue = createHeartbeatQueue(db, deps);
+
+    await Promise.all(seeded.map(({ agent }) => queue.startNextQueuedRunForAgent(agent.id)));
+
+    const rows = await db.select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+      .from(heartbeatRuns).where(inArray(heartbeatRuns.id, seeded.map(({ run }) => run.id)));
+    expect(rows.filter(row => row.status === "running")).toHaveLength(1);
+    expect(rows.filter(row => row.status === "queued")).toHaveLength(3);
+    expect(rows.map(row => row.status)).not.toContain("failed");
+    expect(rows.map(row => row.status)).not.toContain("cancelled");
+    expect(deps.executeRun).toHaveBeenCalledOnce();
+    expect(await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, company.id), eq(heartbeatRuns.status, "running")))).toHaveLength(3);
+  });
+
+  it("promotes a different agent's queued run after a capped company run finishes", async () => {
+    const [company] = await db.insert(companies).values({
+      name: "Company promotion cap",
+      issuePrefix: "QCP",
+      status: "active",
+    }).returning();
+    const seeded = await queuedAgents(company.id, 2);
+    vi.stubEnv("PAPERCLIP_COMPANY_MAX_CONCURRENT_RUNS", undefined);
+    vi.stubEnv("PAPERCLIP_COMPANY_MAX_CONCURRENT_RUNS_OVERRIDES", `${company.id}=1`);
+    const deps = queueDependenciesFor(seeded);
+    const queue = createHeartbeatQueue(db, deps);
+    await queue.startNextQueuedRunForAgent(seeded[0].agent.id);
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, seeded[0].run.id));
+    deps.executeRun.mockClear();
+
+    await queue.startNextQueuedRunsForCompany(company.id, seeded[0].agent.id);
+
+    const [nextRun] = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, seeded[1].run.id));
+    expect(nextRun.status).toBe("running");
+    expect(deps.executeRun).toHaveBeenCalledExactlyOnceWith(seeded[1].run.id);
+  });
+
+  it("does not apply one company's cap to another company", async () => {
+    const [companyA] = await db.insert(companies).values({
+      name: "Capped company",
+      issuePrefix: "QCA",
+      status: "active",
+    }).returning();
+    const [companyB] = await db.insert(companies).values({
+      name: "Uncapped company",
+      issuePrefix: "QCB",
+      status: "active",
+    }).returning();
+    const seededA = await queuedAgents(companyA.id, 1);
+    const seededB = await queuedAgents(companyB.id, 1);
+    await db.insert(heartbeatRuns).values({
+      companyId: companyA.id,
+      agentId: seededA[0].agent.id,
+      status: "running",
+      invocationSource: "assignment",
+      startedAt: new Date(),
+    });
+    vi.stubEnv("PAPERCLIP_COMPANY_MAX_CONCURRENT_RUNS", undefined);
+    vi.stubEnv("PAPERCLIP_COMPANY_MAX_CONCURRENT_RUNS_OVERRIDES", `${companyA.id}=1`);
+    const deps = queueDependenciesFor(seededA, seededB);
+    const queue = createHeartbeatQueue(db, deps);
+
+    await expect(queue.startNextQueuedRunForAgent(seededA[0].agent.id)).resolves.toEqual([]);
+    await queue.startNextQueuedRunForAgent(seededB[0].agent.id);
+
+    const [runB] = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, seededB[0].run.id));
+    expect(runB.status).toBe("running");
+  });
+
+  it("keeps the existing concurrent behavior when no company cap is configured", async () => {
+    const [company] = await db.insert(companies).values({
+      name: "Uncapped company",
+      issuePrefix: "QCU",
+      status: "active",
+    }).returning();
+    const seeded = await queuedAgents(company.id, 2);
+    vi.stubEnv("PAPERCLIP_COMPANY_MAX_CONCURRENT_RUNS", undefined);
+    vi.stubEnv("PAPERCLIP_COMPANY_MAX_CONCURRENT_RUNS_OVERRIDES", undefined);
+    const deps = queueDependenciesFor(seeded);
+    const queue = createHeartbeatQueue(db, deps);
+
+    await Promise.all(seeded.map(({ agent }) => queue.startNextQueuedRunForAgent(agent.id)));
+
+    const rows = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns)
+      .where(inArray(heartbeatRuns.id, seeded.map(({ run }) => run.id)));
+    expect(rows).toHaveLength(2);
+    expect(rows.every(row => row.status === "running")).toBe(true);
+    expect(deps.executeRun).toHaveBeenCalledTimes(2);
+  });
 
   it.each(["legacy", "native"])("keeps saved %s messages while avoiding repeated native source release", async runtimeMode => {
     const seeded = await strandedMention(runtimeMode);
