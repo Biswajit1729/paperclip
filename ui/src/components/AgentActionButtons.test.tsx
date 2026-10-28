@@ -146,7 +146,7 @@ describe("AgentActionButtons", () => {
     expect(mockAgentsApi.resume).not.toHaveBeenCalled();
   });
 
-  it.each(["paused", undefined] as const)("replaces run controls with one setup action when lifecycle is %s", async lifecycleState => {
+  it.each(["paused", "preparing", "verifying", "pausing", undefined] as const)("replaces run controls with one setup action when lifecycle is %s", async lifecycleState => {
     render(makeAgent({ adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "claude" }, status: "paused", lifecycleState, pauseReason: "setup" }));
     await flushReact();
     const buttons = [...container.querySelectorAll("button")];
@@ -159,6 +159,12 @@ describe("AgentActionButtons", () => {
     expect(Object.fromEntries(target.searchParams)).toMatchObject({ setupAgentId: "agent-1", adapterType: "paperclip_runner", runnerProvider: "claude", runner: "paperclip" });
     expect(mockAgentsApi.invoke).not.toHaveBeenCalled();
     expect(mockAgentsApi.resume).not.toHaveBeenCalled();
+  });
+
+  it.each(["terminating", "cleaning_up", "terminated", "rejected"] as const)("does not reopen setup during %s", async lifecycleState => {
+    render(makeAgent({ status: "terminated", lifecycleState, pauseReason: "setup" }));
+    await flushReact();
+    expect(container.textContent).not.toContain("Finish setup");
   });
 
   it("checks unsaved changes before leaving to finish setup", async () => {

@@ -240,7 +240,8 @@ export function AgentActionButtons({
   const canonicalAgentRef = agentRouteRef(agent);
   const isPaused = agent.lifecycleState ? agent.lifecycleState === "paused" : agent.status === "paused";
   const isError = agent.status === "error";
-  const needsSetup = isPaused && agent.pauseReason === "setup";
+  const needsSetup = agent.pauseReason === "setup" && agent.status !== "terminated"
+    && !["terminating", "cleaning_up", "terminated", "rejected"].includes(agent.lifecycleState ?? "");
 
   const reportError = useCallback(
     (message: string) => {
