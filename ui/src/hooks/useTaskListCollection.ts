@@ -8,7 +8,7 @@ const expanded: ReadonlySet<string> = new Set();
 
 /** Shared collection behavior for the proposed task UI. Supply accessible data;
  * this hook scopes presentation, and does not replace server authorization. */
-export function useTaskListCollection({ items, companyId, userId, viewStorageKey, initialQuery = "", query: controlledQuery, onQueryChange, view: controlledView, initialFilters }: {
+export function useTaskListCollection({ items, companyId, userId, viewStorageKey, initialQuery = "", query: controlledQuery, onQueryChange, view: controlledView, initialFilters, searchMode = "local" }: {
   items: readonly TaskListItem[];
   companyId: string | null;
   userId: string | null;
@@ -18,6 +18,8 @@ export function useTaskListCollection({ items, companyId, userId, viewStorageKey
   onQueryChange?: (query: string) => void;
   view?: TaskListView;
   initialFilters?: Partial<IssueFilterState>;
+  /** Server results may match comments, documents, or normalized identifiers. */
+  searchMode?: "local" | "server";
 }) {
   const [queryState, setQueryState] = useState(initialQuery);
   const query = controlledQuery ?? queryState;
@@ -44,8 +46,8 @@ export function useTaskListCollection({ items, companyId, userId, viewStorageKey
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const matchingItems = companyItems.filter(item => filteredIds.has(item.issue.id)
     && matchesTaskListView(view, item.issue, Boolean(item.unread), userId)
-    && [item.issue.title, item.issue.identifier, item.issue.description, item.createdBy, item.assignee, item.issue.project?.name,
-      ...(item.issue.labels ?? []).map(label => label.name)].some(value => value?.toLocaleLowerCase().includes(normalizedQuery)));
+    && (searchMode === "server" || [item.issue.title, item.issue.identifier, item.issue.description, item.createdBy, item.assignee, item.issue.project?.name,
+      ...(item.issue.labels ?? []).map(label => label.name)].some(value => value?.toLocaleLowerCase().includes(normalizedQuery))));
   const visibleItems = includeTaskListAncestors(companyItems, matchingItems);
   const parentIds = new Set(companyItems.flatMap(item => item.issue.parentId ? [item.issue.parentId] : []));
   const allExpanded = ![...parentIds].some(id => collapsedIds.has(id));

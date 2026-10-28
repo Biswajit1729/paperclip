@@ -1956,6 +1956,7 @@ export function TaskChatCompactInteractionCard({
 
   if (coordinatorEnabled && presentation === "timeline" && ["accepted", "answered", "rejected"].includes(interaction.status)
     && interaction.kind !== "connection_intent"
+    && interaction.kind !== "request_item_verdicts"
     && !(interaction.kind === "request_confirmation" && (interaction.payload.toolAction || interaction.payload.secretProposal || interaction.payload.connectionAuthorization))) {
     return <CoordinatorInteractionReceipt interaction={interaction} />;
   }

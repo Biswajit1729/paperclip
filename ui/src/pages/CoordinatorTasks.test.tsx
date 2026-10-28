@@ -62,6 +62,25 @@ describe("Coordinator tasks using the proposed table", () => {
     expect(mocks.list).toHaveBeenCalledWith("company", expect.objectContaining({ q: "launch", participantAgentId: "agent", workspaceId: "workspace", offset: 0 }), expect.anything());
     expect(host.querySelector('[data-task-id="search-result"]')).not.toBeNull();
   });
+  it.each(["phrase found only in a comment", "PAP 7", "launch summaries"])("retains server matches for %s without a second local text filter", async query => {
+    mocks.list.mockResolvedValue([createIssue({ id: "server-match", identifier: "PAP-7", title: "Launch summary", description: "Saved brief", companyId: "company", parentId: null })]);
+    await mount(`/issues?q=${encodeURIComponent(query)}`);
+    expect(mocks.list).toHaveBeenCalledWith("company", expect.objectContaining({ q: query }), expect.anything());
+    expect(host.querySelector('[data-task-id="server-match"]')).not.toBeNull();
+  });
+  it("still applies assignee filters to server search matches", async () => {
+    mocks.list.mockResolvedValue([
+      createIssue({ id: "chosen", companyId: "company", parentId: null, assigneeAgentId: "chosen-agent" }),
+      createIssue({ id: "other", companyId: "company", parentId: null, assigneeAgentId: "other-agent" }),
+    ]);
+    await mount("/issues?q=comment-only&assignee=chosen-agent");
+    expect([...host.querySelectorAll("[data-task-id]")].map(node => node.getAttribute("data-task-id"))).toEqual(["chosen"]);
+  });
+  it("keeps local search for the hydrated Needs attention collection", async () => {
+    await mount("/issues?view=needs_attention&q=no-matching-decision");
+    expect(host.querySelectorAll("[data-task-id]")).toHaveLength(0);
+    expect(host.textContent).toContain("No tasks match this view");
+  });
   it("keeps inaccessible or failed pending tasks visible as an error, not a false all-clear", async () => {
     mocks.get.mockRejectedValue(new Error("Task unavailable"));
     await mount("/issues?view=needs_attention");

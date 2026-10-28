@@ -79,6 +79,17 @@ describe("shared task-list collection behavior", () => {
     expect(collection.matchingItems).toHaveLength(3);
   });
 
+  it("trusts server search while preserving company, status, and view filters", () => {
+    render({ query: "document-only match", searchMode: "server" });
+    expect(collection.query).toBe("document-only match");
+    expect(collection.matchingItems.map(item => item.issue.id)).toEqual(["parent", "child", "grandchild"]);
+    act(() => collection.updateFilters({ statuses: ["in_review"] }));
+    expect(collection.matchingItems.map(item => item.issue.id)).toEqual(["child"]);
+    expect(collection.visibleItems.map(item => item.issue.id)).toEqual(["parent", "child"]);
+    act(() => { collection.updateFilters({ statuses: [] }); collection.setView("unread"); });
+    expect(collection.matchingItems.map(item => item.issue.id)).toEqual(["child"]);
+  });
+
   it("keeps view preferences isolated and clears the active collection without losing layout", () => {
     act(() => collection.setView("unread"));
     act(() => collection.setLayout("board"));

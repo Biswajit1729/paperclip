@@ -88,6 +88,7 @@ export function CoordinatorTasks() {
     assignee: issue.assigneeAgentId ? agentNames.get(issue.assigneeAgentId) ?? "Unknown agent" : users.get(issue.assigneeUserId ?? "") ?? null,
   }));
   const collection = useTaskListCollection({ items, companyId, userId, query, onQueryChange: setQuery, view: "all",
+    searchMode: needsAttention ? "local" : "server",
     viewStorageKey: taskListViewStorageKey("coordinator", userId ?? "local-board"),
     initialFilters: { assignees: params.get("assignee") ? [params.get("assignee")!] : [] },
   });
