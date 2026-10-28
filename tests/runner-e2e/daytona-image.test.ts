@@ -36,6 +36,23 @@ describe("runner E2E Daytona image contract", () => {
     expect(path.matchesGlob("packages/paperclip-runner/test/fixtures/copilot-live-denial-2026-09-28.json", exception)).toBe(false);
   });
 
+  it("retains the active Pi identity declaration in Docker context and content inputs", async () => {
+    const [manifestSource, dockerignore] = await Promise.all([
+      readFile(path.join(repositoryRoot, "packages/paperclip-runner/acpx-profiles.json"), "utf8"),
+      readFile(path.join(repositoryRoot, ".dockerignore"), "utf8"),
+    ]);
+    const profile = JSON.parse(manifestSource).profiles.pi;
+    const fixturePath = `packages/paperclip-runner/test-fixtures/pi-acp/profile-v${profile.agentProfileVersion}-identity.json`;
+    expect(DAYTONA_IMAGE_INPUT_PATHS).toContain(fixturePath);
+    const identity = JSON.parse(await readFile(path.join(repositoryRoot, fixturePath), "utf8"));
+    expect(identity.commandDigest).toBe(profile.commandDigest);
+    const lastRule = dockerignore.split(/\r?\n/).filter(rule => rule && !rule.startsWith("#")).filter(rule => {
+      const pattern = rule.startsWith("!") ? rule.slice(1) : rule;
+      return path.matchesGlob(fixturePath, pattern) || fixturePath.startsWith(`${pattern}/`);
+    }).at(-1);
+    expect(lastRule?.startsWith("!")).toBe(true);
+  });
+
   it("invalidates the image content ID when the active Copilot identity changes", async () => {
     const generator = await readFile(
       path.join(repositoryRoot, "packages/paperclip-runner/scripts/copilot-profile-identity.mjs"),
@@ -285,6 +302,12 @@ describe("runner E2E Daytona image contract", () => {
       "packages/paperclip-runner/runner/crates",
       "packages/paperclip-runner/scripts/materialize-pi-distribution.mjs",
       "packages/paperclip-runner/scripts/pi-distribution",
+      "packages/paperclip-runner/scripts/materialize-kimi-distribution.mjs",
+      "packages/paperclip-runner/scripts/patch-kimi-runtime.mjs",
+      "packages/paperclip-runner/scripts/kimi-instructions-runtime.mjs",
+      "packages/paperclip-runner/scripts/kimi-profile-identity.mjs",
+      "packages/paperclip-runner/scripts/provision-kimi.mjs",
+      "packages/paperclip-runner/scripts/kimi-distribution",
       "packages/paperclip-runner/src",
     ]) {
       expect(DAYTONA_IMAGE_INPUT_PATHS).toContain(requiredPath);
@@ -370,6 +393,7 @@ describe("runner E2E Daytona image contract", () => {
       const baseline = await computeDaytonaImageContentId(options);
       const candidate = await computeDaytonaImageContentId({ ...options, candidateProviders: ["pi"] });
       expect(candidate).not.toBe(baseline);
+      expect(await computeDaytonaImageContentId({ ...options, candidateProviders: ["kimi"] })).not.toBe(baseline);
       expect(await computeDaytonaImageContentId({ ...options, candidateProviders: ["copilot", "pi"] }))
         .toBe(await computeDaytonaImageContentId({ ...options, candidateProviders: ["pi", "copilot"] }));
       await expect(computeDaytonaImageContentId({ ...options, candidateProviders: ["pi", "pi"] }))
@@ -427,9 +451,15 @@ describe("runner E2E Daytona image contract", () => {
   it.each([
     "packages/paperclip-runner/scripts/cursor-runtime-patch.mjs",
     "packages/paperclip-runner/scripts/provider-pack-executable-shims.mjs",
+    "packages/paperclip-runner/scripts/materialize-kimi-distribution.mjs",
+    "packages/paperclip-runner/scripts/patch-kimi-runtime.mjs",
+    "packages/paperclip-runner/scripts/kimi-instructions-runtime.mjs",
+    "packages/paperclip-runner/scripts/provision-kimi.mjs",
+    "packages/paperclip-runner/scripts/kimi-distribution/package.json",
+    "packages/paperclip-runner/scripts/kimi-distribution/package-lock.json",
   ])("invalidates the image when %s changes", async (patchPath) => {
     const root = await mkdtemp(path.join(tmpdir(), "paperclip-provider-image-id-"));
-    expect(DAYTONA_IMAGE_INPUT_PATHS).toContain(patchPath);
+    expect(DAYTONA_IMAGE_INPUT_PATHS.some(inputPath => patchPath === inputPath || patchPath.startsWith(`${inputPath}/`))).toBe(true);
     const options = {
       repositoryRoot: root,
       inputPaths: [patchPath],

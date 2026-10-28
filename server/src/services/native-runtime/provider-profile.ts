@@ -34,6 +34,7 @@ export const DEFAULT_ACPX_RUNNER_MODELS = {
   cursor: null,
   copilot: null,
   pi: null,
+  kimi: null,
 } as const;
 
 export type QualifiedPaperclipRunnerAcpxAgent =
@@ -567,10 +568,10 @@ export function resolvePaperclipRunnerProviderProfile(
     }
     throw new PaperclipRunnerProviderProfileError("paperclip_runner_acpx_agent_unavailable", `${pendingAcpxProfile.label} is awaiting local and Daytona qualification. Its profile is not enabled for production runs.`);
   }
-  if ((acpxAgent === "cursor" || acpxAgent === "pi") && !model) {
+  if ((acpxAgent === "cursor" || acpxAgent === "pi" || acpxAgent === "kimi") && !model) {
     throw new PaperclipRunnerProviderProfileError("paperclip_runner_acpx_model_required", "This ACPX agent requires an explicit model ID; there is no default model.");
   }
-  if (acpxAgent !== "claude" && acpxAgent !== "codex" && acpxAgent !== "grok" && acpxAgent !== "cursor" && acpxAgent !== "copilot" && acpxAgent !== "pi") {
+  if (acpxAgent !== "claude" && acpxAgent !== "codex" && acpxAgent !== "grok" && acpxAgent !== "cursor" && acpxAgent !== "copilot" && acpxAgent !== "pi" && acpxAgent !== "kimi") {
     throw new PaperclipRunnerProviderProfileError(
       "paperclip_runner_acpx_agent_unavailable",
       "Paperclip Runner ACPX requires a qualified agent profile.",

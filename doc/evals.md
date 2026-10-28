@@ -1,5 +1,12 @@
 # Paperclip evaluation guide
 
+The explicit-only [Kimi Code qualification suite](../tests/runner-e2e/README.md#kimi-code-qualification)
+registers twenty candidate cells across local and Daytona. It reuses the
+existing browser, semantic interaction, file/artifact, Stop and continuation
+oracles with scoped candidate admission and an encrypted Code credential.
+Its provisional model and registration do not establish a live pass, native
+question/plan support or usable cost accounting.
+
 The explicit-only [chat feature evals](../tests/runner-e2e/CHAT-FEATURES.md) promote
 two natural-language task scenarios into local native Product E2E cells. They
 verify saving an unstarted task and delegating a saved announcement back to chat,

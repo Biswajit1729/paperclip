@@ -28,6 +28,8 @@ export const DAYTONA_IMAGE_INPUT_PATHS = [...new Set([
   "packages/paperclip-runner/package.json",
   "packages/paperclip-runner/acpx-profiles.json",
   `packages/paperclip-runner/test/fixtures/copilot-profile-v${acpxProfiles.profiles.copilot.agentProfileVersion}-identity.json`,
+  `packages/paperclip-runner/test/fixtures/kimi-profile-v${acpxProfiles.profiles.kimi.agentProfileVersion}-identity.json`,
+  `packages/paperclip-runner/test-fixtures/pi-acp/profile-v${acpxProfiles.profiles.pi.agentProfileVersion}-identity.json`,
   "packages/paperclip-runner/cursor-distributions.json",
   "packages/paperclip-runner/cursor-contract.json",
   "packages/paperclip-runner/protocol",
@@ -79,6 +81,12 @@ export const DAYTONA_IMAGE_INPUT_PATHS = [...new Set([
   "packages/paperclip-runner/scripts/generate-protocol-schema-module.mjs",
   "packages/paperclip-runner/scripts/materialize-pi-distribution.mjs",
   "packages/paperclip-runner/scripts/pi-distribution",
+  "packages/paperclip-runner/scripts/materialize-kimi-distribution.mjs",
+  "packages/paperclip-runner/scripts/patch-kimi-runtime.mjs",
+  "packages/paperclip-runner/scripts/kimi-instructions-runtime.mjs",
+  "packages/paperclip-runner/scripts/kimi-profile-identity.mjs",
+  "packages/paperclip-runner/scripts/provision-kimi.mjs",
+  "packages/paperclip-runner/scripts/kimi-distribution",
   "packages/paperclip-runner/scripts/cursor-native-usage.mjs",
   "packages/paperclip-runner/scripts/cursor-native-usage-source.json",
   "packages/paperclip-runner/scripts/provision-cursor.mjs",
@@ -119,7 +127,7 @@ export interface DaytonaImageContentOptions {
 
 export function normalizedDaytonaCandidateProviders(values: readonly string[]): string[] {
   const selected = [...values].sort();
-  if (selected.some(value => !["cursor", "copilot", "pi"].includes(value))
+  if (selected.some(value => !["cursor", "copilot", "pi", "kimi"].includes(value))
     || new Set(selected).size !== selected.length) {
     throw new Error("Daytona candidate providers must be distinct known ACP profiles");
   }
@@ -335,7 +343,7 @@ if (invokedPath && import.meta.url === pathToFileURL(invokedPath).href) {
   const arguments_ = process.argv.slice(2);
   const candidateFlag = arguments_[0];
   if (arguments_.length > 1 || (candidateFlag !== undefined && !candidateFlag.startsWith("--candidate-providers="))) {
-    throw new Error("Expected only --candidate-providers=cursor,copilot,pi");
+    throw new Error("Expected only --candidate-providers=cursor,copilot,pi,kimi");
   }
   const candidateProviders = candidateFlag?.slice("--candidate-providers=".length).split(",").filter(Boolean) ?? [];
   computeDaytonaImageContentId({ candidateProviders })

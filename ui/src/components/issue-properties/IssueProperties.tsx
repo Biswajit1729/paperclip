@@ -755,16 +755,18 @@ export function IssueProperties({
   const assigneeOverrideChrome = assigneeAdapterType === "claude_local"
     && assigneeOverrideAdapterConfig.chrome === true;
   const catalogProvider = assigneeAdapterType === "paperclip_runner" ? String(normalizeLegacyRunnerProvider(assigneePrimaryAdapterConfig).provider ?? "codex") : undefined;
+  const catalogAcpxAgent = catalogProvider === "acpx" ? String(assigneePrimaryAdapterConfig.acpxAgent ?? "claude") : undefined;
   const catalogEnvironmentId = copilotCatalog ? assignee?.defaultEnvironmentId ?? null : null;
   const copilotCatalogScope = JSON.stringify(copilotCatalog ?? null);
   const requestCopilotModels = Boolean(copilotCatalog && assigneeOptionsOpen && showAssigneeAdapterOptions && supportsAssigneeOverrides);
   const { data: assigneeAdapterModels, refetch: refreshAssigneeModels } = useQuery({
     queryKey:
       companyId && assigneeAdapterType
-        ? [...queryKeys.agents.adapterModels(companyId, assigneeAdapterType, catalogEnvironmentId, catalogProvider), copilotCatalog ?? null]
+        ? [...queryKeys.agents.adapterModels(companyId, assigneeAdapterType, catalogEnvironmentId, catalogProvider), catalogAcpxAgent ?? null, copilotCatalog ?? null]
         : ["agents", "none", "adapter-models", assigneeAdapterType ?? "none"],
     queryFn: () => agentsApi.adapterModels(companyId!, assigneeAdapterType!, {
       provider: catalogProvider,
+      ...(catalogAcpxAgent ? { acpxAgent: catalogAcpxAgent } : {}),
       ...(copilotCatalog ? { environmentId: catalogEnvironmentId, ...copilotCatalog } : {}),
     }),
     ...(copilotCatalog ? COPILOT_MODEL_DISCOVERY_QUERY_OPTIONS : {}),

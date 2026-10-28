@@ -10,6 +10,10 @@ const brandMarks: Record<string, { src: string; dark?: string }> = {
     src: "/brands/adapters/kimi-color-light.svg",
     dark: "/brands/adapters/kimi-color.svg",
   },
+  kimi_runtime: {
+    src: "/brands/adapters/kimi-color-light.svg",
+    dark: "/brands/adapters/kimi-color.svg",
+  },
   ...Object.fromEntries(
     [
       ["cursor", "cursor"],

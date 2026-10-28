@@ -132,8 +132,9 @@ function Setup({
   const [runner, setRunner] = useState<AgentRunnerChoice>(initialRunner === "legacy" || initialRunner === "paperclip" ? initialRunner : "auto");
   const isRunner = adapterType === "paperclip_runner";
   const isDot = isRunner && runnerProvider === "openai_dot";
+  const isKimi = isRunner && runnerProvider === "kimi";
   const brandType = isDot ? "openai_dot" : isRunner
-    ? runnerProvider === "copilot"
+    ? isKimi ? "kimi_runtime" : runnerProvider === "copilot"
       ? "copilot_runtime"
       : runnerProvider === "grok"
       ? "grok_local"
@@ -152,7 +153,7 @@ function Setup({
   const providerKeys = setupProviderKeys(brandType);
   const chooseProvider = multiProvider || brandType === "hermes_local";
   const hasCredentialField =
-    chooseProvider || Boolean(SETUP_CREDENTIAL_KEYS[adapterType]);
+    isKimi || chooseProvider || Boolean(SETUP_CREDENTIAL_KEYS[adapterType]);
   const showModel = !isDot && !["cursor_cloud", "hermes_gateway"].includes(adapterType);
   const [allowUnmeteredProvider, setAllowUnmeteredProvider] = useState(false);
   const [gatewayUrl, setGatewayUrl] = useState("");
@@ -316,7 +317,7 @@ function Setup({
   const copilotModelScope = JSON.stringify([companyId, environmentId, aiBinding]);
   const models = useQuery({
     queryKey: queryKeys.agents.adapterModels(companyId, brandType, environmentId, brandType === "copilot_runtime" ? JSON.stringify(aiBinding ?? null) : aiBinding?.provider),
-    queryFn: () => agentsApi.adapterModels(companyId, brandType === "copilot_runtime" ? "paperclip_runner" : brandType, brandType === "copilot_runtime"
+    queryFn: () => agentsApi.adapterModels(companyId, isKimi || brandType === "copilot_runtime" ? "paperclip_runner" : brandType, isKimi ? { provider: "acpx", acpxAgent: "kimi", environmentId } : brandType === "copilot_runtime"
       ? { provider: "acpx", acpxAgent: "copilot", aiConnection: aiBinding, environmentId }
       : { provider: aiBinding?.provider, environmentId }),
     ...(brandType === "copilot_runtime" ? COPILOT_MODEL_DISCOVERY_QUERY_OPTIONS : {}),
@@ -353,7 +354,7 @@ function Setup({
     environment?.driver === "sandbox" &&
     caps.data?.sandboxProviders?.[sandboxProvider]?.supportsLoginPty === true;
   const envKey =
-    SETUP_CREDENTIAL_KEYS[adapterType] ?? providerKeys[provider] ?? "API_KEY";
+    isKimi ? "KIMI_API_KEY" : SETUP_CREDENTIAL_KEYS[adapterType] ?? providerKeys[provider] ?? "API_KEY";
   const savedKey = userSecrets.data?.find(
     (entry) => entry.definition.key === envKey && entry.secret,
   );
@@ -443,9 +444,9 @@ function Setup({
       ...(isRunner
         ? {
             adapterSchemaValues: {
-              provider: ["claude", "grok", "copilot", "pi"].includes(runnerProvider) ? "acpx" : runnerProvider,
+              provider: ["claude", "grok", "copilot", "pi", "kimi"].includes(runnerProvider) ? "acpx" : runnerProvider,
               ...(isDot ? { allowUnmeteredProvider } : {}),
-              ...(["claude", "grok", "copilot", "pi"].includes(runnerProvider) ? { acpxAgent: runnerProvider } : {}),
+              ...(["claude", "grok", "copilot", "pi", "kimi"].includes(runnerProvider) ? { acpxAgent: runnerProvider } : {}),
             },
           }
         : {}),
@@ -462,8 +463,8 @@ function Setup({
     }
     if (isRunner)
       Object.assign(config, {
-        provider: ["claude", "grok", "copilot", "pi"].includes(runnerProvider) ? "acpx" : runnerProvider,
-        ...(["claude", "grok", "copilot", "pi"].includes(runnerProvider) ? { acpxAgent: runnerProvider } : {}),
+        provider: ["claude", "grok", "copilot", "pi", "kimi"].includes(runnerProvider) ? "acpx" : runnerProvider,
+        ...(["claude", "grok", "copilot", "pi", "kimi"].includes(runnerProvider) ? { acpxAgent: runnerProvider } : {}),
         ...(model ? { model } : {}),
       });
     if (multiProvider && created) {
@@ -511,6 +512,8 @@ function Setup({
     return config;
   }
   function preparedConfig(nextConnection = connection, setupRunner?: AgentRunner) {
+    if (isKimi && !model.trim()) throw new Error("Enter the exact Kimi model ID.");
+    if (isKimi && !apiKey.trim() && !selectedBinding) throw new Error("Enter KIMI_API_KEY or select an organization secret.");
     if (brandType === "copilot_runtime" && !models.data?.some(candidate => candidate.id === model))
       throw new Error("Refresh Copilot models and select an available model before creating this agent.");
     if (isDot && !allowUnmeteredProvider) throw new Error("Acknowledge external provider billing before creating your Dot agent.");
@@ -568,8 +571,8 @@ function Setup({
       role: existing.length ? "general" : "ceo", ...(leader ? { reportsTo: leader.id } : {}),
       adapterType: requestAdapterType, runner,
       adapterConfig: requestAdapterType === "paperclip_runner" ? {
-        provider: ["claude", "grok", "copilot", "pi"].includes(runnerProvider) ? "acpx" : runnerProvider,
-        ...(["claude", "grok", "copilot", "pi"].includes(runnerProvider) ? { acpxAgent: runnerProvider } : {}),
+        provider: ["claude", "grok", "copilot", "pi", "kimi"].includes(runnerProvider) ? "acpx" : runnerProvider,
+        ...(["claude", "grok", "copilot", "pi", "kimi"].includes(runnerProvider) ? { acpxAgent: runnerProvider } : {}),
       } : {}, defaultEnvironmentId: environmentOverride || (forced.forced || managedOnly ? environmentId : null),
       runtimeConfig: buildNewAgentRuntimeConfig({ heartbeatEnabled: false }),
     }).then(async agent => {
@@ -1152,8 +1155,8 @@ function Setup({
                                 }}
                                 open={modelOpen}
                                 onOpenChange={setModelOpen}
-                                allowDefault={!multiProvider && brandType !== "copilot_runtime"}
-                                required={multiProvider || brandType === "copilot_runtime"}
+                                allowDefault={!isKimi && !multiProvider && brandType !== "copilot_runtime"}
+                                required={isKimi || multiProvider || brandType === "copilot_runtime"}
                                 creatable={brandType !== "copilot_runtime"}
                                 groupByProvider={multiProvider && !connectionModels}
                                 preserveOrder={Boolean(connectionModels) || adapterCuratesModelOrder(brandType)}
@@ -1244,10 +1247,10 @@ function Setup({
                                     placeholder={
                                       selectedBinding
                                         ? "Using saved key"
-                                        : [
+                                        : (isKimi || [
                                               "cursor_cloud",
                                               "hermes_gateway",
-                                            ].includes(adapterType)
+                                            ].includes(adapterType))
                                           ? "Required"
                                           : "Optional if already configured"
                                     }
@@ -1298,6 +1301,7 @@ function Setup({
                             <p className="text-xs text-muted-foreground sm:col-span-2">
                               New keys are saved as organization secrets when
                               you finish setup.
+                              {isKimi && " Use a Kimi Code API key for this runner."}
                               {multiProvider && ` Use a ${provider}/model ID.`}
                             </p>
                           </div>

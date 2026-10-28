@@ -1,10 +1,12 @@
 import { canonicalRemoteCopilotCommand, copilotDeathArguments, selectOwnedCopilotProcess } from "./copilot-provider-death.js";
+import { expectedNativeBootstrap, expectedNativeModuleGuard, KIMI_FAULT_SNAPSHOT, kimiFaultRuntimeContract, validateKimiProviderDeathReceipt, type KimiProviderDeathReceipt } from "./kimi-provider-fault-contract.js";
 import { createHash, randomBytes } from "node:crypto";
 import { watch, lstatSync, readFileSync } from "node:fs";
 import { posix } from "node:path";
 
 import { PI_DISTRIBUTION_CLOSURE_SHA256 } from "../../packages/paperclip-runner/src/drivers/acpx/pi-closure-pins.js";
 const PI_FAULT_SOURCE = readFileSync(new URL("./pi-provider-fault.py", import.meta.url), "utf8");
+const KIMI_FAULT_SOURCE = readFileSync(new URL("./kimi-provider-fault.py", import.meta.url), "utf8");
 
 export const REMOTE_FIXTURE_DAYTONA_SDK_VERSION = "0.203.0";
 const NODE = "/opt/paperclip-runner/provider-pack/node_modules/node/bin/node";
@@ -34,7 +36,7 @@ function relative(value: string): string {
 }
 // Only closed diagnostic enums cross the remote boundary; SDK errors and output
 // are never retained. These diagnostics explain failed evidence, not qualification.
-const RPC_PHASES = ["runtime-ready", "install", "wait", "close", "arm", "publish", "snapshot", "attached", "release-attached", "read", "inject-loss", "provider-death", "pi-provider-death"] as const;
+const RPC_PHASES = ["runtime-ready", "install", "wait", "close", "arm", "publish", "snapshot", "attached", "release-attached", "read", "inject-loss", "provider-death", "pi-provider-death", "kimi-provider-death"] as const;
 const RPC_CODES = ["node_identity", "sentinel_type", "sentinel", "cwd", "runtime_root_identity", "runtime_binary_identity", "proc_bound", "ambiguous_run_root", "runtime_not_ready", "runtime_identity_changed", "invalid_proc_identity", "invalid_proc_fields", "socket_error", "socket_timeout", "output_bound", "rpc_deadline", "remote_unknown", "transport_failure", "invalid_response", "readiness_deadline", "terminal_evidence_incomplete", "pi_provider_identity_or_signal_failed"] as const;
 type RpcPhase = typeof RPC_PHASES[number];
 type RpcCode = typeof RPC_CODES[number];
@@ -162,6 +164,7 @@ const OBSERVER = String.raw`
 const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto'),net=require('node:net'),cp=require('node:child_process');
 const config=JSON.parse(Buffer.from(process.argv[2],'base64').toString());
 const parseStat=PARSE_STAT;const runRoot=RUN_ROOT;const vanished=PROC_ENTRY_DISAPPEARED;const watchTarget=WATCH_TARGET;const PI_FAULT_SOURCE=PI_FAULT_PROGRAM,PI_CLOSURE_PIN=PI_CLOSURE_DIGEST;
+const KIMI_FAULT_SOURCE=KIMI_FAULT_PROGRAM;
 const selectCopilot=SELECT_COPILOT;const canonicalCopilot=CANONICAL_COPILOT;const copilotArgs=COPILOT_ARGS;let providerDeathDispatched=false;
 const hash=x=>'sha256:'+crypto.createHash('sha256').update(x).digest('hex');
 const cwdStat=fs.lstatSync(config.binding.remoteCwd,{bigint:true}),rootStat=fs.lstatSync(config.root,{bigint:true}),scriptStat=fs.lstatSync(__filename,{bigint:true}),scriptHash=hash(fs.readFileSync(__filename));
@@ -169,7 +172,7 @@ const runtimeRoot=path.join(config.binding.remoteCwd,config.runtimeRelative),run
 const boot=fs.readFileSync('/proc/sys/kernel/random/boot_id','utf8').trim();
 const targets=new Map();let complete=true,sealed=false,root=null,attached=null,child=null,client=null,childTimer=null;
 const incompleteReasons=new Set(),failureCodes=new Set();function incomplete(reason){complete=false;incompleteReasons.add(reason);failureCodes.add(reason)}function markIncomplete(reason){incomplete(reason)}
-const journal=new Map(),sockets=new Set(),waiters=new Set(),armWaiters=new Set();let observedRootCount=0,publishedHash=null,finalReceipt=null,retiring=false,piFaultAttempted=false;
+const journal=new Map(),sockets=new Set(),waiters=new Set(),armWaiters=new Set();let observedRootCount=0,publishedHash=null,finalReceipt=null,retiring=false,piFaultAttempted=false,kimiFaultAttempted=false;
 function identity(pid){return parseStat(pid,fs.readFileSync('/proc/'+pid+'/stat','utf8'),boot)}
 function deathCommand(pid){const command=fs.readFileSync('/proc/'+pid+'/cmdline').toString().split('\0').filter(Boolean);if(!/^\/proc\/self\/fd\/(?:3|7)$/.test(command[0]??''))return command;const executable=fs.realpathSync('/proc/'+pid+'/exe'),s=fs.statSync('/proc/'+pid+'/exe',{bigint:true}),fd='/proc/'+pid+'/fd/'+command[0].split('/').at(-1),d=fs.statSync(fd,{bigint:true});return canonicalCopilot(command,executable,{dev:String(s.dev),ino:String(s.ino)},{path:fs.realpathSync(fd),dev:String(d.dev),ino:String(d.ino)})}
 function table(){const ids=fs.readdirSync('/proc').filter(x=>/^\d+$/.test(x)&&Number(x)>1);if(ids.length>4096)throw Error('process_bound');return ids.flatMap(x=>{try{return [identity(Number(x))]}catch(e){if(vanished(e,()=>fs.lstatSync('/proc/'+x)))return [];throw e}})}
@@ -221,6 +224,13 @@ const server=net.createServer(socket=>{sockets.add(socket);socket.on('close',()=
   const childResult=cp.spawnSync('/usr/bin/python3',['-I','-c',PI_FAULT_SOURCE,Buffer.from(JSON.stringify(request)).toString('base64')],{env:{PATH:'/usr/bin:/bin'},timeout:8000,maxBuffer:32768,encoding:'utf8'});
   if(childResult.status!==0||childResult.error)throw Error('pi_provider_identity_or_signal_failed');result=JSON.parse(childResult.stdout);
  }
+ else if(r.op==='kimi-provider-death'){
+  if(kimiFaultAttempted||sealed||!publishedHash||!root||!complete||typeof r.runtimeEnvironmentLeaseId!=='string'||r.runtimeEnvironmentLeaseId!==observedPrpEnvironmentLeaseId)throw Error('kimi_provider_identity_or_signal_failed');
+  kimiFaultAttempted=true;const before=sample();if(!before.captured||!before.live.includes(root.pid))throw Error('kimi_provider_identity_or_signal_failed');
+  const request={root:{pid:root.pid,ppid:root.ppid,startTicks:root.startTicks,bootId:root.bootId},binding:config.binding,runtimeEnvironmentLeaseId:r.runtimeEnvironmentLeaseId,runnerdSha256:config.runnerdSha256,closureSha256:r.contract.closureSha256,nodeSha256:r.contract.nodeSha256,guardLoaderSha256:r.contract.guardLoaderSha256,bootstrapTemplate:r.bootstrapTemplate,guardTemplate:r.guardTemplate};
+  const childResult=cp.spawnSync('/usr/bin/python3',['-I','-c',KIMI_FAULT_SOURCE,Buffer.from(JSON.stringify(request)).toString('base64')],{env:{PATH:'/usr/bin:/bin'},timeout:8000,maxBuffer:32768,encoding:'utf8'});
+  if(childResult.status!==0||childResult.error)throw Error('kimi_provider_identity_or_signal_failed');result=JSON.parse(childResult.stdout);
+ }
  else if(r.op==='attached'){if(attached||sealed)throw Error('attached_already_configured');if(!config.targets.includes(r.marker)||!Number.isInteger(r.delayMs)||r.delayMs<100||r.delayMs>8000||(r.waitForFinishAttempt!==undefined&&typeof r.waitForFinishAttempt!=='boolean'))throw Error('attached_bounds');
   attached={waitForFinishAttempt:r.waitForFinishAttempt===true,releasedAtMs:null,connections:0,failure:null,commandExit:null,markerWrittenAtMs:null,markerWrittenMonotonicNs:null,clientExitedAtMs:null,clientExitedMonotonicNs:null};
   const clientScript=path.join(config.root,'client.cjs'),clientSocket=path.join(config.root,'attached.sock');
@@ -255,7 +265,7 @@ server.listen(path.join(config.root,'control.sock'));setTimeout(()=>{incomplete(
 `;
 const ATTACHED_CLIENT = String.raw`const net=require('node:net');const s=net.connect(process.argv[2]);let b='';s.setTimeout(15000,()=>process.exit(3));s.on('error',()=>process.exit(4));s.on('connect',()=>s.write(JSON.stringify({nonce:process.argv[3],pid:process.pid})+'\n'));s.on('data',x=>{b+=x;if(b.length>1024)process.exit(6);if(b.includes('\n')){const r=JSON.parse(b);s.end();process.exit(r.code===0?0:5)}});`;
 function observerSource() {
-  return OBSERVER.replace("PI_FAULT_PROGRAM", () => JSON.stringify(PI_FAULT_SOURCE)).replace("PI_CLOSURE_DIGEST", () => JSON.stringify(PI_DISTRIBUTION_CLOSURE_SHA256["linux-x64"])).replace("PARSE_STAT", () => parseRemoteProcStat.toString()).replace("RUN_ROOT", () => isRemoteRunRoot.toString())
+  return OBSERVER.replace("KIMI_FAULT_PROGRAM", () => JSON.stringify(KIMI_FAULT_SOURCE)).replace("PI_FAULT_PROGRAM", () => JSON.stringify(PI_FAULT_SOURCE)).replace("PI_CLOSURE_DIGEST", () => JSON.stringify(PI_DISTRIBUTION_CLOSURE_SHA256["linux-x64"])).replace("PARSE_STAT", () => parseRemoteProcStat.toString()).replace("RUN_ROOT", () => isRemoteRunRoot.toString())
     .replace("SELECT_COPILOT", () => selectOwnedCopilotProcess.toString()).replace("CANONICAL_COPILOT", () => canonicalRemoteCopilotCommand.toString()).replace("COPILOT_ARGS", () => JSON.stringify(copilotDeathArguments)).replace("PROC_ENTRY_DISAPPEARED", () => remoteProcEntryDisappeared.toString()).replace("WATCH_TARGET", () => createRemoteTargetWatch.toString()).replace("ATTACHED_CLIENT", () => JSON.stringify(ATTACHED_CLIENT));
 }
 const RPC = String.raw`const fs=require('node:fs'),net=require('node:net'),cp=require('node:child_process'),crypto=require('node:crypto');const r=JSON.parse(Buffer.from(process.argv[1],'base64').toString());const hash=x=>'sha256:'+crypto.createHash('sha256').update(x).digest('hex');
@@ -303,6 +313,7 @@ export interface RemoteNativeFixture {
   snapshot(label: string): Promise<RemoteNativeSnapshot>;
   /** One-shot fault against the exact admitted Pi child; never a worker kill. */
   terminatePiProvider?(runtimeEnvironmentLeaseId: string): Promise<PiProviderDeathReceipt>;
+  terminateKimiProvider?(runtimeEnvironmentLeaseId: string): Promise<KimiProviderDeathReceipt>;
   readFile(path: string): Promise<Buffer>;
   publishAction(path: string, text: string): Promise<void>;
   injectOwnedRunLoss(): Promise<Record<string, unknown>>;
@@ -523,6 +534,7 @@ export async function bindRemoteNativeFixture(options: RemoteNativeFixtureOption
     throw error;
   }
   let piFaultAttempted = false;
+  let kimiFaultAttempted = false;
   let closed = false, published = false, finished: RemoteNativeSnapshot | undefined;
   let retiredTerminal: RemoteNativeSnapshot | undefined;
   const retainedFiles = new Map<string, Buffer>();
@@ -538,6 +550,14 @@ export async function bindRemoteNativeFixture(options: RemoteNativeFixtureOption
       piFaultAttempted = true; // Uncertain delivery never retries the signal.
       const receipt = await rpc({ op: "pi-provider-death", runtimeEnvironmentLeaseId });
       return validatePiProviderDeathReceipt(receipt, binding!, baseline.processes.root!, runtimeEnvironmentLeaseId);
+    },
+    async terminateKimiProvider(runtimeEnvironmentLeaseId) {
+      fail(!closed && !finished && published && !kimiFaultAttempted && /^[A-Za-z0-9._:-]{1,240}$/u.test(runtimeEnvironmentLeaseId), "kimi_fault_admission");
+      kimiFaultAttempted = true;
+      const contract = kimiFaultRuntimeContract("linux-x64");
+      const receipt = await rpc({ op: "kimi-provider-death", runtimeEnvironmentLeaseId, contract,
+        bootstrapTemplate: expectedNativeBootstrap(KIMI_FAULT_SNAPSHOT, contract.nodeSha256), guardTemplate: expectedNativeModuleGuard(KIMI_FAULT_SNAPSHOT, []) });
+      return validateKimiProviderDeathReceipt(receipt, binding!, baseline.processes.root!, runtimeEnvironmentLeaseId);
     },
     async readFile(path) {
       fail(!closed && names.includes(path), "unregistered_read");

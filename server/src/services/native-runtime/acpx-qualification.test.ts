@@ -9,6 +9,21 @@ const authorize = (value: unknown) => ({ [ACPX_QUALIFICATION_ENV]: JSON.stringif
 describe("host ACPX qualification admission", () => {
   afterEach(() => vi.unstubAllEnvs());
 
+  it("keeps Kimi Code gated and admits only a host-authorized exact model", () => {
+    const config = { provider: "acpx", acpxAgent: "kimi", model: "explicit-unlisted-kimi-model" };
+    vi.stubEnv(ACPX_QUALIFICATION_ENV, undefined);
+    expect(() => resolvePaperclipRunnerProviderProfile(config))
+      .toThrow(expect.objectContaining({ code: "paperclip_runner_acpx_agent_unavailable" }));
+    expect(() => resolvePaperclipRunnerProviderProfile({ ...config, model: "" }))
+      .toThrow(expect.objectContaining({ code: "paperclip_runner_acpx_model_required" }));
+    vi.stubEnv(ACPX_QUALIFICATION_ENV, JSON.stringify([{ agent: "kimi", model: config.model }]));
+    expect(resolvePaperclipRunnerProviderProfile(config)).toMatchObject(config);
+    expect(resolvePaperclipRunnerNativeProviderInput({ backend: "acpx_runtime", adapterConfig: config }))
+      .toMatchObject({ ...config, acpxPermissionMode: "approve-all" });
+    expect(() => resolvePaperclipRunnerProviderProfile({ ...config, model: "another-model" }))
+      .toThrow(expect.objectContaining({ code: "paperclip_runner_acpx_qualification_invalid" }));
+  });
+
   it("admits only the exact Pi model without host authorization and preserves permission modes", () => {
     const config = { provider: "acpx", acpxAgent: "pi", model: "openrouter/deepseek/deepseek-v4-flash-0731" };
     for (const authorization of [undefined, "malformed unrelated candidate authorization"]) {

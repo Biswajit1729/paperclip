@@ -8,6 +8,7 @@ import { TASK_WORKSPACES_SUITE, taskWorkspaceTask, taskWorkspaceProfile, taskWor
 import { repositoryProofTasks, repositoryProofProfile, repositoryProofDigest } from "./repository-verification.js";
 import { automaticRepositoryTask, automaticRepositoryDigest } from "./automatic-repository.js";
 import { nativeActiveStopTasks } from "./native-active-stop-tasks.js";
+import { kimiLifecycleTasks } from "./kimi-lifecycle-tasks.js";
 import { piControlTasks } from "./pi-controls-cases.js";
 import { cursorNativeTasks } from "./cursor-native-cases.js";
 import { copilotProtectionTasks } from "./copilot-protection-tasks.js";
@@ -194,7 +195,7 @@ function nativeProfile(input: {
   provider: "codex" | "opencode" | "acpx";
   model: string;
   credential: RunnerProfileFixture["credential"];
-  acpxAgent?: "claude" | "codex" | "grok" | "cursor" | "copilot" | "pi";
+  acpxAgent?: "claude" | "codex" | "grok" | "cursor" | "copilot" | "pi" | "kimi";
   qualificationCandidate?: RunnerProfileFixture["qualificationCandidate"];
   supportedEnvironments?: readonly (typeof ENVIRONMENT_IDS)[number][];
   modelQualification?: RunnerProfileFixture["modelQualification"];
@@ -1437,6 +1438,31 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
       ...chatHardeningTasks.filter(task => ["stop-new-resume", "continuity-restart"].includes(task.id)),
     ], expectedMatrixSize: 16,
     definitionMetadata: { version: 2, binary: "1.0.13", model: "grok-4.7", scheduling: "explicit-only", repetitionsRequired: 3, artifactOracle: "independent-python-contract", stopBoundary: "provider-turn-started" },
+  },
+  {
+    id: "kimi-qualification", label: "Kimi Code Qualification", manualOnly: true,
+    description: "Candidate Kimi Code replies, semantic planning and questions, verified file delivery, Stop and controller continuation through local and Daytona user journeys.",
+    groups: ["native"],
+    profiles: [nativeProfile({
+      id: "runner-acpx-kimi", label: "Runner Kimi Code (candidate)",
+      provider: "acpx", acpxAgent: "kimi", qualificationCandidate: "kimi",
+      credential: "KIMI_API_KEY", model: "kimi-for-coding",
+      modelQualification: { source: "candidate_runner_profile", qualificationId: "kimi:2.3.3:authenticated-tool-roundtrip-2026-10-28" },
+    })],
+    environments: [localEnvironment, daytonaWarmEnvironment],
+    tasks: [
+      ...runnerTasks, ...localIntegrityTasks, extendedHarnessFileTask,
+      ...chatHardeningTasks.filter(task => ["stop-new-resume", "continuity-restart"].includes(task.id)),
+      ...kimiLifecycleTasks,
+    ].map(task => ({ ...task, automaticRetryPolicy: "single_attempt" as const })),
+    expectedMatrixSize: 20,
+    definitionMetadata: { version: 2, binary: "2.3.3", model: "kimi-for-coding",
+      modelDiscovery: "exact-model-authenticated-observed", qualification: "pending",
+      scheduling: "explicit-only", maximumAttemptsPerCell: 1, repetitionsRequired: 1,
+      instructionAdmission: "native-effective-prompt-digest-on-create-load",
+      nativeQuestions: "not-claimed", nativePlans: "not-claimed", accounting: "usage-and-cost-unavailable",
+      artifactOracle: "independent-workspace-and-public-download-bytes", stopBoundary: "provider-turn-started",
+      nativeWriteLifecycle: "pending-permission-stop-and-exact-native-worker-loss", nativeWriteCleanup: "continuous-no-effects-through-owned-tree-retirement" },
   },
   {
     id: "api-response-reading", label: "Bounded API response reading", manualOnly: true,

@@ -4,17 +4,23 @@ import { listServerAdapters, requireServerAdapter } from "./registry.js";
 import * as executionTarget from "@paperclipai/adapter-utils/execution-target";
 import { BUILTIN_ADAPTER_TYPES } from "./builtin-adapter-types.js";
 
-const { probeInstallation, probeGrokInstallation, probePiInstallation, verifyApiKey } = vi.hoisted(() => ({
+const { probeInstallation, probeGrokInstallation, probePiInstallation, probeKimiInstallation, probeKimiModels, probeKimiRemote, verifyApiKey } = vi.hoisted(() => ({
   verifyApiKey: vi.fn(),
   probeInstallation: vi.fn(),
   probeGrokInstallation: vi.fn(),
   probePiInstallation: vi.fn(),
+  probeKimiInstallation: vi.fn(),
+  probeKimiModels: vi.fn(),
+  probeKimiRemote: vi.fn(),
 }));
 vi.mock("../services/ai-api-key-test.js", () => ({ validateAiApiKey: verifyApiKey }));
+vi.mock("../services/kimi-connection-probe.js", () => ({ probeKimiExecutionTarget: probeKimiRemote }));
 vi.mock("../vendor/paperclip-runner/live/index.js", () => ({
   probeAcpxClaudeInstallation: probeInstallation,
   probeAcpxGrokInstallation: probeGrokInstallation,
   probeAcpxPiInstallation: probePiInstallation,
+  probeAcpxKimiInstallation: probeKimiInstallation,
+  probeKimiModels,
   probeAcpxCursorInstallation: vi.fn(async () => undefined),
 }));
 
@@ -102,14 +108,63 @@ describe("native ACPX environment checks", () => {
     probeInstallation.mockReset().mockResolvedValue(undefined);
     probeGrokInstallation.mockReset().mockResolvedValue(undefined);
     probePiInstallation.mockReset().mockResolvedValue(undefined);
+    probeKimiInstallation.mockReset().mockResolvedValue(undefined);
+    probeKimiModels.mockReset().mockResolvedValue(undefined);
+    probeKimiRemote.mockReset().mockResolvedValue(undefined);
   });
-  afterEach(() => vi.restoreAllMocks());
+  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 
   const context = {
     companyId: "company-test",
     adapterType: "paperclip_runner",
     config: { provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-5" },
   };
+
+  it("requires an explicit Kimi credential and probes its own installed runtime during qualification", async () => {
+    const model = "explicit-kimi-model";
+    vi.stubEnv("PAPERCLIP_RUNNER_ACPX_QUALIFICATION", JSON.stringify([{ agent: "kimi", model }]));
+    const config = { provider: "acpx", acpxAgent: "kimi", model };
+    const missing = await requireServerAdapter("paperclip_runner").testEnvironment!({ ...context, config });
+    expect(missing.status).toBe("fail");
+    expect(missing.checks[0].code).toBe("KIMI_AUTH_REQUIRED");
+    expect(probeKimiInstallation).not.toHaveBeenCalled();
+
+    const ready = await requireServerAdapter("paperclip_runner").testEnvironment!({ ...context, config: { ...config, env: { KIMI_API_KEY: "fixture-key" } } });
+    expect(ready.status).toBe("pass");
+    expect(probeKimiInstallation).toHaveBeenCalledExactlyOnceWith(model);
+    expect(probeKimiModels).toHaveBeenCalledExactlyOnceWith(model, "fixture-key");
+    expect(probeInstallation).not.toHaveBeenCalled();
+    expect(verifyApiKey).not.toHaveBeenCalled();
+    expect(ready.checks[0]).toMatchObject({ code: "kimi_metadata_verified", message: expect.stringContaining("No model prompt was sent") });
+  });
+
+  it("keeps a rejected Kimi catalog credential out of the ready lifecycle", async () => {
+    const model = "explicit-kimi-model";
+    vi.stubEnv("PAPERCLIP_RUNNER_ACPX_QUALIFICATION", JSON.stringify([{ agent: "kimi", model }]));
+    probeKimiModels.mockRejectedValue(Object.assign(new Error("The Kimi Code credential was rejected by the model catalog."), { code: "KIMI_AUTH_REQUIRED" }));
+    const result = await requireServerAdapter("paperclip_runner").testEnvironment!({ ...context,
+      config: { provider: "acpx", acpxAgent: "kimi", model, env: { KIMI_API_KEY: "fixture-key" } },
+    });
+    expect(result.status).toBe("fail");
+    expect(result.checks[0].message).toContain("credential was rejected");
+  });
+
+  it("requires the selected remote Kimi runtime and authenticated catalog instead of a host installation", async () => {
+    const model = "explicit-kimi-model";
+    vi.stubEnv("PAPERCLIP_RUNNER_ACPX_QUALIFICATION", JSON.stringify([{ agent: "kimi", model }]));
+    const runner = { execute: vi.fn() };
+    const target = { kind: "remote" as const, transport: "sandbox" as const, remoteCwd: "/workspace", providerKey: "test", runner };
+    const result = await requireServerAdapter("paperclip_runner").testEnvironment!({ ...context,
+      config: { provider: "acpx", acpxAgent: "kimi", model, env: { KIMI_API_KEY: "fixture-key" } },
+      executionTarget: target,
+    });
+    expect(result.status).toBe("pass");
+    expect(result.checks[0]).toMatchObject({ code: "kimi_metadata_verified" });
+    expect(probeKimiRemote).toHaveBeenCalledExactlyOnceWith("fixture-key", target, model);
+    expect(runner.execute).not.toHaveBeenCalled();
+    expect(probeKimiInstallation).not.toHaveBeenCalled();
+    expect(probeKimiModels).not.toHaveBeenCalled();
+  });
 
   it("verifies a native Claude key without the global CLI or a model prompt", async () => {
     const result = await requireServerAdapter("paperclip_runner").testEnvironment!({ ...context,

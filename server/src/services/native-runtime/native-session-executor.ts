@@ -24,7 +24,7 @@ import { apiKeyBillingType } from "@paperclipai/adapter-utils/api-billing-type";
 import { agents } from "@paperclipai/db";
 import { isCloudManagedInstance } from "../cloud-instance.js";
 import { dotRunnerBroker } from "../dot-runner-broker.js";
-import { CURSOR_DISTRIBUTION_PINS, QUALIFIED_ACPX_PROFILES, QUALIFIED_ACPX_VERSION } from "../../vendor/paperclip-runner/index.js";
+import { CURSOR_DISTRIBUTION_PINS, KIMI_DISTRIBUTION_CLOSURE_SHA256, QUALIFIED_ACPX_PROFILES, QUALIFIED_ACPX_VERSION } from "../../vendor/paperclip-runner/index.js";
 import { isProviderMode } from "../../vendor/paperclip-runner/index.js";
 import { PROVIDER_PACK_COMPATIBILITY, bundledRemoteProviderPackManifestPath, bundledRemoteRunnerBinary, runnerBinaryTarget } from "../../vendor/paperclip-runner/index.js";
 import { nativeRetryCancellationEligible, rethrowNativeCancellationLockConflict, assertCancellationRequest, cancellationIntentId as callerCancellationIntentId, cancellationRequestId } from "./native-cancellation-request.js";
@@ -884,7 +884,7 @@ export function resolveNativeProviderEnvironment(
   host: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv {
   if (configured !== undefined) return configured;
-  if (provider.kind === "acpx" && ["pi", "cursor", "copilot"].includes(provider.agent)) {
+  if (provider.kind === "acpx" && ["pi", "cursor", "copilot", "kimi"].includes(provider.agent)) {
     return buildNativeProviderEnvironment({}, host);
   }
   return host;
@@ -10409,6 +10409,8 @@ const REMOTE_PROVIDER_PACK_ARTIFACT_PATHS = {
   opencodeProxy: "dist/cli/opencode-app-server-proxy.cjs",
   acpxSidecar: "dist/cli/acpx-runtime-sidecar.cjs",
 } as const;
+const REMOTE_PROVIDER_PACK_PROVIDERS = ["pi", "cursor", "copilot"] as const;
+const REMOTE_PROVIDER_PACK_CANDIDATES = [...REMOTE_PROVIDER_PACK_PROVIDERS, "kimi"] as const;
 
 type RemoteProviderPackManifest = {
   schema: typeof REMOTE_PROVIDER_PACK_SCHEMA;
@@ -10421,11 +10423,11 @@ type RemoteProviderPackManifest = {
     distDigest: string;
     bridgeDigest: string;
     acpxProfileDigests: typeof REMOTE_PROVIDER_PACK_PROFILE_DIGESTS;
-    providers?: Partial<Record<"pi" | "cursor" | "copilot", {
+    providers?: Partial<Record<typeof REMOTE_PROVIDER_PACK_PROVIDERS[number], {
       version: string; profileDigest: string; closureDigest: string; qualification: "qualified" | "pending";
       path: string; sha256: string;
     }>>;
-    candidateProviders?: Partial<Record<"cursor" | "copilot" | "pi", {
+    candidateProviders?: Partial<Record<typeof REMOTE_PROVIDER_PACK_CANDIDATES[number], {
       version: string; profileDigest: string; closureDigest: string; qualification: "qualified" | "pending";
       path: string; sha256: string;
     }>>;
@@ -10606,12 +10608,13 @@ function readRemoteProviderPackIdentity(packRoot: string, verifyControllerFiles:
   }
   for (const [inventory, candidates] of [["providers", payload.providers], ["candidateProviders", payload.candidateProviders]] as const) {
     if (candidates === undefined) continue;
-    if (!candidates || typeof candidates !== "object" || Array.isArray(candidates) || Object.keys(candidates).length > 3) {
+    const allowedProviders: readonly string[] = inventory === "providers" ? REMOTE_PROVIDER_PACK_PROVIDERS : REMOTE_PROVIDER_PACK_CANDIDATES;
+    if (!candidates || typeof candidates !== "object" || Array.isArray(candidates) || Object.keys(candidates).length > allowedProviders.length) {
       throw new Error("runner_remote_provider_artifact_incompatible: invalid candidate inventory");
     }
     for (const [provider, candidate] of Object.entries(candidates)) {
       const expectedPath = `provider-assets/${provider}/${payload.target.platform}-${payload.target.architecture}`;
-      if (!(inventory === "providers" ? ["pi", "cursor", "copilot"] : ["cursor", "copilot", "pi"]).includes(provider) || !candidate
+      if (!allowedProviders.includes(provider) || !candidate
         || Object.keys(candidate).some(key => !["version", "profileDigest", "closureDigest", "qualification", "path", "sha256"].includes(key))
         || candidate.qualification !== (["pi", "cursor"].includes(provider) || inventory === "providers" && provider === "copilot" ? "qualified" : "pending") || candidate.path !== expectedPath
         || typeof candidate.version !== "string" || !candidate.version || candidate.version.length > 120
@@ -10644,6 +10647,14 @@ function readRemoteProviderPackIdentity(packRoot: string, verifyControllerFiles:
           || candidate.profileDigest !== QUALIFIED_ACPX_PROFILES.copilot.commandDigest
           || candidate.closureDigest !== `sha256:${closure}`) {
           throw new Error("runner_remote_provider_artifact_incompatible: Copilot profile or closure does not match this release");
+        }
+      }
+      if (provider === "kimi") {
+        if (payload.target.platform !== "linux" || payload.target.architecture !== "x64"
+          || candidate.version !== QUALIFIED_ACPX_PROFILES.kimi.agentServerVersion
+          || candidate.profileDigest !== QUALIFIED_ACPX_PROFILES.kimi.commandDigest
+          || candidate.closureDigest !== `sha256:${KIMI_DISTRIBUTION_CLOSURE_SHA256["linux-x64"]}`) {
+          throw new Error("runner_remote_provider_artifact_incompatible: Kimi profile or closure does not match this release");
         }
       }
       if (verifyControllerFiles && sha256DirectoryTree(resolve(packRoot, candidatePath)) !== candidate.sha256) {

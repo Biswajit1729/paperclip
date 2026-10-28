@@ -3,6 +3,7 @@ export const CREDENTIAL_NAMES = [
   "ANTHROPIC_API_KEY",
   "OPENROUTER_API_KEY",
   "KIMI_MODEL_API_KEY",
+  "KIMI_API_KEY",
   "XAI_API_KEY",
   "GROK_AUTH_JSON",
   "CODEX_AUTH_JSON",
@@ -47,6 +48,7 @@ export type RunnerTaskFlow =
   | "pi_native"
   | "pi_controls"
   | "native_active_stop"
+  | "kimi_native_lifecycle"
   | "copilot_protection"
   | "native_provider_loss"
   | "cursor_native";
@@ -91,7 +93,7 @@ export interface RunnerProfileFixture {
       | "openrouter_rankings_snapshot";
     qualificationId: string;
   };
-  qualificationCandidate?: "cursor" | "copilot" | "pi";
+  qualificationCandidate?: "cursor" | "copilot" | "pi" | "kimi";
   ranking?: {
     rank: number;
     canonicalModelId: string;

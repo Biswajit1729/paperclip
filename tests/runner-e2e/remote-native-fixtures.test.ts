@@ -12,6 +12,7 @@ import { REMOTE_FIXTURE_MIN_SETUP_BUDGET_MS, bindRemoteNativeFixture, validatePi
 
 import { PI_DISTRIBUTION_CLOSURE_SHA256 } from "../../packages/paperclip-runner/src/drivers/acpx/pi-closure-pins.js";
 import { createRemoteNativeBootstrap } from "./remote-native-bootstrap.js";
+import { kimiFaultRuntimeContract } from "./kimi-provider-fault-contract.js";
 
 const hash = (s: string) => `sha256:${createHash("sha256").update(s).digest("hex")}`;
 const bootId = "12345678-1234-1234-1234-123456789abc";
@@ -576,6 +577,21 @@ describe("actual generated observer state machine", () => {
     const reply = o.request("snapshot")[0];
     expect(reply.ok && reply.result.complete).toBe(false);
   });
+  it("enforces Kimi observer authority before the exact one-shot native-child fault", async () => {
+    const o = await observerHarness(), contract = kimiFaultRuntimeContract("linux-x64"); o.request("snapshot");
+    const request = { runtimeEnvironmentLeaseId: "workspace-id", contract, bootstrapTemplate: "reviewed bootstrap", guardTemplate: "reviewed guard" };
+    expect(o.request("kimi-provider-death", request)[0].ok).toBe(false); expect(o.faultSpawn).not.toHaveBeenCalled();
+    o.request("publish", { path: "action.txt", text: "Use the native read tool" });
+    expect(o.request("kimi-provider-death", { ...request, runtimeEnvironmentLeaseId: "foreign" })[0].ok).toBe(false);
+    expect(o.faultSpawn).not.toHaveBeenCalled();
+    expect(o.request("kimi-provider-death", request)[0].ok).toBe(true);
+    const [program, args, options] = o.faultSpawn.mock.calls[0] as unknown as [string, string[], Record<string, unknown>];
+    expect(program).toBe("/usr/bin/python3"); expect(args.slice(0, 2)).toEqual(["-I", "-c"]);
+    expect(args[2]).toContain("signal.pidfd_send_signal"); expect(args[2]).toContain("kimi_provider_identity_or_signal_failed");
+    expect(JSON.parse(Buffer.from(args[3]!, "base64").toString())).toEqual({ root, binding, runtimeEnvironmentLeaseId: "workspace-id", runnerdSha256: hash("runnerd"), closureSha256: contract.closureSha256, nodeSha256: contract.nodeSha256, guardLoaderSha256: contract.guardLoaderSha256, bootstrapTemplate: request.bootstrapTemplate, guardTemplate: request.guardTemplate });
+    expect(options.env).toEqual({ PATH: "/usr/bin:/bin" }); expect(o.context.process.kill).not.toHaveBeenCalled();
+    expect(o.request("kimi-provider-death", request)[0].ok).toBe(false); expect(o.faultSpawn).toHaveBeenCalledOnce();
+  });
   it("executes the actual observer fault phase once with a closed environment and exact identity", async () => {
     for (const published of [false, true]) {
       const rejected = await observerHarness();
@@ -930,5 +946,41 @@ describe("exact Pi-child fault capability", () => {
     await expect(fixture.terminatePiProvider!("workspace-id")).rejects.toThrow();
     expect(h.calls.filter(call => call.request.op === "pi-provider-death")).toHaveLength(1);
     await fixture.close();
+  });
+});
+
+describe("exact Kimi-child fault capability", () => {
+  it("requires publication and consumes uncertain one-shot delivery without a worker-loss fallback", async () => {
+    const h = harness(), fixture = await bindRemoteNativeFixture(h.options);
+    await expect(fixture.terminateKimiProvider!("workspace-id")).rejects.toThrow();
+    await fixture.publishAction("action.txt", "Use the native read tool");
+    h.override(request => request.op === "kimi-provider-death" ? { exitCode: 0, result: JSON.stringify({ ok: false, error: "kimi_provider_identity_or_signal_failed" }) } : undefined);
+    await expect(fixture.terminateKimiProvider!("workspace-id")).rejects.toThrow();
+    await expect(fixture.terminateKimiProvider!("workspace-id")).rejects.toThrow();
+    const calls = h.calls.filter(call => call.request.op === "kimi-provider-death");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.request.contract).toEqual(kimiFaultRuntimeContract("linux-x64"));
+    expect(calls[0]!.request.bootstrapTemplate).toContain("/__paperclip_kimi_fault_snapshot__/distribution");
+    expect(calls[0]!.request.guardTemplate).toContain("const digests={};");
+    expect(h.calls.some(call => call.request.op === "inject-loss")).toBe(false);
+    await fixture.close();
+  });
+  it("returns the bound native-child receipt once and rejects a foreign lease", async () => {
+    const h = harness(), fixture = await bindRemoteNativeFixture(h.options);
+    await fixture.publishAction("action.txt", "Use the native read tool");
+    const parent = { pid: 22, ppid: 21, startTicks: "101", bootId }, target = { pid: 23, ppid: 22, startTicks: "102", bootId };
+    const receipt = { schema: "paperclip.e2e.kimi-provider-death.v1", binding, runtimeEnvironmentLeaseId: "workspace-id", target, ancestry: [target, parent, root],
+      ...kimiFaultRuntimeContract("linux-x64"), entrypointSha256: hash("entry"), guardSha256: hash("guard"), bootstrapSha256: hash("bootstrap"),
+      entrypointAttribution: "pinned_native_bootstrap_parent", originalChildArgvAvailable: false, observedChildTitle: "kimi-code", signalled: true, signal: "SIGKILL", targetKind: "kimi_native_child", workerSignalled: false };
+    h.override(request => request.op === "kimi-provider-death" ? { exitCode: 0, result: JSON.stringify({ ok: true, result: receipt }) } : undefined);
+    expect(await fixture.terminateKimiProvider!("workspace-id")).toEqual(receipt);
+    await expect(fixture.terminateKimiProvider!("workspace-id")).rejects.toThrow();
+    expect(h.calls.filter(call => call.request.op === "kimi-provider-death")).toHaveLength(1);
+    await fixture.close();
+    const foreign = harness(), other = await bindRemoteNativeFixture(foreign.options);
+    await other.publishAction("action.txt", "Use the native read tool");
+    foreign.override(request => request.op === "kimi-provider-death" ? { exitCode: 0, result: JSON.stringify({ ok: true, result: receipt }) } : undefined);
+    await expect(other.terminateKimiProvider!("foreign-lease")).rejects.toThrow("receipt_identity");
+    await other.close();
   });
 });

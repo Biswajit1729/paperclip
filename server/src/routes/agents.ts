@@ -2197,7 +2197,7 @@ export function agentRoutes(
     );
     const incompleteModelSetup = input.setupOnly && input.adapterType === "paperclip_runner"
       && (normalizedAdapterConfig.provider === "opencode"
-        || (normalizedAdapterConfig.provider === "acpx" && normalizedAdapterConfig.acpxAgent === "pi"))
+        || (normalizedAdapterConfig.provider === "acpx" && ["pi", "kimi"].includes(String(normalizedAdapterConfig.acpxAgent))))
       && (normalizedAdapterConfig.model === undefined || normalizedAdapterConfig.model === "");
     // Inactive drafts can precede model selection. Test/hire always validate the complete profile.
     if (!incompleteModelSetup) await assertAdapterConfigConstraints(
@@ -3063,6 +3063,10 @@ export function agentRoutes(
       return;
     }
     const provider = asNonEmptyString(req.query.provider);
+    if (type === "paperclip_runner" && provider === "acpx" && req.query.acpxAgent === "kimi") {
+      res.json([]);
+      return;
+    }
     if (type === "paperclip_runner" && provider === "acpx" && req.query.acpxAgent === "copilot") {
       const userId = responsibleUserForAiRequest(req);
       let binding: AiConnectionBinding = { provider: "github", method: "api_key", mode: "responsible_user" };

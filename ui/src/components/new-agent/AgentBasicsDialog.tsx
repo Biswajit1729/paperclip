@@ -91,6 +91,8 @@ export function AgentBasicsDialog({
   });
   const nativeRunner = adapters?.find(adapter => adapter.type === "paperclip_runner" && adapter.loaded && !adapter.disabled);
   const copilotAvailable = Boolean(nativeRunner) && PAPERCLIP_RUNNER_ACPX_PROFILES.some(profile => profile.value === "copilot" && profile.qualified);
+  const kimiAvailable = Boolean(nativeRunner) && experimental.data?.enableNativeRunner === true
+    && PAPERCLIP_RUNNER_ACPX_PROFILES.some(profile => profile.value === "kimi" && profile.qualified);
   const choices = [...(adapters ?? []).filter(
     (adapter) =>
       adapter.loaded &&
@@ -102,7 +104,7 @@ export function AgentBasicsDialog({
       }) &&
       !["process", "http"].includes(adapter.type) &&
       !getAdapterDisplay(adapter.type).comingSoon,
-  ), ...(copilotAvailable ? [{ ...nativeRunner!, type: "copilot_runtime" }] : [])];
+  ), ...(copilotAvailable ? [{ ...nativeRunner!, type: "copilot_runtime" }] : []), ...(kimiAvailable ? [{ ...nativeRunner!, type: "kimi_runtime" }] : [])];
   const experimentalRunnerAvailable = experimental.data?.enableNativeRunner === true
     && adapters?.some(adapter => adapter.type === "paperclip_runner" && adapter.loaded && !adapter.disabled);
   const validAdapter = choices.some((adapter) => adapter.type === adapterType)
@@ -127,24 +129,24 @@ export function AgentBasicsDialog({
         agent = await agentsApi.create(companyId, {
           setupId: setupId.current, name: name.trim(), appearance: appearanceDraft.appearance,
           role: existing.length ? "general" : "ceo", ...(leader ? { reportsTo: leader.id } : {}),
-          adapterType: provisionalAdapter === "copilot_runtime" ? "paperclip_runner" : provisionalAdapter,
-          ...(provisionalAdapter === "copilot_runtime" ? { adapterConfig: { provider: "acpx", acpxAgent: "copilot" } } : {}),
+          adapterType: ["copilot_runtime", "kimi_runtime"].includes(provisionalAdapter) ? "paperclip_runner" : provisionalAdapter,
+          ...(["copilot_runtime", "kimi_runtime"].includes(provisionalAdapter) ? { adapterConfig: { provider: "acpx", acpxAgent: provisionalAdapter === "kimi_runtime" ? "kimi" : "copilot" } } : {}),
           metadata: { setupAdapterPending: true },
           runtimeConfig: buildNewAgentRuntimeConfig({ heartbeatEnabled: false }),
         });
         if (active.current) setName(agent.name);
       }
       saved.current = agent;
-      const nextAdapter = ["openai_dot", "copilot_runtime"].includes(adapterType) ? "paperclip_runner" : adapterType;
-      const nextProvider = adapterType === "copilot_runtime" ? "copilot" : adapterType === "openai_dot" ? "openai_dot" : adapterType === "paperclip_runner" ? runnerProvider : "codex";
+      const nextAdapter = ["openai_dot", "copilot_runtime", "kimi_runtime"].includes(adapterType) ? "paperclip_runner" : adapterType;
+      const nextProvider = adapterType === "kimi_runtime" ? "kimi" : adapterType === "copilot_runtime" ? "copilot" : adapterType === "openai_dot" ? "openai_dot" : adapterType === "paperclip_runner" ? runnerProvider : "codex";
       if (step === "adapter" || (!creatingRecord && agent.name !== name.trim())) {
         agent = await agentsApi.update(agent.id, {
           name: name.trim(),
           ...(step === "adapter" ? {
             adapterType: nextAdapter, runner: "auto" as const,
             adapterConfig: nextAdapter === "paperclip_runner" ? {
-              provider: ["claude", "grok", "copilot"].includes(nextProvider) ? "acpx" : nextProvider,
-              ...(["claude", "grok", "copilot"].includes(nextProvider) ? { acpxAgent: nextProvider } : {}),
+              provider: ["claude", "grok", "copilot", "kimi"].includes(nextProvider) ? "acpx" : nextProvider,
+              ...(["claude", "grok", "copilot", "kimi"].includes(nextProvider) ? { acpxAgent: nextProvider } : {}),
               ...(nextProvider === "grok" ? { model: "grok-4.7" } : {}),
             } : {},
             metadata: { ...agent.metadata, setupAdapterPending: false },

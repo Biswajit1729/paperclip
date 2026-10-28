@@ -294,3 +294,20 @@ cleanup before hire and retains its unconfirmed recovery state.
 ### `delegated-configuration`
 
 See the canonical [delegated configuration guidance and acceptance evidence](connection-setup.md#delegated-configuration).
+
+### Kimi Code candidate verification
+
+The pending native Kimi profile uses `paperclipai runtime setup kimi` on the
+execution host, an exact typed model, and a `KIMI_API_KEY` company secret.
+Existing legacy Kimi agents keep their saved runtime. The pending gate hides
+ordinary native Kimi hiring until qualification; a host-authorized test fixture
+is not proof of the ordinary setup journey.
+
+Use the explicit `kimi-qualification` Product E2E suite for local and Daytona
+reply, semantic question/plan, file/download, Stop, and continuation cases.
+Verify the actual task result, persisted state and process cleanup. Run the
+ordinary New Agent draft → model/secret → Test → save/reopen → task journey
+separately after admission. Native filesystem/shell tools are denied in read-only
+Kimi work; scoped Paperclip tools retain control-plane authorization. This recipe
+is a test path, not a statement that live acceptance passed. Current evidence:
+[Kimi release ledger](../../doc/plans/2026-10-28-kimi-code-runner-integration.md).

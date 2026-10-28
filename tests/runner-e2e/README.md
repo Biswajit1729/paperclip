@@ -1895,6 +1895,34 @@ an API-key pass must not be reported as subscription evidence. See
 [`doc/grok-native-runner.md`](../../doc/grok-native-runner.md) for installation,
 credential boundaries and repetition requirements.
 
+### Kimi Code qualification
+
+`kimi-qualification` is a separate explicit-only candidate suite for maintained
+Kimi Code `@moonshot-ai/kimi-code@2.3.3`. It registers ten journeys on both local
+and Daytona: a completed reply, Paperclip semantic plan revision/approval, Ask
+mode, semantic question continuation, question continuation after a controller
+restart, verified file/artifact delivery, active Stop/reset/resume, and chat
+continuity after restart, native pending-permission Stop, and native worker loss.
+Its twenty cells do not change `extended-harnesses`
+or the default `--all` selection. Each cell has one attempt with no automatic
+retry. The exact `kimi-for-coding` model has authenticated request evidence;
+Product journey qualification remains pending. Registration and deterministic
+checks are not Product qualification evidence.
+
+Supply only the selected `KIMI_API_KEY`; the fixture writes its encrypted company
+secret reference into the Kimi provider configuration. It does not fall back to
+legacy `KIMI_MODEL_API_KEY` or import ambient login directories. Native Kimi
+questions, native plan approval, child activity, per-turn usage/cost, and
+same-turn steering are not claimed by these semantic journeys. Daytona cells
+also require the configured immutable runtime image and the existing remote
+prerequisites. Provider/process-loss and unanswered native-permission Stop
+remain separate acceptance gates, not claims of the chat Stop cell.
+
+```sh
+pnpm test:e2e:runner -- --list --suite kimi-qualification
+pnpm test:e2e:runner -- --id kimi-qualification.runner-acpx-kimi.local.message-marker --max-automatic-retries 0
+```
+
 ### Grok branch qualification on EC2
 
 The trusted default-branch workflow can run the explicit `grok-qualification`

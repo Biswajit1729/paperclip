@@ -1308,6 +1308,16 @@ describe("AgentConfigForm environment selector", () => {
     expect(result.container.querySelector('[aria-label="Environment override"]')).toBeNull();
   });
 
+  it("requests the native Kimi model catalog while preserving an explicit saved model", async () => {
+    mockAgentsApi.adapterModels.mockResolvedValue([]);
+    const result = await renderForm([], {
+      adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "kimi", model: "explicit-kimi-model" },
+    });
+    roots.push(result.root);
+    await vi.waitFor(() => expect(mockAgentsApi.adapterModels).toHaveBeenCalledWith("company-1", "paperclip_runner", expect.objectContaining({ provider: "acpx", acpxAgent: "kimi" })));
+    expect(result.container.textContent).toContain("explicit-kimi-model");
+  });
+
   it("refreshes Copilot models after reconnecting the same responsible-user account", async () => {
     const binding = { mode: "responsible_user", provider: "github", method: "api_key" } as const;
     const account = { id: "copilot-account", grantId: "copilot-grant", companyId: "company-1", provider: "github", method: "api_key", name: "My Copilot", ownership: "personal", ownerUserId: "you", isDefault: true, status: "needs_attention" } as const;
