@@ -309,11 +309,12 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
     setView(current => ({ target: targetRef.current, status: jobs.current.has(targetRef.current) ? "waiting" : "idle", error: null }));
   }, [clearTimers]);
   const reset = useCallback(() => {
-    const key = JSON.stringify([ownerRef.current, targetRef.current]);
-    const revision = registry.get(key);
-    if (revision) revision.latest = Symbol();
     const job = jobs.current.get(targetRef.current);
-    if (job) releaseJob(job);
+    if (job) {
+      const revision = registry.get(job.registryKey);
+      if (revision?.latest === job.token) revision.latest = Symbol();
+      releaseJob(job);
+    }
     generations.current.delete(targetRef.current); const removed = jobs.current.delete(targetRef.current); clearTimers();
     setView({ target: targetRef.current, status: "idle", error: null }); if (removed) refresh(value => value + 1);
   }, [clearTimers]);

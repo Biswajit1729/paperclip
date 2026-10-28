@@ -120,6 +120,22 @@ describe("useDurableAutosave", () => {
     expect(store.getSnapshot().pendingWrites).toBe(0);
   });
 
+  it("keeps a detached edit when a reopened editor resets only its local state and storage is unavailable", async () => {
+    const storage = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("Storage unavailable"); });
+    try {
+      store.setBrowserOnline(false);
+      const save = vi.fn().mockResolvedValue(undefined);
+      render({ sourceId: "old-editor", targetKey: "task-a:description", storageKey: "draft:a", save });
+      await act(async () => { current.persistDraft("Only remaining copy"); await current.run("Only remaining copy"); });
+      act(() => root.unmount()); root = createRoot(container);
+      render({ sourceId: "new-editor", targetKey: "task-a:description", storageKey: "draft:a", save });
+      act(() => current.reset());
+      await act(async () => { store.setBrowserOnline(true); store.reportSuccess(); });
+      await advance(2_000);
+      expect(save).toHaveBeenCalledExactlyOnceWith("Only remaining copy");
+    } finally { storage.mockRestore(); }
+  });
+
   it("does not send a detached editor's private draft after an account switch", async () => {
     store.setBrowserOnline(false);
     const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } });
