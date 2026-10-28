@@ -89,7 +89,7 @@ first session response while a title save waits, simulates an offline event with
 API failures while keeping static assets reachable, then verifies the real saved
 server title after account resolution and reload. The accepted-comment journey
 then completes and assigns a task before repeating its saved comment request;
-the original receipt must return once, and the task must stay Done. Reusing that
+the original receipt must return once, its activity must appear once, and the task must stay Done. Reusing that
 key with different text must return a conflict without changing the task. This
 uses a disposable process agent and makes no provider call.
 

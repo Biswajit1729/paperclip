@@ -164,6 +164,9 @@ test("replaying an accepted comment does not reopen completed work", async ({ pa
     expect((await json(await request.get(`/api/issues/${issue.id}`))).status).toBe("done");
     const comments = await json(await request.get(`/api/issues/${issue.id}/comments`));
     expect(comments.filter((comment: { clientRequestId?: string }) => comment.clientRequestId === clientRequestId)).toHaveLength(1);
+    const activity = await json(await request.get(`/api/issues/${issue.id}/activity`));
+    expect(activity.filter((entry: { action: string; details?: { commentId?: string } }) =>
+      entry.action === "issue.comment_added" && entry.details?.commentId === first.id)).toHaveLength(1);
     await page.goto(`/${company.issuePrefix}/issues/${issue.id}`);
     await expect(page.getByRole("heading", { name: issue.title, exact: true })).toBeVisible();
     await expect(page.getByText(body, { exact: true })).toBeVisible();

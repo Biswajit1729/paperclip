@@ -3449,6 +3449,11 @@ than rejecting an action made while it loads. Comment retries check the original
 account generation at the click and again immediately before their POST, including
 after optimistic cache cancellation or conversation creation. A retained accepted
 comment returns its existing receipt before the route can reopen a completed task.
+`server/src/services/issue-comment-receipt.ts` completes reference and activity
+records for keyed board comments. It locks the same-company task and comment in
+that order, repairs references and inserts a missing activity record in one
+transaction, and publishes after commit. Both the initial send and a retained
+receipt use this owner so concurrent completion cannot duplicate the activity.
 Large comment request records use the same readable range as successful writes,
 including JSON-escaped bodies. Account changes retire only the original optimistic
 echo and cannot apply its rollback to the next account.
