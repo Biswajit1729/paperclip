@@ -231,7 +231,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     const [task] = await db.select().from(issues).where(eq(issues.id, issue.id));
     expect(task.projectWorkspaceId).toBe(project ? issue.projectWorkspaceId : null);
   });
-  it.each([false, true])("keeps provider directory selection after a fresh task succeeds (explicit strategy: %s)", async explicitStrategy => {
+  it.each(["implicit", "task", "agent"] as const)("keeps provider directory selection after a fresh task succeeds (strategy: %s)", async strategySource => {
     const { input, issue, envOrchestrator } = await fixture();
     await db.update(issues).set({ projectId: null, projectWorkspaceId: null }).where(eq(issues.id, issue.id));
     input.task.issueRef = { ...issue, projectId: null, projectWorkspaceId: null };
@@ -252,19 +252,20 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     await expect(prepareHeartbeatWorkspace(db, input)).rejects.toBe(stopped);
     const [task] = await db.select().from(issues).where(eq(issues.id, issue.id));
     expect(task.executionWorkspaceSettings).toEqual({ mode: "isolated_workspace" });
-    const settings = { mode: "isolated_workspace" as const, ...(explicitStrategy ? { workspaceStrategy: { type: "git_worktree" as const } } : {}) };
+    const settings = { mode: "isolated_workspace" as const, ...(strategySource === "task" ? { workspaceStrategy: { type: "git_worktree" as const } } : {}) };
+    const agentConfig = strategySource === "agent" ? { workspaceStrategy: { type: "git_worktree" as const } } : {};
     const selection = await selectHeartbeatEnvironment(db, {
       run: input.run, agent: input.agent,
       task: { issueRef: task, issueContext: task, issueId: issue.id, context: input.task.context,
         executionProjectId: null, workspaceProjectContext: null, boundSourceWorkspace: null,
         hasSelectedWorkspaceSource: false, taskWorkspaceIntent: null, responsibleUserId: null },
       policy: { ...input.policy, issueExecutionWorkspaceSettings: settings },
-      config: { config: {}, sourceWorkspaceConfig: buildExecutionWorkspaceAdapterConfig({ agentConfig: {}, projectPolicy: null,
+      config: { config: agentConfig, sourceWorkspaceConfig: buildExecutionWorkspaceAdapterConfig({ agentConfig, projectPolicy: null,
         issueSettings: settings, mode: "isolated_workspace", legacyUseProjectWorkspace: null }), issueAssigneeOverrides: null },
       services: { environmentsSvc: environmentService(db), executionWorkspacesSvc: executionWorkspaceService(db),
         instanceSettings: instanceSettingsService(db), findSharedWorkspaceHolder: async () => null, findExecutionWorkspaceHolder: async () => null },
     });
-    expect(selection.useIsolatedTaskDirectory).toBe(!explicitStrategy);
+    expect(selection.useIsolatedTaskDirectory).toBe(strategySource === "implicit");
     expect(selection.reusableExistingExecutionWorkspace?.id).toBe(task.executionWorkspaceId);
   });
 
