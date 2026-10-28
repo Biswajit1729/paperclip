@@ -29,13 +29,15 @@ export function AgentChat() {
   });
   const userId =
     session.data?.user?.id ?? session.data?.session?.userId ?? null;
+  const agentsView = useQueryView(agents);
   const rosterAgent = agents.data?.find(
     (item) => item.id === agentRef || agentRouteRef(item) === agentRef,
   );
   const historyAgent = useQuery({
     queryKey: queryKeys.agents.detail(agentRef),
     queryFn: () => agentsApi.get(agentRef, selectedCompanyId!),
-    enabled: enabled && !!selectedCompanyId && agents.isSuccess && !rosterAgent && isUuidLike(agentRef),
+    enabled: enabled && !!selectedCompanyId && (agentsView.kind === "ready" || agentsView.kind === "stale")
+      && !rosterAgent && isUuidLike(agentRef),
   });
   const agent = rosterAgent ?? (historyAgent.data?.companyId === selectedCompanyId ? historyAgent.data : undefined);
   const chatKey = queryKeys.agentChats.detail(selectedCompanyId, userId, agent?.id);
@@ -44,7 +46,6 @@ export function AgentChat() {
     queryFn: () => agentChatsApi.get(selectedCompanyId!, agent!.id),
     enabled: enabled && !!agent && session.isFetched,
   });
-  const agentsView = useQueryView(agents);
   const sessionView = useQueryView(session);
   const historyView = useQueryView(historyAgent);
   const chatView = useQueryView(chat);
