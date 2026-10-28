@@ -71,7 +71,9 @@ Switch accounts while an inline edit is open or a channel send waits to retry:
 the next account must see neither private text nor a retry from the first account.
 Returning to the original account restores its retained channel request with the
 same key for explicit retry. Unowned legacy receipts stay held for Activity
-inspection. Component evidence lives in the
+inspection until a person explicitly discards their browser record; discard does
+not replay the text or cancel an accepted update. Typing before the first session
+lookup survives that initial lookup and is backed up under the resolved owner. Component evidence lives in the
 [inline editor tests](../../ui/src/components/InlineEditor.test.tsx) and
 [connected-channel tests](../../ui/src/components/chat/ExternallyConnectedTaskBanner.test.tsx);
 these controlled session changes do not establish hosted authentication acceptance.

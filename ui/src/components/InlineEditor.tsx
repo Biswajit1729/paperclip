@@ -66,7 +66,10 @@ export function queueContainedBlurCommit(container: HTMLDivElement, onCommit: ()
 
 export function InlineEditor(props: InlineEditorProps) {
   const draftOwner = useDraftOwner();
-  return <OwnedInlineEditor key={draftOwner ?? "unknown"} {...props} draftOwner={draftOwner} />;
+  const [scope, setScope] = useState({ owner: draftOwner, generation: 0 });
+  const generation = scope.generation + (scope.owner !== undefined && scope.owner !== draftOwner ? 1 : 0);
+  if (scope.owner !== draftOwner) setScope({ owner: draftOwner, generation });
+  return <OwnedInlineEditor key={generation} {...props} draftOwner={draftOwner} />;
 }
 
 function OwnedInlineEditor({
@@ -91,6 +94,7 @@ function OwnedInlineEditor({
   const [multilineEditing, setMultilineEditing] = useState(multiline && defaultEditing);
   const [multilineFocused, setMultilineFocused] = useState(false);
   const [draft, setDraft] = useState(value);
+  const unownedDraft = useRef<StoredInlineDraft | null>(null);
   const lastPropValueRef = useRef(value);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const markdownRef = useRef<MarkdownEditorRef>(null);
@@ -134,10 +138,11 @@ function OwnedInlineEditor({
 
   const changeDraft = useCallback((next: string) => {
     setDraft(next);
+    if (draftOwner === undefined) unownedDraft.current = { version: 1, draft: next, base: value };
     if (!storageKey) return;
     if (next.trim() === value.trim()) clearStoredDraft();
     else saveStructuredDraft(storageKey, { version: 1, draft: next, base: value } satisfies StoredInlineDraft);
-  }, [clearStoredDraft, storageKey, value]);
+  }, [clearStoredDraft, draftOwner, storageKey, value]);
 
   useEffect(() => {
     const previousValue = lastPropValueRef.current;
@@ -157,6 +162,12 @@ function OwnedInlineEditor({
   useEffect(() => {
     if (!storageKey || restoredDraftRef.current === storageKey) return;
     restoredDraftRef.current = storageKey;
+    if (unownedDraft.current) {
+      if (unownedDraft.current.draft.trim() !== value.trim()) saveStructuredDraft(storageKey, unownedDraft.current);
+      else clearStoredDraft();
+      unownedDraft.current = null;
+      return;
+    }
     const stored = loadStructuredDraft<StoredInlineDraft | null>(storageKey, null);
     if (!stored || stored.version !== 1 || typeof stored.draft !== "string" || typeof stored.base !== "string") return;
     if (stored.draft.trim() === value.trim()) {

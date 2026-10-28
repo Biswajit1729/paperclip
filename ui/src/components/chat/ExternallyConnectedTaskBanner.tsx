@@ -38,6 +38,8 @@ import {
   type RetainedBoardSend,
 } from "./board-send-draft";
 
+import { LegacyBoardSendNotice } from "./LegacyBoardSendNotice";
+
 const providerNames: Record<ChatProvider, string> = {
   speko: "Speko",
   slack: "Slack",
@@ -183,6 +185,7 @@ function ConnectedTaskComposer({
   );
   const [selectionNotice, setSelectionNotice] = useState(false);
   const [storageError, setStorageError] = useState<string | null>(null);
+  const [unownedRequest, setUnownedRequest] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const uploadInFlight = useRef(false);
   const mounted = useRef(true);
@@ -206,13 +209,14 @@ function ConnectedTaskComposer({
         draftOwner,
       )
     : null;
+  const legacyStorageKey = boardSendDraftKey(companyId, issueId, binding.endpointId, binding.conversationId);
   const loadedStorageKey = useRef<string | null>(null);
   useEffect(() => {
     if (!storageKey || loadedStorageKey.current === storageKey) return;
     loadedStorageKey.current = storageKey;
     try {
-      const legacyKey = boardSendDraftKey(companyId, issueId, binding.endpointId, binding.conversationId);
-      if (sessionStorage.getItem(legacyKey) !== null) {
+      if (sessionStorage.getItem(legacyStorageKey) !== null) {
+        setUnownedRequest(true);
         setStorageError("An earlier update has an unknown sender. Open Activity to check its delivery before starting a new update.");
         setComposing(true);
         return;
@@ -236,7 +240,7 @@ function ConnectedTaskComposer({
       );
       setComposing(true);
     }
-  }, [storageKey]);
+  }, [legacyStorageKey, storageKey, unownedRequest]);
   const deliveryScopeReady = Boolean(
     storageKey &&
     loadedStorageKey.current === storageKey &&
@@ -710,6 +714,17 @@ function ConnectedTaskComposer({
               <Link className="underline underline-offset-4" to={activityPath}>Open Activity</Link>
             </p>
           )}
+          {unownedRequest && <LegacyBoardSendNotice onDiscard={() => {
+            if (readOwner() !== draftOwner) return;
+            try { clearBoardSendDraft(legacyStorageKey); }
+            catch {
+              setStorageError("Saved delivery record could not be discarded. Restore browser storage, then try again.");
+              return;
+            }
+            loadedStorageKey.current = null;
+            setUnownedRequest(false);
+            setStorageError(null);
+          }} />}
           {rejection && (
             <div
               role="alert"

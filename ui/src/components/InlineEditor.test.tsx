@@ -6,9 +6,9 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { queryKeys } from "../lib/queryKeys";
 
-const mockSession = vi.hoisted(() => ({ userId: "user-1" }));
+const mockSession = vi.hoisted(() => ({ userId: "user-1", pending: null as Promise<{ user: { id: string } } | null> | null }));
 vi.mock("../api/auth", () => ({
-  authApi: { getSession: async () => ({ user: { id: mockSession.userId } }) },
+  authApi: { getSession: () => mockSession.pending ?? Promise.resolve({ user: { id: mockSession.userId } }) },
 }));
 
 vi.mock("./MarkdownEditor", () => ({
@@ -216,6 +216,39 @@ describe("InlineEditor", () => {
     expect(onSave).not.toHaveBeenCalled();
     act(() => root.unmount());
     localStorage.clear();
+  });
+
+  it.each(["user-1", "signed-out"])("keeps typing through the first session lookup (%s)", async (owner) => {
+    localStorage.clear();
+    localStorage.setItem(`paperclip:inline-draft:v2:${owner}:initial-session`, JSON.stringify({ version: 1, draft: "Earlier saved draft", base: "Original" }));
+    let finish!: (session: { user: { id: string } } | null) => void;
+    mockSession.pending = new Promise(resolve => { finish = resolve; });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(
+        <QueryClientProvider client={client}>
+          <InlineEditor value="Original" draftKey="initial-session" onSave={onSave} />
+        </QueryClientProvider>,
+      ));
+      act(() => container.querySelector("span")!.click());
+      const input = container.querySelector("textarea")!;
+      act(() => setNativeTextareaValue(input, "Typing while session loads"));
+      await act(async () => {
+        finish(owner === "signed-out" ? null : { user: { id: owner } });
+        await new Promise(resolve => setTimeout(resolve, 0));
+      });
+      expect(container.querySelector("textarea")).toBe(input);
+      expect(input.value).toBe("Typing while session loads");
+      expect(localStorage.getItem(`paperclip:inline-draft:v2:${owner}:initial-session`)).toContain("Typing while session loads");
+      expect(onSave).not.toHaveBeenCalled();
+    } finally {
+      act(() => root.unmount());
+      client.clear();
+      localStorage.clear();
+      mockSession.pending = null;
+    }
   });
 
   it.each([false, true])("isolates a mounted private edit after an account change (multiline=%s)", async (multiline) => {

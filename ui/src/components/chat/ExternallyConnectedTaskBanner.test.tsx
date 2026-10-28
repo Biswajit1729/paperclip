@@ -245,6 +245,49 @@ describe("ExternallyConnectedTaskBanner publication truth", () => {
     expect(sessionStorage.getItem(key)).toBe(saved);
   });
 
+  it.each([false, true])("can explicitly discard an unowned receipt without replaying its message (storage failure=%s)", async (storageFailure) => {
+    const key = boardSendDraftKey("company-1", "issue-1", "endpoint-1", "conversation-1");
+    const saved = JSON.stringify({ body: "Unowned private message", attachmentIds: [], idempotencyKey: "legacy-request-key-1", publication: null });
+    sessionStorage.setItem(key, saved);
+    await renderBanner();
+    await act(() => findButton(container, "Discard saved delivery record").click());
+    await flushReact();
+    expect(document.body.textContent).toContain("does not cancel an update");
+    const dialog = document.body.querySelector<HTMLElement>('[role="alertdialog"]')!;
+    expect(dialog).toBeTruthy();
+    await act(() => findButton(dialog, "Keep record").click());
+    await flushReact();
+    expect(sessionStorage.getItem(key)).toBe(saved);
+    expect(container.querySelector("textarea")?.disabled).toBe(true);
+    if (storageFailure) {
+      const remove = vi.spyOn(Object.getPrototypeOf(sessionStorage), "removeItem").mockImplementation(() => { throw new Error("Storage unavailable"); });
+      await act(() => findButton(container, "Discard saved delivery record").click());
+      await flushReact();
+      await act(() => findButton(document.body, "Discard record").click());
+      await flushReact();
+      expect(sessionStorage.getItem(key)).toBe(saved);
+      expect(container.querySelector("textarea")?.disabled).toBe(true);
+      expect(container.textContent).toContain("could not be discarded");
+      expect(mockChatEndpointsApi.publishBoardMessage).not.toHaveBeenCalled();
+      remove.mockRestore();
+    }
+    await act(() => findButton(container, "Discard saved delivery record").click());
+    await flushReact();
+    await act(() => findButton(document.body, "Discard record").click());
+    await flushReact();
+    expect(sessionStorage.getItem(key)).toBeNull();
+    await act(() => findButton(container, "Send to channel").click());
+    await flushReact();
+    expect(container.querySelector("textarea")?.disabled).toBe(false);
+    expect(container.querySelector("textarea")?.value).toBe("");
+    expect(mockChatEndpointsApi.publishBoardMessage).not.toHaveBeenCalled();
+    await act(() => setTextareaValue(container.querySelector("textarea")!, "Fresh deliberate message"));
+    mockChatEndpointsApi.publishBoardMessage.mockResolvedValueOnce({ id: "fresh-publication", state: "published", attempts: 1 });
+    await act(() => [...container.querySelectorAll("button")].filter(button => button.textContent?.trim() === "Send to channel").at(-1)!.click());
+    await flushReact();
+    expect(mockChatEndpointsApi.publishBoardMessage).toHaveBeenCalledWith("endpoint-1", "conversation-1", "Fresh deliberate message", expect.not.stringMatching("legacy-request-key-1"), []);
+  });
+
   it("asks for Resend now once automatic resends stop", async () => {
     autoResendOverride.stalled = true;
     mockChatEndpointsApi.publishBoardMessage.mockRejectedValue(

@@ -3419,12 +3419,16 @@ must reach the caller. Once automatic attempts stop, show **Resend now** instead
 of promising another automatic attempt. See the hook, document, task creation and
 connected-task banner tests for these contracts.
 
-Inline editors remount when the draft owner changes. Connected-channel sends use
+Inline editors preserve typing through the first owner lookup and remount after
+a known draft owner changes. Connected-channel sends use
 account-scoped storage and publication queries; retries and receipts retain the
 original account generation. Returning to that account restores its saved send
 for an explicit same-key retry. Earlier unowned channel receipts are preserved
 without revealing or replaying their text. They require inspecting Activity
 before a new send because their original sender cannot be established safely.
+After checking Activity, a person can explicitly discard the unowned browser
+record to start a fresh update. This never replays the old text or cancels an
+already accepted publication; storage failures keep the hold in place.
 
 ### Browser realtime connection recovery
 
