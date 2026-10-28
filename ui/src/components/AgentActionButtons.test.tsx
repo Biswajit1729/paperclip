@@ -7,11 +7,14 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Agent } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentActionButtons } from "./AgentActionButtons";
+import { useAgentLifecycleStatus } from "./AgentLifecycleStatus";
+import { queryKeys } from "../lib/queryKeys";
 
 const mockNavigate = vi.hoisted(() => vi.fn());
 const mockOpenNewIssue = vi.hoisted(() => vi.fn());
 const mockPushToast = vi.hoisted(() => vi.fn());
 const mockAgentsApi = vi.hoisted(() => ({
+  get: vi.fn(),
   invoke: vi.fn(),
   pause: vi.fn(),
   resume: vi.fn(),
@@ -165,6 +168,31 @@ describe("AgentActionButtons", () => {
     render(makeAgent({ status: "terminated", lifecycleState, pauseReason: "setup" }));
     await flushReact();
     expect(container.textContent).not.toContain("Finish setup");
+  });
+
+  it("restores Run after lifecycle refresh completes setup without replacing the editable record", async () => {
+    const draft = makeAgent({ status: "paused", lifecycleState: "paused", lifecycleVersion: 1, pauseReason: "setup", pausedAt: new Date("2026-01-01T00:00:00Z"), adapterConfig: { model: "saved-model" } });
+    queryClient.setQueryData(queryKeys.agents.detail("alpha"), draft);
+    mockAgentsApi.get.mockResolvedValueOnce(draft);
+    function LiveActions() {
+      const lifecycle = useAgentLifecycleStatus(draft);
+      return <AgentActionButtons agent={{ ...draft, ...lifecycle.data }} companyId="company-1" runLabel="Run Heartbeat" />;
+    }
+    root = createRoot(container);
+    root.render(<QueryClientProvider client={queryClient}><LiveActions /></QueryClientProvider>);
+    await flushReact();
+    expect(container.textContent).toContain("Finish setup");
+    mockAgentsApi.get.mockResolvedValue({ ...draft, status: "idle", lifecycleState: "ready", lifecycleVersion: 2, pauseReason: null, pausedAt: null, adapterConfig: { model: "updated-on-server" } });
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: [...queryKeys.agents.detail(draft.id), "lifecycle", draft.companyId] }); });
+    await flushReact();
+    expect(container.textContent).not.toContain("Finish setup");
+    const run = [...container.querySelectorAll("button")].find(button => button.textContent === "Run Heartbeat");
+    expect(run?.disabled).toBe(false);
+    expect(queryClient.getQueryData<Agent>(queryKeys.agents.detail("alpha"))?.adapterConfig).toEqual({ model: "saved-model" });
+    expect(mockAgentsApi.get).toHaveBeenLastCalledWith("agent-1", "company-1");
+    await act(() => run!.click());
+    await flushReact();
+    expect(mockAgentsApi.invoke).toHaveBeenCalledWith("agent-1", "company-1");
   });
 
   it("checks unsaved changes before leaving to finish setup", async () => {
