@@ -20,11 +20,11 @@ The selected Coordinator synthesis is the visual and interaction reference. Use 
 
 - Source baseline: local master `1fbbef45a8d399771add7a27a04b12f3a20e264c`.
 - Branch: `codex/coordinator-experimental`.
-- Checkout: `/Users/squadbot/Documents/Codex/2026-10-20/task/paperclip-functional`.
-- Separate runtime home: `/Users/squadbot/Documents/Codex/2026-10-20/task/paperclip-runtime`.
+- Checkout: isolated `paperclip-functional` worktree.
+- Separate runtime home: sibling `paperclip-runtime` directory.
 - Instance: `coordinator-functional`; explicitly empty initialization; fresh signing keys; no immediate or deferred copy from the primary instance.
 - Allocated ports: app 3210, embedded PostgreSQL 55460; verify actual ownership before claiming readiness.
-- The original prototype remains in `/Users/squadbot/.codex/worktrees/6ddb/paperclip` and is not the application baseline.
+- The original prototype remains in its separate worktree and is not the application baseline.
 - The managed Codex worktree tool was unavailable for this chat placement. An ordinary Git worktree was created instead; the original checkout and prototype were not reset or altered.
 
 ## Milestones
