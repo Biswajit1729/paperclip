@@ -20,19 +20,6 @@ const uploadAttachmentMock = vi.hoisted(() => vi.fn());
 vi.mock("@/api/issues", () => ({
   issuesApi: { uploadAttachment: uploadAttachmentMock },
 }));
-// Lets a test report that automatic resends stopped, without running eight
-// backoff rounds; otherwise the real hook runs.
-const autoResendOverride = vi.hoisted(() => ({ stalled: false }));
-vi.mock("@/hooks/useDurableSubmit", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/hooks/useDurableSubmit")>();
-  return {
-    ...actual,
-    useAutoResend: (options: Parameters<typeof actual.useAutoResend>[0]) => {
-      const result = actual.useAutoResend(options);
-      return autoResendOverride.stalled ? { ...result, stalled: true } : result;
-    },
-  };
-});
 vi.mock("@/hooks/useChatConnectorsEnabled", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/hooks/useChatConnectorsEnabled")>(),
   useChatConnectorsEnabled: () => ({ enabled: true, githubEnabled: true, loaded: true }),
@@ -167,20 +154,6 @@ describe("ExternallyConnectedTaskBanner publication truth", () => {
     flushSync(() => root.unmount());
     container.remove();
     vi.restoreAllMocks();
-    autoResendOverride.stalled = false;
-  });
-
-  it("asks for Resend now once automatic resends stop", async () => {
-    autoResendOverride.stalled = true;
-    mockChatEndpointsApi.publishBoardMessage.mockRejectedValue(
-      new ApiError("Bad gateway", 502, { error: "Bad gateway" }),
-    );
-    await renderBanner();
-    await composeAndSubmit();
-    expect(container.textContent).toContain("Couldn’t send this update yet.");
-    expect(container.textContent).toContain("Automatic resends stopped; choose Resend now");
-    expect(container.textContent).not.toContain("It resends on its own");
-    expect(findButton(container, "Resend now")).toBeTruthy();
   });
 
   it("only reports success and clears the draft after confirmed publication", async () => {
@@ -906,12 +879,7 @@ describe("ExternallyConnectedTaskBanner publication truth", () => {
           ?.click(),
       );
       await flushReact();
-      // A 5xx may have committed: it waits to resend with the same identity.
-      expect(container.textContent).toContain(
-        kind === "server-error"
-          ? "Sending when reconnected…"
-          : "Delivery result not confirmed",
-      );
+      expect(container.textContent).toContain("Delivery result not confirmed");
       expect(container.textContent).not.toContain("Edit rejected send");
       expect(container.querySelector("textarea")?.disabled).toBe(true);
       expect(mockChatEndpointsApi.publishBoardMessage).toHaveBeenCalledTimes(1);

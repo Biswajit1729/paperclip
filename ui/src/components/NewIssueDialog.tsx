@@ -43,61 +43,10 @@ import { TaskChatPresentationProvider } from "./task-chat/presentation-mode";
 import { mergeComposerRunSettings, type ComposerRunSettings } from "./task-chat/composer-run-settings";
 import { useSidebar } from "../context/SidebarContext";
 import { InlineBanner } from "./InlineBanner";
-import { PendingSendNotice } from "./PendingSendNotice";
-import { useDurableSubmit } from "../hooks/useDurableSubmit";
-import { describeError, type ErrorDescription } from "../api/errors";
-import { clearPendingSend, pendingSendKeyFor, readPendingSend, writePendingSend } from "../lib/pending-send";
-import { useDraftOwner } from "../hooks/useDraftOwner";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
 import { getTrustPreset } from "../lib/trust-policy-ui";
 
 const DRAFT_KEY = "paperclip:issue-draft";
-/** A create that is waiting to resend: its request body and idempotency key. */
-const PENDING_CREATE_KEY = "paperclip:issue-draft:pending-create";
-
-/**
- * The create request. Staged files cannot be stored, so they ride in memory and
- * only their names are saved: a create restored after reload knows it needs them.
- */
-type PendingCreate = { fingerprint: string; data: Record<string, unknown>; stagedFileNames?: string[] };
-
-function isPendingCreate(value: unknown): value is PendingCreate {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const row = value as Record<string, unknown>;
-  return (
-    typeof row.fingerprint === "string" &&
-    !!row.data && typeof row.data === "object" && !Array.isArray(row.data) &&
-    typeof (row.data as Record<string, unknown>).companyId === "string" &&
-    (row.stagedFileNames === undefined ||
-      (Array.isArray(row.stagedFileNames) && row.stagedFileNames.every((name) => typeof name === "string")))
-  );
-}
-
-/** Thrown before sending a restored create whose staged files are gone from memory. */
-class StagedFilesMissingError extends Error {
-  constructor(names: string[]) {
-    super(
-      `This page no longer has ${names.length === 1 ? "the file" : `the ${names.length} files`} staged for this task (${names.join(", ")}). Attach ${names.length === 1 ? "it" : "them"} again, then create the task.`,
-    );
-    this.name = "StagedFilesMissingError";
-  }
-}
-
-/**
- * A restored create that could not be sent for lack of its files. Its key is
- * kept until a create succeeds or the user cancels, so reattaching after any
- * number of reloads replays a create that already reached the server.
- */
-const CREATE_AWAITING_FILES_KEY = "paperclip:issue-draft:create-awaiting-files";
-
-function stagedFilesMissingDescription(names: string[]): ErrorDescription {
-  return describeError(new StagedFilesMissingError(names), { action: "create the task" });
-}
-
-/** Identifies a staged file across reselection from disk, unlike its per-staging `id`. */
-function stagedFileIdentity(file: StagedIssueFile): string {
-  return [file.kind, file.documentKey ?? "", file.file.name, file.file.size, file.file.lastModified].join(":");
-}
 const DEBOUNCE_MS = 800;
 
 type VisualViewportLayout = {
@@ -196,72 +145,6 @@ type StagedIssueFile = {
   documentKey?: string;
   title?: string | null;
 };
-
-/**
- * Files a keyed create has already added to its task. A replayed create (same
- * key, after a reload mid-upload) gets the existing task back from the
- * server, and must not add those files a second time.
- */
-const CREATE_UPLOAD_RECEIPTS_PREFIX = "paperclip:issue-draft:create-uploads:";
-
-function loadCreateUploadReceipts(idempotencyKey: string): Set<string> {
-  try {
-    const stored = JSON.parse(localStorage.getItem(CREATE_UPLOAD_RECEIPTS_PREFIX + idempotencyKey) ?? "[]");
-    return new Set(Array.isArray(stored) ? stored.filter((item): item is string => typeof item === "string") : []);
-  } catch {
-    return new Set();
-  }
-}
-
-function saveCreateUploadReceipts(idempotencyKey: string, receipts: Set<string>) {
-  try {
-    localStorage.setItem(CREATE_UPLOAD_RECEIPTS_PREFIX + idempotencyKey, JSON.stringify([...receipts]));
-  } catch {
-    // Without storage a replay after reload may add a file twice; nothing is lost.
-  }
-}
-
-export function clearCreateUploadReceipts(idempotencyKey: string) {
-  try {
-    localStorage.removeItem(CREATE_UPLOAD_RECEIPTS_PREFIX + idempotencyKey);
-  } catch {
-    // Unavailable storage holds nothing to clear.
-  }
-}
-
-/** Add staged files to a created task, skipping any this create already added. Returns the names that failed. */
-export async function addStagedFilesToIssue(input: {
-  companyId: string;
-  issueId: string;
-  stagedFiles: StagedIssueFile[];
-  idempotencyKey?: string;
-}): Promise<string[]> {
-  const { companyId, issueId, stagedFiles, idempotencyKey } = input;
-  const receipts = idempotencyKey ? loadCreateUploadReceipts(idempotencyKey) : new Set<string>();
-  const failures: string[] = [];
-  for (const stagedFile of stagedFiles) {
-    const identity = stagedFileIdentity(stagedFile);
-    if (receipts.has(identity)) continue;
-    try {
-      if (stagedFile.kind === "document") {
-        const body = await stagedFile.file.text();
-        await issuesApi.upsertDocument(issueId, stagedFile.documentKey ?? "document", {
-          title: stagedFile.documentKey === "plan" ? null : (stagedFile.title ?? null),
-          format: "markdown",
-          body,
-          baseRevisionId: null,
-        });
-      } else {
-        await issuesApi.uploadAttachment(companyId, issueId, stagedFile.file);
-      }
-      receipts.add(identity);
-      if (idempotencyKey) saveCreateUploadReceipts(idempotencyKey, receipts);
-    } catch {
-      failures.push(stagedFile.file.name);
-    }
-  }
-  return failures;
-}
 
 import { Badge } from "@/components/ui/badge";
 import { buildAssigneeAdapterOverrides, type IssueModelLane } from "../lib/issue-assignee-overrides";
@@ -434,11 +317,7 @@ export function NewIssueDialog() {
   const initializationKeyRef = useRef<string | null>(null);
   const defaultAssigneePendingRef = useRef(false);
   const defaultProjectPendingRef = useRef(false);
-  // `recovering`: a create restored without its files keeps its key until it is
-  // sent or cancelled, whatever the files and fields look like when resubmitted.
-  const createRequestRef = useRef<{ fingerprint: string; idempotencyKey: string; recovering?: boolean } | null>(null);
-  const draftOwner = useDraftOwner();
-  const awaitingFilesKey = draftOwner !== undefined ? pendingSendKeyFor(CREATE_AWAITING_FILES_KEY, draftOwner) : null;
+  const createRequestRef = useRef<{ fingerprint: string; idempotencyKey: string } | null>(null);
 
   const primaryAgent = usePrimaryAgentPresentation(effectiveCompanyId);
   const isSubIssueMode = Boolean(newIssueDefaults.parentId);
@@ -552,12 +431,25 @@ export function NewIssueDialog() {
       ...data
     }: { companyId: string; stagedFiles: StagedIssueFile[]; navigateOnCreate?: boolean } & Record<string, unknown>) => {
       const issue = await issuesApi.create(companyId, data);
-      const failures = await addStagedFilesToIssue({
-        companyId,
-        issueId: issue.id,
-        stagedFiles: pendingStagedFiles,
-        idempotencyKey: typeof data.idempotencyKey === "string" ? data.idempotencyKey : undefined,
-      });
+      const failures: string[] = [];
+
+      for (const stagedFile of pendingStagedFiles) {
+        try {
+          if (stagedFile.kind === "document") {
+            const body = await stagedFile.file.text();
+            await issuesApi.upsertDocument(issue.id, stagedFile.documentKey ?? "document", {
+              title: stagedFile.documentKey === "plan" ? null : (stagedFile.title ?? null),
+              format: "markdown",
+              body,
+              baseRevisionId: null,
+            });
+          } else {
+            await issuesApi.uploadAttachment(companyId, issue.id, stagedFile.file);
+          }
+        } catch {
+          failures.push(stagedFile.file.name);
+        }
+      }
 
       return { issue, companyId, failures, navigateOnCreate };
     },
@@ -597,71 +489,6 @@ export function NewIssueDialog() {
       if (navigateOnCreate) navigate(openIssueAction?.href ?? `/issues/${issueRef}`);
     },
   });
-
-  // Issue create is keyed: the server replays the original issue for a known
-  // idempotency key, so an outage or a lost response resends safely.
-  const stagedFilesByKey = useRef(new Map<string, StagedIssueFile[]>());
-  // The composer shows a rejection of the first attempt; later (automatic or
-  // Resend now) rejections show here.
-  const firstAttemptKey = useRef<string | null>(null);
-  const [resendError, setResendError] = useState<ErrorDescription | null>(null);
-  // Once the account is known, a create still waiting for its files keeps its
-  // key and asks for the files again.
-  useEffect(() => {
-    if (!awaitingFilesKey) return;
-    const awaiting = readPendingSend(awaitingFilesKey, isPendingCreate);
-    if (!awaiting) return;
-    createRequestRef.current ??= {
-      fingerprint: awaiting.payload.fingerprint,
-      idempotencyKey: awaiting.idempotencyKey,
-      recovering: true,
-    };
-    const names = awaiting.payload.stagedFileNames;
-    if (names?.length) setResendError((current) => current ?? stagedFilesMissingDescription(names));
-  }, [awaitingFilesKey]);
-  const durableCreate = useDurableSubmit<PendingCreate, unknown>({
-    sourceId: "new-issue-dialog",
-    storageKey: PENDING_CREATE_KEY,
-    isPayload: isPendingCreate,
-    action: "create the task",
-    send: async (payload, idempotencyKey) => {
-      const stagedFiles = stagedFilesByKey.current.get(idempotencyKey);
-      // Never create a restored task without the files it was submitted with.
-      if (!stagedFiles && payload.stagedFileNames?.length) {
-        throw new StagedFilesMissingError(payload.stagedFileNames);
-      }
-      const result = await createIssue.mutateAsync({
-        ...(payload.data as { companyId: string }),
-        stagedFiles: stagedFiles ?? [],
-        idempotencyKey,
-      });
-      stagedFilesByKey.current.delete(idempotencyKey);
-      clearCreateUploadReceipts(idempotencyKey);
-      return result;
-    },
-    onRejected: (error, description, pending) => {
-      if (error instanceof StagedFilesMissingError) {
-        // Reattaching the same files resubmits under the original key, so a
-        // create that already reached the server is replayed, not duplicated.
-        createRequestRef.current = {
-          fingerprint: pending.payload.fingerprint,
-          idempotencyKey: pending.idempotencyKey,
-          recovering: true,
-        };
-        if (awaitingFilesKey) writePendingSend(awaitingFilesKey, pending);
-      }
-      if (pending.idempotencyKey !== firstAttemptKey.current) setResendError(description);
-    },
-  });
-  // A create restored after reload without its files cannot be sent; say so
-  // now rather than after the first resend delay. Nothing reaches the network.
-  const pendingCreate = durableCreate.pending;
-  const { resendNow: resendCreateNow } = durableCreate;
-  useEffect(() => {
-    if (pendingCreate?.payload.stagedFileNames?.length && !stagedFilesByKey.current.has(pendingCreate.idempotencyKey)) {
-      resendCreateNow();
-    }
-  }, [pendingCreate, resendCreateNow]);
 
   // Debounced draft saving
   const scheduleSave = useCallback((draft: IssueDraft) => {
@@ -929,7 +756,6 @@ export function NewIssueDialog() {
 
   function reset() {
     createRequestRef.current = null;
-    if (awaitingFilesKey) clearPendingSend(awaitingFilesKey);
     setIssueText("", "");
     setStatus("todo");
     setPriority("");
@@ -963,7 +789,7 @@ export function NewIssueDialog() {
   async function handleSubmit(body: string, mode: IssueWorkMode, settings: ComposerRunSettings | null) {
     const currentTitle = titleRef.current.trim();
     const currentDescription = body.trim();
-    if (!effectiveCompanyId || (!currentTitle && !currentDescription) || createIssue.isPending || durableCreate.pending || worktreeSelectionIncomplete || parentPrivacyUnresolved) return;
+    if (!effectiveCompanyId || (!currentTitle && !currentDescription) || createIssue.isPending || worktreeSelectionIncomplete || parentPrivacyUnresolved) return;
     const inheritedOverrides = buildAssigneeAdapterOverrides({
       adapterType: assigneeAdapterType,
       lane: assigneeChrome ? "custom" : assigneeModelLane,
@@ -1007,6 +833,7 @@ export function NewIssueDialog() {
       : inheritedOverrides;
     const createData = {
       companyId: effectiveCompanyId,
+      stagedFiles,
       ...(currentTitle ? { title: currentTitle } : {}),
       description: currentDescription || undefined,
       status,
@@ -1036,40 +863,17 @@ export function NewIssueDialog() {
         : {}),
     };
     // An explicit board create is a new task even when its title already exists.
-    // Reuse the request key only for retries of the same submitted draft, and
-    // always for a create waiting for its files: it may already have reached
-    // the server, and its key then replays that task instead of a second one.
-    // The file set is compared without regard to selection order.
-    const fingerprint = JSON.stringify({ ...createData, stagedFiles: stagedFiles.map(stagedFileIdentity).sort() });
-    let request = createRequestRef.current;
-    if (!request || (!request.recovering && request.fingerprint !== fingerprint)) {
-      request = { fingerprint, idempotencyKey: createUuid() };
-      createRequestRef.current = request;
+    // Reuse the request key only for retries of the same submitted draft.
+    const fingerprint = JSON.stringify(createData);
+    if (createRequestRef.current?.fingerprint !== fingerprint) {
+      createRequestRef.current = { fingerprint, idempotencyKey: createUuid() };
     }
-    const { idempotencyKey } = request;
-    stagedFilesByKey.current.set(idempotencyKey, stagedFiles);
-    firstAttemptKey.current = idempotencyKey;
-    setResendError(null);
-    let result;
-    try {
-      result = await durableCreate.submit(
-        {
-          fingerprint,
-          data: {
-            ...createData,
-            allowDuplicate: true,
-            navigateOnCreate: newIssueDefaults.navigateOnCreate === true,
-          },
-          ...(stagedFiles.length > 0 ? { stagedFileNames: stagedFiles.map((file) => file.file.name) } : {}),
-        },
-        { idempotencyKey },
-      );
-    } finally {
-      firstAttemptKey.current = null;
-    }
-    // A transient failure keeps the request and shows the pending notice; a
-    // rejection goes back to the composer with readable copy.
-    if (result.kind === "rejected") throw result.error;
+    await createIssue.mutateAsync({
+      ...createData,
+      allowDuplicate: true,
+      idempotencyKey: createRequestRef.current.idempotencyKey,
+      navigateOnCreate: newIssueDefaults.navigateOnCreate === true,
+    });
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
@@ -1081,7 +885,7 @@ export function NewIssueDialog() {
   }
 
   function stageFiles(files: File[]) {
-    if (files.length === 0 || createIssue.isPending || durableCreate.pending) return;
+    if (files.length === 0 || createIssue.isPending) return;
     setStagedFiles((current) => {
       const next = [...current];
       for (const file of files) {
@@ -1396,37 +1200,13 @@ export function NewIssueDialog() {
                 runSettings: composerSettings,
                 onRunSettingsChange: setComposerSettings,
                 header:
-                  hasTitle || isSubIssueMode || durableCreate.pending || resendError ? (
+                  hasTitle || isSubIssueMode ? (
                     <div className="mb-3 flex flex-col gap-2 text-xs">
-                      {durableCreate.pending && durableCreate.status !== "sending" ? (
-                        <PendingSendNotice
-                          noun="task"
-                          resending={durableCreate.resending}
-                          stalled={durableCreate.status === "stalled"}
-                          onResendNow={durableCreate.resendNow}
-                          onCancel={() => {
-                            // The draft (title and description) is still saved; only the send stops.
-                            const cancelledKey = durableCreate.pending?.idempotencyKey;
-                            const cancelled = durableCreate.cancel();
-                            if (cancelled) {
-                              createRequestRef.current = null;
-                              if (awaitingFilesKey) clearPendingSend(awaitingFilesKey, cancelledKey);
-                              if (cancelledKey) clearCreateUploadReceipts(cancelledKey);
-                            }
-                          }}
-                        />
-                      ) : null}
-                      {resendError && !durableCreate.pending ? (
-                        <p role="alert" className="text-sm text-destructive">
-                          {resendError.title}. {resendError.body}
-                        </p>
-                      ) : null}
                       {hasTitle ? (
                         <input
                           aria-label="Task title"
                           value={title}
-                          // The waiting request is what gets created; later edits would be lost.
-                          disabled={createIssue.isPending || Boolean(durableCreate.pending)}
+                          disabled={createIssue.isPending}
                           className="w-full bg-transparent text-sm text-foreground outline-none"
                           onChange={(event) => {
                             titleRef.current = event.target.value;
@@ -1598,8 +1378,7 @@ export function NewIssueDialog() {
                     ) : null}
                   </>
                 ),
-                submitDisabled: worktreeSelectionIncomplete || parentPrivacyUnresolved || Boolean(durableCreate.pending),
-                readOnly: Boolean(durableCreate.pending),
+                submitDisabled: worktreeSelectionIncomplete || parentPrivacyUnresolved,
                 contextBar: (
                   <>
                     <InlineEntitySelector

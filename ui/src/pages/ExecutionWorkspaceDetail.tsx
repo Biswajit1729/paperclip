@@ -49,7 +49,6 @@ import {
   routineHasWorkspaceSpecificVariables,
   sortWorkspaceRoutinesByName,
 } from "../lib/workspace-routines";
-import { useUpdateIssueMutation } from "../hooks/useUpdateIssueMutation";
 
 type WorkspaceFormState = {
   name: string;
@@ -552,13 +551,15 @@ function ExecutionWorkspaceIssuesList({
 
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns, issues), [issues, liveRuns]);
 
-  const updateIssue = useUpdateIssueMutation({
-    companyId,
-    invalidateKeys: [
-      queryKeys.issues.listByExecutionWorkspace(companyId, workspace.id),
-      queryKeys.issues.list(companyId),
-      ...(project?.id ? [queryKeys.issues.listByProject(companyId, project.id)] : []),
-    ],
+  const updateIssue = useMutation({
+    mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) => issuesApi.update(id, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByExecutionWorkspace(companyId, workspace.id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
+      if (project?.id) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(companyId, project.id) });
+      }
+    },
   });
 
   const projectOptions = useMemo(

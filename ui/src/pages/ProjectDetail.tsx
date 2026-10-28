@@ -47,7 +47,6 @@ import {
   useResourceMembershipMutation,
   useResourceMemberships,
 } from "../hooks/useResourceMemberships";
-import { useUpdateIssueMutation } from "../hooks/useUpdateIssueMutation";
 
 /* ── Top-level tab types ── */
 
@@ -228,9 +227,13 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
   });
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns, issues), [issues, liveRuns]);
 
-  const updateIssue = useUpdateIssueMutation({
-    companyId,
-    invalidateKeys: [queryKeys.issues.listByProject(companyId, projectId), queryKeys.issues.list(companyId)],
+  const updateIssue = useMutation({
+    mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
+      issuesApi.update(id, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(companyId, projectId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
+    },
   });
 
   return (
@@ -295,13 +298,14 @@ function ProjectPluginOperationsList({
   });
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns, issues), [issues, liveRuns]);
 
-  const updateIssue = useUpdateIssueMutation({
-    companyId,
-    invalidateKeys: [
-      queryKeys.issues.listPluginOperationsByProject(companyId, projectId, originKindPrefix),
-      queryKeys.issues.listByProject(companyId, projectId),
-      queryKeys.issues.list(companyId),
-    ],
+  const updateIssue = useMutation({
+    mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
+      issuesApi.update(id, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listPluginOperationsByProject(companyId, projectId, originKindPrefix) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(companyId, projectId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
+    },
   });
 
   return (
