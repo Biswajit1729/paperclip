@@ -277,7 +277,7 @@ function makeIssueDocumentSubject(issue: Issue): DocumentSubjectConfig {
   };
 }
 
-export function IssueDocumentsSection({
+function AccountIssueDocumentsSection({
   issue,
   subject,
   canDeleteDocuments,
@@ -361,11 +361,14 @@ export function IssueDocumentsSection({
   // Each save binds its own request and 409 check (see commitDraft).
   const autosave = useDurableAutosave<DraftState>({
     sourceId: `issue-documents:${documentSubject.id}`,
+    targetKey: `${draftScope}:${draft?.key ?? ""}`,
     save: async () => undefined,
     action: "save the document",
   });
   const { markDirty, reset, run: runAutosave } = autosave;
   const autosaveState = autosave.status;
+  const autosaveStateRef = useRef(autosaveState);
+  autosaveStateRef.current = autosaveState;
 
   const { data: documents } = useQuery({
     queryKey: documentSubject.documentsQueryKey,
@@ -939,7 +942,7 @@ export function IssueDocumentsSection({
       existing.body !== draft.body ||
       (existing.title ?? "") !== draft.title;
     if (!hasChanges) {
-      if (autosaveState !== "saved") {
+      if (autosaveStateRef.current !== "saved") {
         resetAutosaveState();
       }
       return;
@@ -957,7 +960,7 @@ export function IssueDocumentsSection({
         clearTimeout(autosaveDebounceRef.current);
       }
     };
-  }, [autosaveState, commitDraft, documentConflict, draft, markDocumentDirty, resetAutosaveState, sortedDocuments]);
+  }, [commitDraft, documentConflict, draft, markDocumentDirty, resetAutosaveState, sortedDocuments]);
 
   const documentBodyShellClassName = "mt-3";
   const documentBodyPaddingClassName = "";
@@ -1446,6 +1449,7 @@ export function IssueDocumentsSection({
                             : ""
                           : ""}
                     </span>
+                    {activeDraft && autosaveDocumentKey === doc.key && autosaveState === "stalled" ? <Button type="button" size="sm" variant="ghost" onClick={autosave.resendNow}>Retry saving</Button> : null}
                   </div>
                   {canVoteOnDocument && doc.latestRevisionId ? (
                     <OutputFeedbackButtons
@@ -1506,4 +1510,15 @@ export function IssueDocumentsSection({
       })()}
     </div>
   );
+}
+
+export function IssueDocumentsSection(props: Parameters<typeof AccountIssueDocumentsSection>[0]) {
+  const owner = useDraftOwner();
+  const previousOwner = useRef(owner);
+  const generation = useRef(0);
+  if (previousOwner.current !== owner) {
+    if (previousOwner.current !== undefined) generation.current += 1;
+    previousOwner.current = owner;
+  }
+  return <AccountIssueDocumentsSection key={generation.current} {...props} />;
 }

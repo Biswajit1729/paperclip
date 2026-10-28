@@ -49,3 +49,45 @@ test("a task title survives an outage and saves after server recovery", async ({
     await request.patch(`/api/companies/${company.id}`, { data: { status: "archived" } });
   }
 });
+
+test("two cached tasks keep separate title saves while the browser is offline", async ({ page, request }) => {
+  test.setTimeout(120_000);
+  const company = await json(await request.post("/api/companies", { data: { name: `Queued writes ${Date.now()}` } }));
+  try {
+    const first = await json(await request.post(`/api/companies/${company.id}/issues`, { data: { title: "First queued task", status: "todo" } }));
+    const second = await json(await request.post(`/api/companies/${company.id}/issues`, { data: { title: "Second queued task", status: "todo" } }));
+    await page.goto(`/${company.issuePrefix}/issues/${second.id}`);
+    await expect(page.getByRole("heading", { name: second.title, exact: true })).toBeVisible();
+    await page.getByRole("link", { name: "Tasks", exact: true }).first().click();
+    await page.getByRole("link").filter({ hasText: first.title }).first().click();
+    const header = page.getByTestId("issue-detail-header");
+    await expect(header.getByRole("heading", { name: first.title, exact: true })).toBeVisible();
+    const dismissAnnouncement = page.getByRole("button", { name: "Dismiss announcement" });
+    if (await dismissAnnouncement.isVisible()) await dismissAnnouncement.click();
+    const secondLink = page.getByRole("link").filter({ hasText: second.title }).first();
+    await expect(secondLink).toBeVisible();
+    await page.context().setOffline(true);
+    await expect(page.locator('[data-connection-status="offline"]')).toBeVisible();
+    await header.getByRole("heading", { name: first.title, exact: true }).click();
+    await header.locator("textarea").fill("First title retained offline");
+    await header.locator("textarea").press("Enter");
+    await secondLink.focus();
+    await secondLink.press("Enter", { timeout: 5_000 });
+    await expect(page).toHaveURL(new RegExp(`${second.id}$`));
+    await expect(header.getByRole("heading", { name: second.title, exact: true })).toBeVisible();
+    await header.getByRole("heading", { name: second.title, exact: true }).click();
+    await expect(header.locator("textarea")).toHaveValue(second.title);
+    await header.locator("textarea").fill("Second title retained offline");
+    await header.locator("textarea").press("Enter");
+    expect((await json(await request.get(`/api/issues/${first.id}`))).title).toBe(first.title);
+    expect((await json(await request.get(`/api/issues/${second.id}`))).title).toBe(second.title);
+    await page.context().setOffline(false);
+    await expect.poll(async () => (await json(await request.get(`/api/issues/${first.id}`))).title, { timeout: 30_000 }).toBe("First title retained offline");
+    await expect.poll(async () => (await json(await request.get(`/api/issues/${second.id}`))).title, { timeout: 30_000 }).toBe("Second title retained offline");
+    await page.reload();
+    await expect(header.getByRole("heading", { name: "Second title retained offline", exact: true })).toBeVisible();
+  } finally {
+    await page.context().setOffline(false).catch(() => {});
+    await request.patch(`/api/companies/${company.id}`, { data: { status: "archived" } });
+  }
+});

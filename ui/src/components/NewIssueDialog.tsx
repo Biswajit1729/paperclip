@@ -436,7 +436,7 @@ export function NewIssueDialog() {
   const defaultProjectPendingRef = useRef(false);
   // `recovering`: a create restored without its files keeps its key until it is
   // sent or cancelled, whatever the files and fields look like when resubmitted.
-  const createRequestRef = useRef<{ fingerprint: string; idempotencyKey: string; recovering?: boolean } | null>(null);
+  const createRequestRef = useRef<{ fingerprint: string; idempotencyKey: string; recovering?: boolean; payload?: PendingCreate } | null>(null);
   const draftOwner = useDraftOwner();
   const awaitingFilesKey = draftOwner !== undefined ? pendingSendKeyFor(CREATE_AWAITING_FILES_KEY, draftOwner) : null;
 
@@ -615,6 +615,7 @@ export function NewIssueDialog() {
       fingerprint: awaiting.payload.fingerprint,
       idempotencyKey: awaiting.idempotencyKey,
       recovering: true,
+      payload: awaiting.payload,
     };
     const names = awaiting.payload.stagedFileNames;
     if (names?.length) setResendError((current) => current ?? stagedFilesMissingDescription(names));
@@ -647,6 +648,7 @@ export function NewIssueDialog() {
           fingerprint: pending.payload.fingerprint,
           idempotencyKey: pending.idempotencyKey,
           recovering: true,
+          payload: pending.payload,
         };
         if (awaitingFilesKey) writePendingSend(awaitingFilesKey, pending);
       }
@@ -1046,24 +1048,42 @@ export function NewIssueDialog() {
       request = { fingerprint, idempotencyKey: createUuid() };
       createRequestRef.current = request;
     }
+    let createPayload: PendingCreate = {
+      fingerprint, data: { ...createData, allowDuplicate: true, navigateOnCreate: newIssueDefaults.navigateOnCreate === true },
+      ...(stagedFiles.length ? { stagedFileNames: stagedFiles.map(file => file.file.name) } : {}),
+    };
+    if (request.recovering) {
+      const original = request.payload;
+      const rejectRecovery = (message: string): never => {
+        setResendError({ title: "Saved request needs attention", body: message, retryable: false });
+        throw new Error(message);
+      };
+      if (!original) rejectRecovery("The saved request is unavailable. Cancel it before creating another task.");
+      let originalFingerprint: Record<string, unknown> = {};
+      try { originalFingerprint = JSON.parse(original!.fingerprint); } catch {}
+      const requiredFiles = originalFingerprint.stagedFiles;
+      if (original!.stagedFileNames?.length && (!Array.isArray(requiredFiles) ||
+          JSON.stringify([...requiredFiles].sort()) !== JSON.stringify(stagedFiles.map(stagedFileIdentity).sort()))) {
+        rejectRecovery(`Attach the original files again: ${original!.stagedFileNames.join(", ")}.`);
+      }
+      const normalize = (_key: string, value: unknown) => value && typeof value === "object" && !Array.isArray(value)
+        ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b))) : value;
+      const fieldsChanged = Object.entries(original!.data).some(([key, value]) =>
+        !["allowDuplicate", "navigateOnCreate"].includes(key) && JSON.stringify(value, normalize) !== JSON.stringify((createData as Record<string, unknown>)[key], normalize));
+      if (fieldsChanged || (typeof originalFingerprint.companyId === "string" &&
+          JSON.stringify(originalFingerprint, normalize) !== JSON.stringify(JSON.parse(fingerprint), normalize))) {
+        rejectRecovery("Restore the saved task's original fields before retrying, or cancel the saved request to start another task.");
+      }
+      createPayload = original!;
+    }
+    request.payload = createPayload;
     const { idempotencyKey } = request;
     stagedFilesByKey.current.set(idempotencyKey, stagedFiles);
     firstAttemptKey.current = idempotencyKey;
     setResendError(null);
     let result;
     try {
-      result = await durableCreate.submit(
-        {
-          fingerprint,
-          data: {
-            ...createData,
-            allowDuplicate: true,
-            navigateOnCreate: newIssueDefaults.navigateOnCreate === true,
-          },
-          ...(stagedFiles.length > 0 ? { stagedFileNames: stagedFiles.map((file) => file.file.name) } : {}),
-        },
-        { idempotencyKey },
-      );
+      result = await durableCreate.submit(createPayload, { idempotencyKey });
     } finally {
       firstAttemptKey.current = null;
     }
@@ -1401,6 +1421,7 @@ export function NewIssueDialog() {
                       {durableCreate.pending && durableCreate.status !== "sending" ? (
                         <PendingSendNotice
                           noun="task"
+                          persisted={durableCreate.persisted}
                           resending={durableCreate.resending}
                           stalled={durableCreate.status === "stalled"}
                           onResendNow={durableCreate.resendNow}
@@ -1417,9 +1438,15 @@ export function NewIssueDialog() {
                         />
                       ) : null}
                       {resendError && !durableCreate.pending ? (
-                        <p role="alert" className="text-sm text-destructive">
-                          {resendError.title}. {resendError.body}
-                        </p>
+                        <div>
+                          <p role="alert" className="text-sm text-destructive">{resendError.title}. {resendError.body}</p>
+                          {createRequestRef.current?.recovering ? <Button type="button" size="sm" variant="ghost" onClick={() => {
+                            const key = createRequestRef.current?.idempotencyKey;
+                            if (awaitingFilesKey && key) clearPendingSend(awaitingFilesKey, key);
+                            if (key) { stagedFilesByKey.current.delete(key); clearCreateUploadReceipts(key); }
+                            createRequestRef.current = null; setResendError(null);
+                          }}>Cancel saved request</Button> : null}
+                        </div>
                       ) : null}
                       {hasTitle ? (
                         <input

@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { classifyError, describeError, type ErrorDescription } from "@/api/errors";
 import { loadStructuredDraft, saveStructuredDraft } from "@/lib/composer-draft";
 import { useConnectivityStore } from "@/lib/connectivity";
-import { classifySendFailure, type SendOutcome } from "@/lib/pending-send";
+import { classifySendFailure, MAX_ONLINE_RESENDS, resendDelayFor, type SendOutcome } from "@/lib/pending-send";
 import { useAutoResend } from "./useDurableSubmit";
+import { useDraftOwner, useDraftOwnerReader } from "./useDraftOwner";
 
 export type DurableAutosaveStatus =
   | "idle"
@@ -11,6 +12,7 @@ export type DurableAutosaveStatus =
   | "saved"
   /** Kept locally; it saves when the connection allows. */
   | "waiting"
+  | "stalled"
   | "error";
 
 export type DurableAutosaveResult =
@@ -28,6 +30,8 @@ export function autosaveLabel(status: DurableAutosaveStatus, error: ErrorDescrip
       return "Saved";
     case "waiting":
       return "Will save when reconnected";
+    case "stalled":
+      return "Automatic saving paused";
     case "error":
       return error ? `Couldn't save (${error.body.replace(/\.$/, "")})` : "Couldn't save";
     default:
@@ -37,6 +41,7 @@ export function autosaveLabel(status: DurableAutosaveStatus, error: ErrorDescrip
 
 export interface DurableAutosaveOptions<T> {
   sourceId: string;
+  targetKey?: string;
   /** Writes `draft`. Only absolute-value writes (PUT a body, PATCH a field) are safe to retry. */
   save: (draft: T) => Promise<unknown>;
   /**
@@ -77,6 +82,7 @@ export interface DurableAutosave<T> {
   /** An unsaved draft from an earlier session, if any. */
   readStoredDraft: () => T | null;
   clearStoredDraft: () => void;
+  resendNow: () => void;
 }
 
 const SAVING_DELAY_MS = 250;
@@ -94,158 +100,186 @@ const SAVED_LINGER_MS = 1600;
  * - Errors become readable copy for "Couldn't save (reason)".
  */
 export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): DurableAutosave<T> {
+  const owner = useDraftOwner();
+  const readOwner = useDraftOwnerReader();
+  const instanceId = useId();
+  const detachedWork = useRef<() => void>(() => {});
+  const detachedWake = useRef<(() => void) | null>(null);
+  const ownerRef = useRef(owner);
+  ownerRef.current = owner;
   const optionsRef = useRef(options);
   optionsRef.current = options;
+  const targetKey = options.targetKey ?? options.sourceId;
+  const targetRef = useRef(targetKey);
+  targetRef.current = targetKey;
+  type Job = { resends: number; saving?: boolean; id: number; target: string; owner: string | undefined; draft: T;
+    save: (draft: T) => Promise<unknown>; matchesServer?: DurableAutosaveOptions<T>["matchesServer"];
+    onRetryFailed?: DurableAutosaveJob<T>["onRetryFailed"]; storageKey: string | null; action: string };
+  const jobs = useRef(new Map<string, Job>());
+  const generations = useRef(new Map<string, number>());
+  const sequence = useRef(0);
+  const [, refresh] = useState(0);
+  type View = { target: string; status: DurableAutosaveStatus; error: ErrorDescription | null };
+  const [view, setViewState] = useState<View>({ target: targetKey, status: "idle", error: null });
+  const setView = useCallback((next: View | ((current: View) => View)) => {
+    setViewState(current => {
+      const value = typeof next === "function" ? next(current) : next;
+      return current.target === value.target && current.status === value.status && current.error === value.error ? current : value;
+    });
+  }, []);
   const store = useConnectivityStore();
-  const [status, setStatus] = useState<DurableAutosaveStatus>("idle");
-  const [error, setError] = useState<ErrorDescription | null>(null);
-  const runId = useRef(0);
+  const mounted = useRef(true);
   const savingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  /** The newest draft that still needs saving, with the functions that save it. */
-  const pendingJob = useRef<{ draft: T; overrides: DurableAutosaveJob<T> } | null>(null);
-  const mounted = useRef(true);
-
   const clearTimers = useCallback(() => {
     if (savingTimer.current) clearTimeout(savingTimer.current);
     if (savedTimer.current) clearTimeout(savedTimer.current);
     savingTimer.current = null;
     savedTimer.current = null;
   }, []);
-
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; clearTimers(); detachedWork.current(); }; }, [clearTimers]);
   useEffect(() => {
-    mounted.current = true;
-    return () => {
-      mounted.current = false;
-      clearTimers();
-    };
-  }, [clearTimers]);
-
+    jobs.current.clear(); generations.current.clear(); clearTimers();
+    setView({ target: targetRef.current, status: "idle", error: null });
+    refresh(value => value + 1);
+  }, [owner, clearTimers]);
   const storageKey = options.storageKey ?? null;
   const persistDraft = useCallback((draft: T) => {
     if (storageKey) saveStructuredDraft(storageKey, { version: 1, draft });
   }, [storageKey]);
   const clearStoredDraft = useCallback(() => {
     if (!storageKey) return;
-    try {
-      localStorage.removeItem(storageKey);
-    } catch {
-      // Unavailable storage holds nothing to clear.
-    }
+    try { localStorage.removeItem(storageKey); } catch {}
   }, [storageKey]);
   const readStoredDraft = useCallback((): T | null => {
     if (!storageKey) return null;
     const stored = loadStructuredDraft<{ version?: unknown; draft?: T } | null>(storageKey, null);
-    return stored && stored.version === 1 && stored.draft !== undefined ? stored.draft : null;
+    return stored?.version === 1 && stored.draft !== undefined ? stored.draft : null;
   }, [storageKey]);
-
-  const run = useCallback(
-    async (draft: T, overrides: DurableAutosaveJob<T> = {}): Promise<DurableAutosaveResult> => {
-      const save = overrides.save ?? optionsRef.current.save;
-      const matchesServer = overrides.matchesServer ?? optionsRef.current.matchesServer;
-      // A retry uses the functions this draft was queued with, not the latest
-      // ones: the editor may have moved on to another record since.
-      const job = { draft, overrides: { ...overrides, save, matchesServer } };
-      const id = ++runId.current;
-      const latest = () => mounted.current && runId.current === id;
-      pendingJob.current = job;
-      clearTimers();
-      setError(null);
-
-      // During an outage, hold the draft instead of sending into it.
-      if (store.getSnapshot().status !== "online") {
-        setStatus("waiting");
-        return { kind: "waiting" };
+  const execute = useCallback(async (job: Job, retry = false): Promise<DurableAutosaveResult> => {
+    const owned = () => readOwner() === job.owner && generations.current.get(job.target) === job.id;
+    const visible = () => mounted.current && owned() && targetRef.current === job.target;
+    const publish = (status: DurableAutosaveStatus, error: ErrorDescription | null = null) => {
+      if (visible()) setView({ target: job.target, status, error });
+    };
+    if (!owned() || job.saving) return { kind: "waiting" };
+    if (visible()) clearTimers();
+    if (store.getSnapshot().status !== "online") { publish("waiting"); return { kind: "waiting" }; }
+    if (retry) job.resends += 1;
+    job.saving = true;
+    if (visible()) savingTimer.current = setTimeout(() => publish("saving"), SAVING_DELAY_MS);
+    refresh(value => value + 1);
+    const remove = () => {
+      if (jobs.current.get(job.target) === job) jobs.current.delete(job.target);
+      if (mounted.current) refresh(value => value + 1);
+    };
+    const done = (): DurableAutosaveResult => {
+      remove();
+      if (job.storageKey) {
+        const stored = loadStructuredDraft<{ draft?: T } | null>(job.storageKey, null);
+        if (stored && JSON.stringify(stored.draft) === JSON.stringify(job.draft)) {
+          try { localStorage.removeItem(job.storageKey); } catch {}
+        }
       }
-
-      savingTimer.current = setTimeout(() => {
-        if (latest()) setStatus("saving");
-      }, SAVING_DELAY_MS);
-      const done = (): DurableAutosaveResult => {
-        if (pendingJob.current === job) pendingJob.current = null;
-        // The stored copy is only a safety net; drop it once this exact draft is saved.
-        const stored = readStoredDraft();
-        if (stored !== null && JSON.stringify(stored) === JSON.stringify(draft)) clearStoredDraft();
-        if (latest()) {
-          clearTimers();
-          setStatus("saved");
-          savedTimer.current = setTimeout(() => {
-            if (latest()) setStatus("idle");
-          }, SAVED_LINGER_MS);
-        }
-        return { kind: "saved" };
-      };
-
-      try {
-        await save(draft);
-        return done();
-      } catch (cause) {
-        if (classifyError(cause) === "conflict" && matchesServer) {
-          let matches = false;
-          try {
-            matches = await matchesServer(cause, draft);
-          } catch {
-            matches = false;
-          }
-          if (matches) return done();
-        }
-        if (classifySendFailure(cause) === "pending") {
-          if (latest()) {
-            clearTimers();
-            setStatus("waiting");
-          }
-          return { kind: "waiting" };
-        }
-        if (pendingJob.current === job) pendingJob.current = null;
-        if (latest()) {
-          clearTimers();
-          setStatus("error");
-          setError(describeError(cause, { action: optionsRef.current.action ?? "save" }));
-        }
-        return { kind: "failed", error: cause };
+      if (visible()) {
+        clearTimers(); publish("saved");
+        savedTimer.current = setTimeout(() => publish("idle"), SAVED_LINGER_MS);
       }
-    },
-    [clearStoredDraft, clearTimers, readStoredDraft, store],
-  );
-
-  useAutoResend({
-    sourceId: options.sourceId,
-    active: status === "waiting",
+      return { kind: "saved" };
+    };
+    try { await job.save(job.draft); return done(); }
+    catch (initialCause) {
+      let cause = initialCause;
+      if (classifyError(cause) === "conflict" && job.matchesServer) {
+        try { if (await job.matchesServer(cause, job.draft)) return done(); }
+        catch (verificationError) { cause = verificationError; }
+      }
+      if (classifySendFailure(cause) === "pending") {
+        if (visible()) clearTimers();
+        publish("waiting"); return { kind: "waiting" };
+      }
+      remove();
+      if (visible()) clearTimers();
+      publish("error", describeError(cause, { action: job.action }));
+      return { kind: "failed", error: cause };
+    } finally { job.saving = false; if (mounted.current) refresh(value => value + 1); else detachedWake.current?.(); }
+  }, [clearTimers, store, readOwner]);
+  const run = useCallback(async (draft: T, overrides: DurableAutosaveJob<T> = {}) => {
+    const current = optionsRef.current;
+    const target = current.targetKey ?? current.sourceId;
+    const job: Job = { resends: 0, id: ++sequence.current, target, owner: ownerRef.current, draft,
+      save: overrides.save ?? current.save, matchesServer: overrides.matchesServer ?? current.matchesServer,
+      onRetryFailed: overrides.onRetryFailed, storageKey: current.storageKey ?? null, action: current.action ?? "save" };
+    generations.current.set(target, job.id); jobs.current.set(target, job);
+    refresh(value => value + 1);
+    return execute(job);
+  }, [execute]);
+  const waitingJobs = [...jobs.current.values()].filter(job => !job.saving).length;
+  const auto = useAutoResend({ sourceId: options.sourceId, active: waitingJobs > 0, pendingCount: waitingJobs,
     resend: async (): Promise<SendOutcome> => {
-      const job = pendingJob.current;
-      if (!job) {
-        setStatus("idle");
-        return "sent";
+      for (const job of [...jobs.current.values()]) {
+        if (jobs.current.get(job.target) !== job) continue;
+        const result = await execute(job, true);
+        if (result.kind === "failed") job.onRetryFailed?.(result.error);
       }
-      const result = await run(job.draft, job.overrides);
-      if (result.kind === "failed") job.overrides.onRetryFailed?.(result.error);
-      return result.kind === "saved" ? "sent" : result.kind === "waiting" ? "pending" : "rejected";
+      return jobs.current.size ? "pending" : "sent";
     },
   });
+  detachedWork.current = () => {
+    if (!jobs.current.size || auto.stalled) return;
+    const admittedOwner = ownerRef.current;
+    const source = `${optionsRef.current.sourceId}:detached:${instanceId}`;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let disposed = false, running = false;
+    let unsubscribe = () => {};
+    const release = () => {
+      disposed = true;
+      if (timer) clearTimeout(timer);
+      unsubscribe(); detachedWake.current = null;
+      store.setPendingWrites(source, 0);
+    };
+    const wake = async () => {
+      if (disposed || running) return;
+      if (mounted.current || readOwner() !== admittedOwner || admittedOwner === undefined) { release(); return; }
+      if (!jobs.current.size) { release(); return; }
+      store.setPendingWrites(source, jobs.current.size);
+      if (store.getSnapshot().status !== "online") return;
+      running = true;
+      for (const job of [...jobs.current.values()]) {
+        if (job.saving || job.resends >= MAX_ONLINE_RESENDS) continue;
+        const result = await execute(job, true);
+        if (result.kind === "failed") job.onRetryFailed?.(result.error);
+      }
+      running = false;
+      if (disposed) return;
+      const waiting = [...jobs.current.values()].filter(job => !job.saving && job.resends < MAX_ONLINE_RESENDS);
+      if (!waiting.length && ![...jobs.current.values()].some(job => job.saving)) { release(); return; }
+      store.setPendingWrites(source, jobs.current.size);
+      if (waiting.length && store.getSnapshot().status === "online") {
+        timer = setTimeout(() => { timer = null; void wake(); }, resendDelayFor(Math.max(...waiting.map(job => job.resends))));
+      }
+    };
+    detachedWake.current = () => { if (!running) void wake(); };
+    unsubscribe = store.onRecover(() => {
+      if (timer) clearTimeout(timer);
+      for (const job of jobs.current.values()) job.resends = 0;
+      void wake();
+    });
+    store.setPendingWrites(source, jobs.current.size);
+    timer = setTimeout(() => { timer = null; void wake(); }, 0);
+  };
 
   const markDirty = useCallback(() => {
     clearTimers();
-    setStatus((current) => (current === "waiting" ? current : "idle"));
-    setError(null);
+    setView(current => ({ target: targetRef.current, status: jobs.current.has(targetRef.current) ? "waiting" : "idle", error: null }));
   }, [clearTimers]);
-
   const reset = useCallback(() => {
-    runId.current += 1;
-    pendingJob.current = null;
-    clearTimers();
-    setStatus("idle");
-    setError(null);
+    generations.current.delete(targetRef.current); const removed = jobs.current.delete(targetRef.current); clearTimers();
+    setView({ target: targetRef.current, status: "idle", error: null }); if (removed) refresh(value => value + 1);
   }, [clearTimers]);
-
-  return {
-    status,
-    error,
-    label: autosaveLabel(status, error),
-    run,
-    markDirty,
-    reset,
-    persistDraft,
-    readStoredDraft,
-    clearStoredDraft,
-  };
+  const baseStatus = view.target === targetKey ? view.status : jobs.current.has(targetKey) ? "waiting" : "idle";
+  const status = baseStatus === "waiting" && auto.stalled ? "stalled" : baseStatus;
+  const error = view.target === targetKey ? view.error : null;
+  return { status, error, label: autosaveLabel(status, error), run, markDirty, reset,
+    persistDraft, readStoredDraft, clearStoredDraft, resendNow: auto.resendNow };
 }

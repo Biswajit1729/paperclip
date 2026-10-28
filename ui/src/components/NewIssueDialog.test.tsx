@@ -1632,6 +1632,8 @@ describe("NewIssueDialog", () => {
 
     await waitForAssertion(() => expect(container.querySelector('[role="alert"]')?.textContent).toContain("spec.pdf"));
     expect(container.querySelector('[role="alert"]')?.textContent).toContain("Attach it again");
+    await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="Create task"]')!.click(); });
+    await flush();
     expect(mockIssuesApi.create).not.toHaveBeenCalled();
     expect(localStorage.getItem("paperclip:issue-draft:pending-create:user-1")).toBeNull();
     // The original key outlives the rejection, so it survives another reload.
@@ -1646,7 +1648,7 @@ describe("NewIssueDialog", () => {
     act(() => reloaded.root.unmount());
   });
 
-  it("resends a restored create under its original key when its files are attached again in another order", async () => {
+  it.each([false, true])("keeps restored create payload immutable when files are reattached (changed title: %s)", async changed => {
     mockIssuesApi.create.mockResolvedValue({ id: "issue-1", identifier: "PAP-1", companyId: "company-1" });
     mockIssuesApi.uploadAttachment.mockResolvedValue({});
     dialogState.newIssueDefaults = { title: "Has files" };
@@ -1673,10 +1675,18 @@ describe("NewIssueDialog", () => {
       input.dispatchEvent(new Event("change", { bubbles: true }));
     });
     await flush();
+    if (changed) await typeTextareaValue(container.querySelector<HTMLInputElement>('input[aria-label="Task title"]')!, "Changed after restore");
     const send = container.querySelector<HTMLButtonElement>('[aria-label="Create task"]')!;
     await act(async () => { send.click(); });
-    await waitForAssertion(() => expect(mockIssuesApi.create).toHaveBeenCalledTimes(1));
-    expect(mockIssuesApi.create.mock.calls[0][1].idempotencyKey).toBe("create-key-123");
+    await flush();
+    if (changed) {
+      expect(mockIssuesApi.create).not.toHaveBeenCalled();
+      expect(container.textContent).toContain("original fields");
+    } else {
+      await waitForAssertion(() => expect(mockIssuesApi.create).toHaveBeenCalledTimes(1));
+      expect(mockIssuesApi.create.mock.calls[0][1].idempotencyKey).toBe("create-key-123");
+      expect(mockIssuesApi.create.mock.calls[0][1].title).toBe("Has files");
+    }
     act(() => root.unmount());
   });
 

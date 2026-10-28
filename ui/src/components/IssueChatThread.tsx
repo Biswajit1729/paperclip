@@ -5514,6 +5514,7 @@ const IssueChatComposer = forwardRef<
         <PendingSendNotice
           className="mb-3"
           noun="comment"
+          persisted={Boolean(draftKey && loadDraftSubmission(draftKey)?.attemptId === uncertainSubmission.attemptId && replayableRequest(loadDraftSubmission(draftKey), draftOwner))}
           resending={autoResend.resending}
           stalled={autoResend.stalled}
           onResendNow={replayableRequest(uncertainSubmission, draftOwner) ? autoResend.resendNow : undefined}

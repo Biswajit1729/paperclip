@@ -4,6 +4,8 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/api/client";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { queryKeys } from "@/lib/queryKeys";
 import {
   ConnectivityProvider,
   createConnectivityStore,
@@ -58,6 +60,85 @@ describe("useDurableAutosave", () => {
 
   const advance = (ms: number) => act(async () => {
     await vi.advanceTimersByTimeAsync(ms);
+  });
+
+  it("keeps a conflict verification read pending through an outage", async () => {
+    const save = vi.fn().mockRejectedValue(conflict());
+    const matchesServer = vi.fn().mockRejectedValueOnce(outage()).mockResolvedValue(true);
+    render({ save, matchesServer });
+    await act(async () => { expect(await current.run("Accepted text")).toEqual({ kind: "waiting" }); });
+    await advance(2_000);
+    expect(matchesServer).toHaveBeenCalledTimes(2);
+    expect(current.status).toBe("saved");
+  });
+
+  it("retains queued writes for two targets while disconnected", async () => {
+    store.setBrowserOnline(false);
+    const first = vi.fn().mockResolvedValue(undefined), second = vi.fn().mockResolvedValue(undefined);
+    render({ sourceId: "task-a", save: first });
+    await act(async () => { await current.run("A title"); });
+    render({ sourceId: "task-b", save: second });
+    await act(async () => { await current.run("B title"); });
+    expect(store.getSnapshot().pendingWrites).toBe(2);
+    await act(async () => { store.setBrowserOnline(true); store.reportSuccess(); });
+    await advance(2_000);
+    expect(first).toHaveBeenCalledWith("A title");
+    expect(second).toHaveBeenCalledWith("B title");
+  });
+
+  it("finishes an admitted offline edit after its editor unmounts", async () => {
+    store.setBrowserOnline(false);
+    const first = vi.fn().mockResolvedValue(undefined), second = vi.fn().mockResolvedValue(undefined);
+    render({ sourceId: "task-a", save: first });
+    await act(async () => { await current.run("A title"); });
+    act(() => root.unmount());
+    root = createRoot(container);
+    render({ sourceId: "task-b", save: second });
+    await act(async () => { await current.run("B title"); });
+    await act(async () => { store.setBrowserOnline(true); store.reportSuccess(); });
+    await advance(2_000);
+    expect(first).toHaveBeenCalledWith("A title");
+    expect(second).toHaveBeenCalledWith("B title");
+    expect(store.getSnapshot().pendingWrites).toBe(0);
+  });
+  it("does not send a detached editor's private draft after an account switch", async () => {
+    store.setBrowserOnline(false);
+    const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } });
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    const save = vi.fn().mockResolvedValue(undefined);
+    act(() => root.render(<QueryClientProvider client={client}><ConnectivityProvider store={store}>
+      <Harness sourceId="private-document" storageKey="user-1:document" save={save} />
+    </ConnectivityProvider></QueryClientProvider>));
+    await act(async () => { current.persistDraft("Private text"); await current.run("Private text"); });
+    act(() => root.unmount()); root = createRoot(container);
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-2" } });
+    await act(async () => { store.setBrowserOnline(true); store.reportSuccess(); });
+    await advance(2_000);
+    expect(save).not.toHaveBeenCalled();
+    expect(localStorage.getItem("user-1:document")).toContain("Private text");
+    expect(store.getSnapshot().pendingWrites).toBe(0);
+    client.clear();
+  });
+
+  it("bounds retries after an editor unmounts", async () => {
+    const save = vi.fn().mockRejectedValue(outage());
+    render({ save });
+    await act(async () => { await current.run("Pending text"); });
+    act(() => root.unmount()); root = createRoot(container);
+    for (let attempt = 0; attempt < 10; attempt++) await advance(30_000);
+    expect(save).toHaveBeenCalledTimes(9);
+    expect(store.getSnapshot().pendingWrites).toBe(0);
+  });
+
+  it("exposes a manual retry when automatic autosaves stop", async () => {
+    const save = vi.fn().mockRejectedValue(outage());
+    render({ save });
+    await act(async () => { await current.run("Pending text"); });
+    for (let attempt = 0; attempt < 10; attempt++) await advance(30_000);
+    expect(current.status).toBe("stalled");
+    const before = save.mock.calls.length;
+    await act(async () => { current.resendNow(); });
+    expect(save.mock.calls.length).toBe(before + 1);
   });
 
   it("treats a 409 whose server copy equals the draft as saved", async () => {

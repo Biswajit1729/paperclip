@@ -95,12 +95,15 @@ export function InlineEditor({
   const hasBeenFocusedRef = useRef(false);
   const autosave = useDurableAutosave<string>({
     sourceId: `inline-editor:${useId()}`,
+    targetKey: draftKey ?? undefined,
     save: async (next) => {
       await onSave(next);
     },
   });
   const { markDirty, reset, run: runAutosave } = autosave;
   const autosaveState = autosave.status;
+  const autosaveStateRef = useRef(autosaveState);
+  autosaveStateRef.current = autosaveState;
 
   // Unsaved edits are stored with the value they were based on, so a restored
   // edit never silently overwrites a newer server value, and per signed-in
@@ -319,7 +322,7 @@ export function InlineEditor({
     const trimmed = draft.trim();
     // Nullable: empty draft can still be a real edit (clearing); only skip debounce when unchanged or empty is invalid.
     if (trimmed === value || (!trimmed && !nullable)) {
-      if (autosaveState !== "saved") {
+      if (autosaveStateRef.current !== "saved") {
         reset();
       }
       return;
@@ -337,7 +340,7 @@ export function InlineEditor({
         clearTimeout(autosaveDebounceRef.current);
       }
     };
-  }, [autosaveState, commit, draft, markDirty, multiline, multilineFocused, nullable, reset, value]);
+  }, [commit, draft, markDirty, multiline, multilineFocused, nullable, reset, value]);
 
   if (multiline) {
     const previewValue = autosaveState === "saved" || autosaveState === "idle" ? draft : value;
@@ -445,6 +448,7 @@ export function InlineEditor({
           >
             {autosave.label ?? "Idle"}
           </span>
+          {autosaveState === "stalled" ? <button type="button" className="ml-2 text-xs text-foreground underline" onClick={autosave.resendNow}>Retry saving</button> : null}
         </div>
       </div>
     );
@@ -479,6 +483,7 @@ export function InlineEditor({
   const DisplayTag = value && multiline ? "div" : Tag;
 
   return (
+    <>
     <DisplayTag
       className={cn(
         "cursor-pointer rounded hover:bg-accent/50 transition-colors overflow-hidden",
@@ -490,5 +495,7 @@ export function InlineEditor({
     >
       {value || placeholder}
     </DisplayTag>
+    {autosaveState === "stalled" ? <button type="button" className="text-xs text-foreground underline" onClick={autosave.resendNow}>Retry saving</button> : null}
+    </>
   );
 }

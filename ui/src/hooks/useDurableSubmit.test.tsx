@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/api/client";
+import { PendingSendNotice } from "@/components/PendingSendNotice";
 import { CommentSubmissionUnknownError } from "@/lib/comment-submit-result";
 import {
   ConnectivityProvider,
@@ -77,7 +78,8 @@ describe("useDurableSubmit", () => {
 
   function Harness(props: DurableSubmitOptions<Payload, { id: string; body: string }>) {
     current = useDurableSubmit(props);
-    return null;
+    return current.pending ? <PendingSendNotice persisted={current.persisted} resending={current.resending}
+      stalled={current.status === "stalled"} onResendNow={current.resendNow} onCancel={current.cancel} /> : null;
   }
 
   function render(options: Partial<DurableSubmitOptions<Payload, { id: string; body: string }>> & Pick<DurableSubmitOptions<Payload, { id: string; body: string }>, "send">) {
@@ -94,6 +96,17 @@ describe("useDurableSubmit", () => {
     await vi.advanceTimersByTimeAsync(ms);
   });
 
+  it("reports memory-only retention when browser storage rejects the request", async () => {
+    const storage = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("Storage full"); });
+    render({ send: vi.fn().mockRejectedValue(outage()) });
+    await act(async () => { await current.submit({ body: "Keep this text" }); });
+    expect(current.pending?.payload.body).toBe("Keep this text");
+    expect(current.persisted).toBe(false);
+    expect(container.textContent).toContain("Browser storage is unavailable");
+    expect(container.textContent).not.toContain("saved on this device");
+    expect(readPendingSend(STORED_KEY, isPayload)).toBeNull();
+    storage.mockRestore();
+  });
   it("persists the payload and key before the request and clears them after a receipt", async () => {
     const server = createDedupingServer();
     let storedDuringRequest: unknown = null;

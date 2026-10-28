@@ -14,6 +14,7 @@ export function PendingSendNotice({
   noun = "message",
   resending,
   stalled,
+  persisted = false,
   onResendNow,
   onCancel,
   className,
@@ -22,6 +23,7 @@ export function PendingSendNotice({
   noun?: string;
   resending: boolean;
   stalled: boolean;
+  persisted?: boolean;
   onResendNow?: () => void;
   onCancel: () => void;
   className?: string;
@@ -35,7 +37,8 @@ export function PendingSendNotice({
         ? `Couldn’t send this ${noun} yet.`
         : "Sending when reconnected…";
   const detail = replayable
-    ? `Your ${noun} is saved on this device and won’t be posted twice.`
+    ? persisted ? `Your ${noun} is saved on this device.`
+      : "Browser storage is unavailable. Keep this tab open or copy your text before leaving."
     : "It may already be in the conversation. Check it before sending again; Cancel keeps your text.";
   return (
     <div

@@ -912,6 +912,25 @@ describe("IssueDocumentsSection", () => {
     window.localStorage.clear();
   });
 
+  it("drops a mounted editor's private draft when the signed-in account changes", async () => {
+    const issue = createIssue();
+    const document = createIssueDocument({ body: "Server plan" });
+    mockIssuesApi.listDocuments.mockResolvedValue([document]);
+    window.localStorage.setItem(`paperclip:document-draft:v2:user-1:${issue.id}:plan`, JSON.stringify({
+      key: "plan", title: document.title ?? "", body: "Private unpublished text", baseRevisionId: "revision-4", isNew: false,
+    }));
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } } });
+    queryClient.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    const root = createRoot(container);
+    await act(async () => { root.render(<QueryClientProvider client={queryClient}><IssueDocumentsSection issue={issue} canDeleteDocuments={false} /></QueryClientProvider>); });
+    await flush(); await flush();
+    expect(container.textContent).toContain("Private unpublished text");
+    await act(async () => { queryClient.setQueryData(queryKeys.auth.session, { user: { id: "user-2" } }); });
+    await flush();
+    expect(window.localStorage.getItem(`paperclip:document-draft:v2:user-2:${issue.id}:plan`)).toBeNull();
+    expect(container.textContent).not.toContain("Private unpublished text");
+    act(() => root.unmount()); queryClient.clear();
+  });
   it("keeps the known account's drafts while a session refetch fails", async () => {
     const document = createIssueDocument({ body: "Server body" });
     const issue = createIssue();

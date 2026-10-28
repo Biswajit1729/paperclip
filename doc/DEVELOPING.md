@@ -589,13 +589,20 @@ Writes keep the user's text through an outage:
   (`ui/src/lib/pending-send.ts`, `ui/src/hooks/useDurableSubmit.ts`). After a
   transient failure or a lost response, the composer shows **Sending when
   reconnected…** with **Resend now** and **Cancel**, and resends with the same
-  key on recovery. The server dedupes by that key. A send restored after a
-  reload waits for an explicit retry. A new task restored without its staged
+  key on recovery. The server dedupes by that key. Restored board publications
+  wait for an explicit retry. Restored comments and keyed requests resend after
+  their initial backoff. A new task restored without its staged
   files is not sent; the dialog asks for the files again.
 - Document and inline-editor autosave (`ui/src/hooks/useDurableAutosave.ts`)
   keeps unsaved edits in browser storage, shows **Will save when reconnected**,
-  and saves the newest draft on recovery. A `409` whose server copy equals the
-  draft counts as saved. Stored document drafts belong to the signed-in user.
+  and saves the newest draft for each task or document on recovery. A `409`
+  whose server copy equals the draft counts as saved. A temporary failure of
+  that verification stays pending. Exhausted attempts show a manual retry action.
+  Admitted edits can finish after route navigation unmounts the editor. That
+  work waits for recovery events while offline, uses bounded backoff while
+  online, and verifies the current account before each retry.
+  Stored document drafts and mounted editors belong to the signed-in user.
+  Storage failure shows a warning to keep the tab open or copy the text.
 - Issue field updates go through `useUpdateIssueMutation`: optimistic, rolled
   back with readable copy on failure, and replayed on reconnect for absolute
   fields. Updates run in order, so an older update that retries cannot

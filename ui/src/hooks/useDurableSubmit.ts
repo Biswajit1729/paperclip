@@ -20,6 +20,7 @@ export interface AutoResendOptions {
   sourceId: string;
   /** A send is waiting to be resent. */
   active: boolean;
+  pendingCount?: number;
   /** Resend the waiting payload with its original idempotency key. */
   resend: () => Promise<SendOutcome>;
   /**
@@ -43,10 +44,10 @@ export interface AutoResendState {
  * single failed request does not always move the connectivity store). Nothing
  * is sent while the store reports an outage.
  */
-export function useAutoResend({ sourceId, active, resend, auto = true }: AutoResendOptions): AutoResendState {
+export function useAutoResend({ sourceId, active, resend, auto = true, pendingCount = 1 }: AutoResendOptions): AutoResendState {
   const store = useConnectivityStore();
   const online = useConnectivity().status === "online";
-  usePendingWritesReporter(sourceId, active ? 1 : 0);
+  usePendingWritesReporter(sourceId, active ? pendingCount : 0);
 
   const resendRef = useRef(resend);
   resendRef.current = resend;
@@ -165,6 +166,7 @@ export interface DurableSubmitOptions<T, R> {
 export interface DurableSubmit<T, R> {
   status: DurableSubmitStatus;
   pending: PendingSend<T> | null;
+  persisted: boolean;
   /** Copy for the last definitive rejection; cleared by the next submit. */
   error: ErrorDescription | null;
   resending: boolean;
@@ -191,12 +193,14 @@ export function useDurableSubmit<T, R>(options: DurableSubmitOptions<T, R>): Dur
 
   const load = () => (storageKey ? readPendingSend(storageKey, options.isPayload, storage) : null);
   const [pending, setPendingState] = useState<PendingSend<T> | null>(load);
+  const [persisted, setPersisted] = useState(pending !== null);
   const pendingRef = useRef(pending);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<ErrorDescription | null>(null);
   const inFlight = useRef<string | null>(null);
 
   const setPending = useCallback((next: PendingSend<T> | null) => {
+    if (!next) setPersisted(false);
     pendingRef.current = next;
     setPendingState(next);
   }, []);
@@ -208,10 +212,11 @@ export function useDurableSubmit<T, R>(options: DurableSubmitOptions<T, R>): Dur
     loadedKey.current = storageKey;
     // A send made before the account was known moves into that account's storage.
     if (unsaved && storageKey) {
-      writePendingSend(storageKey, unsaved, storage);
+      setPersisted(writePendingSend(storageKey, unsaved, storage));
       return;
     }
-    setPending(storageKey ? readPendingSend(storageKey, optionsRef.current.isPayload, storage) : null);
+    const restored = storageKey ? readPendingSend(storageKey, optionsRef.current.isPayload, storage) : null;
+    setPending(restored); setPersisted(restored !== null);
     setError(null);
   }, [setPending, storage, storageKey]);
 
@@ -261,7 +266,7 @@ export function useDurableSubmit<T, R>(options: DurableSubmitOptions<T, R>): Dur
         createdAt: Date.now(),
       };
       // Persist before the request: a reload or lost response must find it.
-      if (loadedKey.current) writePendingSend(loadedKey.current, record, storage);
+      setPersisted(loadedKey.current ? writePendingSend(loadedKey.current, record, storage) : false);
       setPending(record);
       setError(null);
       setSending(true);
@@ -300,5 +305,5 @@ export function useDurableSubmit<T, R>(options: DurableSubmitOptions<T, R>): Dur
       ? auto.stalled ? "stalled" : "waiting"
       : "idle";
 
-  return { status, pending, error, resending: auto.resending, submit, resendNow: auto.resendNow, cancel };
+  return { status, pending, persisted, error, resending: auto.resending, submit, resendNow: auto.resendNow, cancel };
 }
