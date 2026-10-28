@@ -42,7 +42,7 @@ function origin(events: readonly unknown[], scope: KimiLifecycleScope) {
   demand(request.schema === "paperclip.runtime_request.v2" && request.type === "permission" && request.requestKind === "permission_approval" && request.status === "pending"
     && id(request.requestId) && id(request.itemId) && id(request.details?.toolCallId) && request.turnId === card.event.turnId
     && id(card.event.turnId) && id(card.event.normalizedSessionId) && hasAcpxNativeOrigin(request.origin, "kimi", "session/request_permission")
-    && request.prompt === `Change file: ${scope.target}` && request.details.kind === "edit"
+    && request.prompt === `Change file: ${scope.target}` && (request.details.kind === undefined || request.details.kind === "edit")
     && Array.isArray(request.choices) && request.choices.some((choice: Row) => choice.key === "decline")
     && request.choices.some((choice: Row) => choice.key === "accept") && !request.choices.some((choice: Row) => choice.key === "accept_for_session"), "exact native Write permission identity missing");
   const stream = (event: Row) => event.turnId === card.event.turnId && event.normalizedSessionId === card.event.normalizedSessionId && event.sourceInstanceId === card.event.sourceInstanceId;
@@ -55,13 +55,13 @@ function origin(events: readonly unknown[], scope: KimiLifecycleScope) {
   const executionId = bootstrapReadExecutionId(request.details.toolCallId);
   const executions = rows.filter(x => x.event.eventType.startsWith("tool.execution."));
   const write = executions.filter(x => x.event.payload.executionId === executionId);
-  const started = write.filter(x => x.event.eventType === "tool.execution.started"), targetIndex = write.findIndex(x => x.event.payload.target === scope.target && x.event.payload.name === "Write");
-  demand(started.length === 1 && write[0] === started[0] && targetIndex >= 0 && write.filter(x => x.event.eventType === "tool.execution.completed").length <= 1
+  const started = write.filter(x => x.event.eventType === "tool.execution.started"), metadataIndex = write.findIndex(x => x.event.payload.name === "Write" && x.event.payload.operation === "edit");
+  demand(started.length === 1 && write[0] === started[0] && metadataIndex >= 0 && write.filter(x => x.event.eventType === "tool.execution.completed").length <= 1
     && write.every((x, index) => x.event.payload.schema === "paperclip.tool.execution.v1" && x.event.payload.transport === "builtin"
       && ["tool.execution.started", "tool.execution.progressed", "tool.execution.completed"].includes(x.event.eventType)
-      && (x.event.payload.name === "Write" || index < targetIndex && x.event.payload.name === null)
-      && (x.event.payload.operation === "edit" || index < targetIndex && x.event.payload.operation === "unknown")
-      && (x.event.payload.target === scope.target || index < targetIndex && x.event.payload.target === null)
+      && (x.event.payload.name === "Write" || index < metadataIndex && x.event.payload.name === null)
+      && (x.event.payload.operation === "edit" || index < metadataIndex && x.event.payload.operation === "unknown")
+      && (x.event.payload.target === scope.target || x.event.payload.target === null)
       && x.event.payload.status === (x.event.eventType === "tool.execution.completed" ? "failed" : "running"))
     && !write.some((x, index) => x.event.eventType === "tool.execution.completed" && index !== write.length - 1), "exact native Write lifecycle missing or completed");
   const extra = executions.filter(x => x.event.payload.executionId !== executionId), reads = new Map<string, typeof extra>();

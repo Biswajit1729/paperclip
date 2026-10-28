@@ -19,10 +19,10 @@ function fixture(remote = false) {
   const tool = (executionId: string, name: string, operation: string, target: string | null, status = "running") => ({ schema: "paperclip.tool.execution.v1", executionId, transport: "builtin", name, operation, target, status });
   const request: Row = { schema: "paperclip.runtime_request.v2", type: "permission", requestKind: "permission_approval", status: "pending", requestId: "request", turnId: "turn", itemId: "permission-item",
     prompt: `Change file: ${scope.target}`, choices: [{ key: "accept", label: "Allow once" }, { key: "decline", label: "Deny" }, { key: "cancel", label: "Cancel" }],
-    details: { toolCallId: "0:native-write", kind: "edit" }, origin: { adapter: "acpx-runtime-sidecar", provider: "kimi", method: "session/request_permission" } };
+    details: { toolCallId: "0:native-write" }, origin: { adapter: "acpx-runtime-sidecar", provider: "kimi", method: "session/request_permission" } };
   const events: Row[] = remote ? [row("tool.execution.started", 1, tool("0:read", "Read", "read", scope.actionFile!)), row("tool.execution.completed", 2, tool("0:read", "Read", "read", scope.actionFile!, "completed"))] : [];
   events.push(row("tool.execution.started", events.length + 1, tool("0:native-write", "Write", "edit", null)),
-    row("tool.execution.progressed", events.length + 2, tool("0:native-write", "Write", "edit", scope.target)),
+    row("tool.execution.progressed", events.length + 2, tool("0:native-write", "Write", "edit", null)),
     row("runtime_request.created", events.length + 3, { request }));
   const state = () => ({ run, issue, events });
   const observe = () => observeKimiLifecyclePending({ ...state(), scope });
@@ -48,7 +48,61 @@ function fixture(remote = false) {
 }
 const payload = (row: Row) => row.payload.prpEvent.payload;
 
+function retainedLocalStopRows() {
+  const scope = { companyId: "26725944-fac6-4382-883c-a57d5448a3ba", issueId: "9334a1c6-3f67-4536-8570-e81db0b70498",
+    runId: "209bc4ba-4f54-4ff8-98b2-49879cfb52f8", target: "pc-denied-6WPcjH/kimi-stop-c5be66dab0a0-1.txt" };
+  const session = "18298d7f-4d8f-4185-8ae7-660daa69ead7", source = "38cdabd8-af4c-4c76-9f20-9931e36475df",
+    turn = "turn_lab_8e3a1a4a520442ad80c36025a1353ba6", item = `item-${scope.runId}`, toolCallId = "0:tool_uKx4azxIHxpU6e5TZ2xLHbVj";
+  const origin = { method: "session/request_permission", adapter: "acpx-runtime-sidecar", provider: "kimi" };
+  const choices = [{ key: "accept", label: "Allow once" }, { key: "decline", label: "Deny" }, { key: "cancel", label: "Cancel" }];
+  const request = { type: "permission", itemId: item, method: "session/request_permission", origin,
+    prompt: `Change file: ${scope.target}`, schema: "paperclip.runtime_request.v2", status: "pending", turnId: turn, choices,
+    details: { itemId: item, origin, reason: `Change file: ${scope.target}`, turnId: turn, choices,
+      threadId: "paperclip-9558eb1e0ea79ed9b728d62643b53ab02477d5a4711ef634d8cf0c5b5d8d0af9", toolCallId },
+    requestId: "acpx-input-25f63168069f72f421df7bd9", requestKind: "permission_approval" };
+  const row = (eventType: string, seq: number, sourceSeq: number, emittedAt: string, value: Row): Row => ({
+    companyId: scope.companyId, runId: scope.runId, seq, eventType, protocolSchemaVersion: 1,
+    payload: { prpEvent: { runId: scope.runId, itemId: item, schema: "paperclip.prp.event.v1", turnId: turn, payload: value,
+      priority: 1, emittedAt, eventType, sourceSeq, sourceKind: "runner", schemaVersion: 1,
+      sourceEventId: `${source}:${scope.runId}:${sourceSeq}`, sourceInstanceId: source, normalizedSessionId: session } },
+  });
+  const events = [row("tool.execution.started", 59, 30, "2026-10-28T14:48:05.538Z", {
+    name: "Write", output: "null", schema: "paperclip.tool.execution.v1", status: "running", target: null, exitCode: null,
+    progress: "Write (pending)", readOnly: false, namespace: null, operation: "edit", transport: "builtin", durationMs: null,
+    executionId: toolCallId, outputBytes: 4, inputUpdated: false,
+    outputDigest: "sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b", outputTruncated: false,
+  }), row("runtime_request.created", 141, 112, "2026-10-28T14:48:06.604Z", { request })];
+  return { scope, events,
+    run: { id: scope.runId, companyId: scope.companyId, nativeIssueId: scope.issueId, status: "running", runtimeMode: "native",
+      nativeSessionId: session, runnerInstanceId: source, resultJson: null },
+    issue: { id: scope.issueId, companyId: scope.companyId, status: "in_progress" } };
+}
+
 describe("Kimi native Write lifecycle evidence", () => {
+  it("accepts retained local Stop rows with a null execution target and no permission kind", () => {
+    const actual = retainedLocalStopRows();
+    expect(payload(actual.events[0]!).target).toBeNull();
+    expect(payload(actual.events[1]!).request.details).not.toHaveProperty("kind");
+    expect(observeKimiLifecyclePending(actual)).toMatchObject({
+      requestId: "acpx-input-25f63168069f72f421df7bd9", toolCallId: "0:tool_uKx4azxIHxpU6e5TZ2xLHbVj",
+      executionId: "0:tool_uKx4azxIHxpU6e5TZ2xLHbVj", startedSourceSeq: 30, requestSourceSeq: 112,
+    });
+  });
+  it.each(["target", "kind", "callback", "edit-operation", "tool-name", "prompt"])("rejects conflicting retained local Stop %s", conflict => {
+    const actual = retainedLocalStopRows(), tool = payload(actual.events[0]!), request = payload(actual.events[1]!).request;
+    if (conflict === "target") tool.target = "another.txt";
+    if (conflict === "kind") request.details.kind = "execute";
+    if (conflict === "callback") request.details.toolCallId = "0:other";
+    if (conflict === "edit-operation") tool.operation = "execute";
+    if (conflict === "tool-name") tool.name = "Edit";
+    if (conflict === "prompt") request.prompt = "Change file: another.txt";
+    expect(() => observeKimiLifecyclePending(actual)).toThrow();
+  });
+  it("accepts explicit matching edit metadata without requiring it on the native permission", () => {
+    const f = fixture();
+    f.request.details.kind = "edit"; payload(f.events[1]!).target = f.scope.target;
+    expect(f.observe().executionId).toBe("0:native-write");
+  });
   it.each([false, true])("binds actual Write approval to its native edit execution (remote=%s)", remote => {
     const f = fixture(remote), before = f.observe(), later = f.observe();
     expect(before).toMatchObject({ toolCallId: "0:native-write", executionId: "0:native-write", normalizedSessionId: "session", sourceInstanceId: "runner" });
@@ -58,7 +112,7 @@ describe("Kimi native Write lifecycle evidence", () => {
     ["another provider", (f: ReturnType<typeof fixture>) => { f.request.origin.provider = "copilot"; }],
     ["semantic permission", f => { f.request.origin.method = "semantic/tool"; }],
     ["missing safe card path", f => { f.request.prompt = "Write"; }],
-    ["missing actual edit kind", f => { f.request.details.kind = "other"; }],
+    ["conflicting permission kind", f => { f.request.details.kind = "other"; }],
     ["session-wide authority", f => { f.request.choices.push({ key: "accept_for_session" }); }],
     ["missing decline", f => { f.request.choices = f.request.choices.filter((x: Row) => x.key !== "decline"); }],
     ["wrong native call", f => { f.request.details.toolCallId = "foreign"; }],
