@@ -479,7 +479,9 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
       preserveImplicitDefaultSettings: ["project", "task_default"].includes(taskWorkspaceIntent.source) });
   }
   const explicitTaskDirectory = !isDotRun && taskWorkspaceIntent?.selection.kind === "task_directory";
-  const explicitDirectoryStrategies = [config.workspaceStrategy, issueAssigneeOverrides?.adapterConfig?.workspaceStrategy,
+  const explicitDirectoryStrategies = [
+    ...(reusableExistingExecutionWorkspace?.providerType === "adapter_managed" ? [config.workspaceStrategy] : []),
+    issueAssigneeOverrides?.adapterConfig?.workspaceStrategy,
     projectExecutionWorkspacePolicy?.workspaceStrategy, issueExecutionWorkspaceSettings?.workspaceStrategy];
   const boundTaskDirectory = !isDotRun && !fresh && !nativeRecoveryExecutionWorkspaceId && issueId !== null && issueRef !== null &&
     requestedShouldReuseExisting && requestedExecutionWorkspaceMode === "isolated_workspace" &&
