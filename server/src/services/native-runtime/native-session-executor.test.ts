@@ -5779,6 +5779,7 @@ function leaseDb(
   runnerProfileJson: Record<string, unknown> = {},
   runStatus = "running",
   priorAccountingEvents: PrpEvent[] = [],
+  issueStatus = "in_progress",
 ): Db {
   const coordinator: LeaseCoordinator = {
     runId: boundExecution.binding.runId,
@@ -5836,7 +5837,7 @@ function leaseDb(
                     id: boundExecution.binding.issueId,
                     companyId: boundExecution.binding.companyId,
                     assigneeAgentId: boundExecution.binding.agentId,
-                    status: "in_progress",
+                    status: issueStatus,
                     executionRunId: boundExecution.binding.runId,
                     checkoutRunId: null,
                   },
@@ -10274,6 +10275,35 @@ describe("native session bounded recovery", () => {
       service.mockRestore();
     }
   });
+
+  it.each(["in_review", "done"])(
+    "does not block an issue already in %s when stale native finalization is missing",
+    async (issueStatus) => {
+      const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+      const failure = new Error("native_finalization_missing: session returned no semantic result");
+      state.execute.mockReset().mockRejectedValueOnce(failure);
+      state.upsertRecoveryAction.mockReset().mockResolvedValue({});
+      const updateIssue = vi.fn(async () => ({ status: "blocked", statusVersion: 8 }));
+      const service = vi
+        .spyOn(issueServiceModule, "issueService")
+        .mockReturnValue({ update: updateIssue } as unknown as ReturnType<
+          typeof issueServiceModule.issueService
+        >);
+      try {
+        await expect(
+          executePaperclipNativeSession({
+            db: leaseDb(execution, {}, {}, updates, {}, "running", [], issueStatus),
+            execution,
+            runnerInstanceId: "stale-resumed-run",
+          }),
+        ).rejects.toBe(failure);
+        expect(updateIssue).not.toHaveBeenCalled();
+        expect(state.execute).toHaveBeenCalledOnce();
+      } finally {
+        service.mockRestore();
+      }
+    },
+  );
 
   it.each(["persisted", "logging_failure", "recovery_write_failure"])(
     "signals an ownership hold instead of terminal teardown after authentication timeout (%s)",

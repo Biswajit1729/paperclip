@@ -303,6 +303,62 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
     };
   }
 
+  it.each([
+    ["in_review", false],
+    ["done", false],
+    ["in_progress", true],
+  ] as const)("cancels a stale restart instead of resuming an issue in %s (another owner: %s)", async (status, anotherOwner) => {
+    const fixture = await seedRun(`SUPERSEDED-${status}-${anotherOwner}`);
+    const currentOwner = anotherOwner ? randomUUID() : fixture.runId;
+    if (anotherOwner) {
+      await fixture.db.insert(heartbeatRuns).values({
+        id: currentOwner,
+        companyId,
+        agentId,
+        status: "running",
+        runtimeMode: "native",
+        nativeIssueId: fixture.issueId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        contextSnapshot: { issueId: fixture.issueId },
+      });
+    }
+    await fixture.db
+      .update(issues)
+      .set({ status, executionRunId: currentOwner })
+      .where(eq(issues.id, fixture.issueId));
+
+    await expect(
+      claimNativeRestartRecoveries({
+        db: fixture.db,
+        controller: successor,
+        restartKind: "hard",
+        now: new Date(),
+        runIds: [fixture.runId],
+      }),
+    ).resolves.toEqual([
+      {
+        kind: "cancelled",
+        runId: fixture.runId,
+        reason: anotherOwner ? "issue_execution_lock_changed" : "issue_status_superseded",
+      },
+    ]);
+    const [run] = await fixture.db
+      .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, fixture.runId));
+    const [issue] = await fixture.db
+      .select({ status: issues.status, executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, fixture.issueId));
+    expect(run).toMatchObject({
+      status: "cancelled",
+      errorCode: "native_restart_recovery_superseded",
+    });
+    // A cancelled stale run releases its own lock; another owner keeps theirs.
+    expect(issue).toMatchObject({ status, executionRunId: anotherOwner ? currentOwner : null });
+  });
+
   it.skipIf(!process.env.PAPERCLIP_TEST_RUNNER_CONTAINER).each(["warm", "hard", "legacy", "changed"])("preserves remote warm continuity across completed turns: %s", async (scenario) => {
     const hardRestart = scenario !== "warm";
     const container = process.env.PAPERCLIP_TEST_RUNNER_CONTAINER!;

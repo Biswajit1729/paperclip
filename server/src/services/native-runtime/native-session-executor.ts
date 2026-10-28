@@ -9732,7 +9732,7 @@ async function executePaperclipNativeSessionWithinScope(
         }
         const stillOwnsTask =
           failureTask?.assigneeAgentId === input.execution.binding.agentId &&
-          ["in_progress", "in_review"].includes(failureTask.status) &&
+          failureTask.status === "in_progress" &&
           (!failureTask.executionRunId ||
             failureTask.executionRunId === input.execution.binding.runId) &&
           (!failureTask.checkoutRunId ||

@@ -1005,7 +1005,9 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
                     ? "Native restart recovery is waiting for safe ownership evidence"
                     : disposition.kind === "already_finalized"
                       ? "Native restart recovery found an already-finalized result"
-                      : "Native restart recovery blocked ambiguous or conflicting ownership",
+                      : disposition.kind === "cancelled"
+                        ? "Cancelled a stale native run after its issue was completed or superseded"
+                        : "Native restart recovery blocked ambiguous or conflicting ownership",
           payload: {
             restartKind: isClaim ? disposition.restartKind : restartKind,
             recoveryRequestId: isClaim

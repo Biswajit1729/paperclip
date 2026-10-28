@@ -80,7 +80,7 @@ export type NativeRestartRecoveryClaim =
 export type NativeRestartRecoveryDisposition =
   | NativeRestartRecoveryClaim
   | {
-      kind: "awaiting_evidence" | "blocked" | "already_finalized";
+      kind: "awaiting_evidence" | "blocked" | "already_finalized" | "cancelled";
       runId: string;
       reason: string;
     };
@@ -572,14 +572,6 @@ export async function claimNativeRestartRecoveries(input: {
           reason: "result_already_persisted",
         } as const;
       }
-      if (row.issueExecutionRunId !== row.run.id) {
-        return {
-          kind: "blocked",
-          runId: row.run.id,
-          reason: "issue_execution_lock_changed",
-        } as const;
-      }
-
       const takeover = await evaluateNativeControllerTakeover({
         owner: row.coordinator,
         now,
@@ -621,6 +613,92 @@ export async function claimNativeRestartRecoveries(input: {
           kind: "awaiting_evidence",
           runId: row.run.id,
           reason: takeover.reason,
+        } as const;
+      }
+
+      const supersededReason =
+        row.issueExecutionRunId !== row.run.id
+          ? "issue_execution_lock_changed"
+          : row.issueAssigneeAgentId !== row.run.agentId
+            ? "issue_assignee_changed"
+            : ["in_review", "done", "cancelled"].includes(row.issueStatus)
+              ? "issue_status_superseded"
+              : null;
+      if (supersededReason) {
+        const event = historyEntry({
+          now,
+          restartKind: input.restartKind,
+          controller,
+          generation: row.coordinator.controllerGeneration,
+          disposition: "cancelled",
+          reason: supersededReason,
+          requestId: input.recoveryRequestId ?? null,
+          providerAttempt: row.coordinator.attempt,
+          processPid: row.run.processPid,
+          processStartedAt: row.run.processStartedAt,
+          hasCheckpoint: false,
+          hasProviderEvidence: false,
+          stderrTail: row.run.stderrExcerpt,
+        });
+        await tx
+          .update(nativeRunFinalizations)
+          .set({
+            phase: "terminal_failure",
+            leaseOwner: null,
+            leaseExpiresAt: null,
+            nextAttemptAt: null,
+            failureCode: "native_restart_recovery_superseded",
+            failureDetail: { reason: supersededReason },
+            recoveryState: "cancelled",
+            recoveryRequestId: input.recoveryRequestId ?? null,
+            recoveryHistory: appendBoundedRecoveryHistory(event),
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(nativeRunFinalizations.runId, row.run.id),
+              eq(nativeRunFinalizations.attempt, row.coordinator.attempt),
+              eq(nativeRunFinalizations.phase, row.coordinator.phase),
+            ),
+          );
+        await tx
+          .update(heartbeatRuns)
+          .set({
+            status: "cancelled",
+            nativePhase: "terminal_failure",
+            nativePhaseUpdatedAt: now,
+            executionStatusDeliveryId: randomUUID(),
+            finishedAt: now,
+            errorCode: "native_restart_recovery_superseded",
+            error: supersededReason,
+            updatedAt: now,
+          })
+          .where(eq(heartbeatRuns.id, row.run.id));
+        await tx
+          .update(issues)
+          .set({ executionRunId: null, updatedAt: now })
+          .where(
+            and(
+              eq(issues.id, row.coordinator.issueId),
+              eq(issues.companyId, row.run.companyId),
+              eq(issues.executionRunId, row.run.id),
+            ),
+          );
+        await tx
+          .update(issues)
+          .set({ checkoutRunId: null, updatedAt: now })
+          .where(
+            and(
+              eq(issues.id, row.coordinator.issueId),
+              eq(issues.companyId, row.run.companyId),
+              eq(issues.checkoutRunId, row.run.id),
+            ),
+          );
+        await notifyExecutionRunWork(tx);
+        return {
+          kind: "cancelled",
+          runId: row.run.id,
+          reason: supersededReason,
         } as const;
       }
 
