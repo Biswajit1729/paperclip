@@ -51,6 +51,10 @@ Automated: [conversation delivery](../../server/src/__tests__/agent-conversation
 checks that paused or otherwise non-invokable agents leave comments pending
 without aborting startup recovery, and that a later unpause allows one delivery.
 The test persists queue admissions only; it does not start agents or providers.
+Automated: [historical chat](../../ui/src/pages/AgentChat.test.tsx) keeps an older
+conversation reachable after a cached roster refresh ends in HTTP 429. It checks
+lookup Retry and preserves permission and company boundaries. This is component
+evidence with real query state, not live provider proof.
 
 Automated: [thread and composer](../../ui/src/components/TaskChatThread.test.tsx)
 keeps an in-flight attachment through first-chat creation on desktop and mobile,
@@ -79,6 +83,12 @@ not create another task. A conversation is a privacy/provenance source rather
 than a structural task parent. The same tests cover compact canonical decision
 receipts, exact uploaded-artifact bindings, current task access, reset-session
 boundaries, and pagination of older handoffs.
+Explicit live evals: [chat feature journeys](../../tests/runner-e2e/CHAT-FEATURES.md)
+send natural requests to save a backlog task or delegate an announcement. They
+check project/assignee, execution or non-execution, saved output, return to chat,
+and click the actual same-instance task link after reload. Registration alone
+does not establish a pass. Production chat guidance uses company-prefixed relative
+task links unless the platform supplied a verified absolute origin.
 
 Manual: Ask the configured agent to create bounded project work, inspect the proposed/created target, and open the resulting task. Verify the request context and intended project survived and the task produces a useful output.
 

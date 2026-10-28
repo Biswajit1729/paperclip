@@ -119,6 +119,11 @@ session generation, task assignment and private-source inheritance are checked;
 quality confirmations remain separate from task completion and publication.
 [Focused regression coverage](../../server/src/__tests__/coordinator-handoff.test.ts)
 does not claim live model/tool selection or external delivery verification.
+Additional coverage: the explicit [chat feature evals](../../tests/runner-e2e/CHAT-FEATURES.md)
+exercise native task creation and completion delivery through the real chat UI.
+The [chat directive](../../server/src/services/agent-conversations.ts) tells agents
+to use company-prefixed relative task links or platform-supplied absolute origins.
+This adds no permission and does not qualify the whole capability or its denied cases.
 
 ## `conference-room`
 
