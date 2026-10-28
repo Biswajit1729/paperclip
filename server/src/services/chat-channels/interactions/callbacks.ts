@@ -1,3 +1,4 @@
+import { notifyChatConnectionHealth } from "../connection-health-notifications.js";
 import { slackQuestionFormValidationError } from "../slack/question-forms.js";
 import { chatInteractionForm, chatItemVerdicts } from "../../chat-interaction-forms.js";
 import { createDiscordQuestionForms } from "../discord/question-forms.js";
@@ -426,6 +427,7 @@ export function createChatInteractionCallbacks(db: Db, options: InteractionCallb
                 updatedAt: processedAt,
               })
               .where(eq(chatEndpoints.id, endpoint.id));
+            await notifyChatConnectionHealth(tx, currentEndpoint);
             await tx
               .update(toolConnections)
               .set({

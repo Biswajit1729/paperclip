@@ -1,3 +1,4 @@
+import { writeToolConnectionHealthChange } from "../../tool-connection-health-notifications.js";
 import { connectionActorUserId } from "../actor.js";
 import { assertSupportedConnection } from "../connections/setup-policy.js";
 import { connectionSetupUrl, connectionReconnectUrl } from "../identifiers.js";
@@ -47,7 +48,7 @@ export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, d
     message: string | null,
   ) {
     const now = new Date();
-    const [updated] = await db
+    const [updated] = await writeToolConnectionHealthChange(db, connection, tx => tx
       .update(toolConnections)
       .set({
         healthStatus: status,
@@ -58,7 +59,7 @@ export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, d
         updatedAt: now,
       })
       .where(eq(toolConnections.id, connection.id))
-      .returning();
+      .returning());
     if (connection.transport === "local_stdio") {
       await db
         .update(toolRuntimeSlots)

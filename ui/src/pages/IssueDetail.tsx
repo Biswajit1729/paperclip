@@ -1,4 +1,5 @@
 import { mergeWindowComments, useIssueHistoryWindow } from "../hooks/useIssueHistoryWindow";
+import type { IssueQueuedCommentQueue } from "@paperclipai/shared";
 import { useTaskRunLiveUpdates } from "../context/LiveUpdatesProvider";
 import { liveRunRefetchInterval } from "../lib/live-runs-cache";
 import { useTaskRetry } from "../hooks/useTaskRetry";
@@ -111,6 +112,7 @@ import { useIssueWorkProducts } from "../hooks/useIssueWorkProducts";
 import {
   mergePendingIssueQueuedComments,
   normalizeIssueQueuedCommentQueue,
+  startingQueuedCommentIds,
 } from "../lib/issue-queued-comment-queue";
 import { collectLiveIssueIds } from "../lib/liveIssueIds";
 import {
@@ -1324,7 +1326,7 @@ type IssueDetailChatTabProps = {
   onReviewConversation: () => Promise<void>;
   onImageUpload: (file: File) => Promise<string>;
   onAttachImage: (file: File) => Promise<IssueAttachment | void>;
-  onInterruptQueued: (runId: string | null) => Promise<void>;
+  onInterruptQueued: (runId: string | null) => Promise<IssueQueuedCommentQueue | void>;
   onRemoveCommentFromCache: (commentId: string) => Promise<void>;
   onDeleteComment?: (commentId: string) => Promise<void> | void;
   onPauseWorkRun?: (runId: string, feedback?: "composer") => Promise<void>;
@@ -2172,6 +2174,9 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     resolvedLiveRuns,
     interruptibleIssueRun,
   ]);
+  const startingCommentIds = useMemo(() =>
+    startingQueuedCommentIds(authoritativeQueuedCommentQueue, resolvedLinkedRuns),
+    [authoritativeQueuedCommentQueue, resolvedLinkedRuns]);
   const effectiveQueuedCommentQueue = useMemo(() => {
     if (!queuedCommentQueueEnabled) return null;
     const deliveredCommentRunIds = new Map<string, string>();
@@ -2237,11 +2242,21 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     locallyQueuedCommentRunIds,
     queuedCommentQueueEnabled,
   ]);
+  const visibleQueuedCommentQueue = useMemo(() => {
+    if (!effectiveQueuedCommentQueue) return null;
+    const entries = effectiveQueuedCommentQueue.entries
+      .filter(entry => !startingCommentIds.has(entry.comment.id))
+      .map((entry, position) => ({ ...entry, position }));
+    return entries.length ? { ...effectiveQueuedCommentQueue, entries } : null;
+  }, [effectiveQueuedCommentQueue, startingCommentIds]);
   const commentsForThread = useMemo(
     () =>
-      commentsWithRunMeta.flatMap((comment) => {
+      [...commentsWithRunMeta, ...(authoritativeQueuedCommentQueue?.entries ?? [])
+        .filter(entry => startingCommentIds.has(entry.comment.id) &&
+          !commentsWithRunMeta.some(comment => comment.id === entry.comment.id))
+        .map((entry): IssueDetailComment => entry.comment)].flatMap((comment) => {
         if (discardedQueuedCommentIds.has(comment.id)) return [];
-        if (!consumedQueuedCommentIds.has(comment.id)) return [comment];
+        if (!consumedQueuedCommentIds.has(comment.id) && !startingCommentIds.has(comment.id)) return [comment];
         return [
           {
             ...comment,
@@ -2263,6 +2278,8 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
       consumedQueuedCommentIds,
       discardedQueuedCommentIds,
       localInterruptPlacements,
+      authoritativeQueuedCommentQueue,
+      startingCommentIds,
     ],
   );
 
@@ -2326,9 +2343,12 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
           "The queued messages are awaiting server acknowledgement.",
         );
       try {
+        let nextPosition = 0;
+        const fullOrder = effectiveQueuedCommentQueue.entries.map(entry =>
+          startingCommentIds.has(entry.comment.id) ? entry.comment.id : orderedCommentIds[nextPosition++]!);
         storeQueuedCommentQueue(
           await issuesApi.reorderQueuedComments(issueId, {
-            orderedCommentIds,
+            orderedCommentIds: fullOrder,
             queueId,
             revision,
           }),
@@ -2338,7 +2358,8 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
       }
     },
     [
-      effectiveQueuedCommentQueue?.queueId,
+      effectiveQueuedCommentQueue,
+      startingCommentIds,
       issueId,
       refreshQueueAfterConflict,
       storeQueuedCommentQueue,
@@ -2434,7 +2455,15 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         return next;
       });
       try {
-        await onInterruptQueued(runId);
+        const updatedQueue = await onInterruptQueued(runId);
+        if (updatedQueue?.state === "deferred") {
+          const remaining = new Set(updatedQueue.entries.map(entry => entry.comment.id));
+          setConsumedQueuedCommentIds(current => new Set([...current].filter(id => !remaining.has(id))));
+          setLocalInterruptPlacements(current => new Map([...current].filter(([id]) => !remaining.has(id))));
+          storeQueuedCommentQueue(updatedQueue);
+          if (classicTaskInterfaceEnabled) setClassicQueuedDeliveryError(updatedQueue.executionWait?.message ?? "Messages are still queued.");
+        }
+        return updatedQueue;
       } catch (error) {
         setConsumedQueuedCommentIds((current) => {
           const next = new Set(current);
@@ -2451,12 +2480,14 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
           return;
         }
         await refreshQueueAfterConflict(error);
+        throw error;
       }
     },
     [
       effectiveQueuedCommentQueue,
       commentsWithRunMeta,
       onInterruptQueued,
+      storeQueuedCommentQueue,
       refreshQueueAfterConflict,
       classicTaskInterfaceEnabled,
     ],
@@ -2704,7 +2735,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
             imageUploadHandler={onImageUpload}
             onAttachImage={onAttachImage}
             onInterruptQueued={interruptQueuedComments}
-            queuedCommentQueue={effectiveQueuedCommentQueue}
+            queuedCommentQueue={visibleQueuedCommentQueue}
             onEditQueuedComment={editQueuedComment}
             onReorderQueuedComments={reorderQueuedComments}
             onSteerQueuedComment={steerQueuedComment}
@@ -6737,7 +6768,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   );
   const handleInterruptQueuedRun = useCallback(
     async (runId: string | null) => {
-      await interruptQueuedComment.mutateAsync(runId);
+      return interruptQueuedComment.mutateAsync(runId);
     },
     [interruptQueuedComment],
   );
