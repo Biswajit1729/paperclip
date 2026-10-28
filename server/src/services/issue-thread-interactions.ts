@@ -1,3 +1,5 @@
+import { bindQualityReview, requiredQualityReview } from "./required-quality-review.js";
+import { resolveChatTaskAssignment } from "./chat-task-assignment.js";
 import { normalizeEscapedLineBreaks } from "@paperclipai/shared/validators/text";
 import { notifyDeliveryWork, DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import { historicalQuestionCondition } from "./issue-question-context.js";
@@ -26,6 +28,7 @@ import {
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  assets,
   chatVoiceSessions,
   authUsers,
   companySecretProposals,
@@ -34,6 +37,7 @@ import {
   heartbeatRuns,
   runIdentityContexts,
   issueComments,
+  issueAttachments,
   issueDocuments,
   issueQuestionResponseDeliveries,
   issueThreadInteractions,
@@ -122,6 +126,7 @@ import {
   runWorkspaceIsFinalized,
 } from "./issues.js";
 import { questionResponseDeliveryValues } from "./question-response-delivery.js";
+import { lockAcceptedChatHandoffSource } from "./chat-completion-delivery.js";
 import {
   cancelPendingIssueInteractionChatPublications,
   enqueueIssueInteractionChatPublications,
@@ -309,7 +314,7 @@ export function getMergeConfirmationPullRequestReferences(
       : null;
   // Plan/document confirmations and governed action cards must never inherit
   // merge-confirmation authority merely because their prose links to a PR.
-  if (target?.type === "issue_document") return [];
+  if (target?.type === "issue_document" || target?.type === "issue_attachment") return [];
 
   const intentValues = [
     row.title,
@@ -1783,6 +1788,21 @@ async function getIssueDocumentTargetSnapshot(
   return row;
 }
 
+async function getIssueAttachmentTargetSnapshot(db: Db | any, args: {
+  companyId: string; issueId: string; target: RequestConfirmationTarget; lockForUpdate?: boolean;
+}) {
+  if (args.target.type !== "issue_attachment") return null;
+  // Approval is scoped to the containing task; an arbitrary private task's
+  // attachment cannot be made visible through a confirmation elsewhere.
+  if (args.target.issueId && args.target.issueId !== args.issueId) return null;
+  const query = db.select({ attachmentId: issueAttachments.id, assetId: assets.id, sha256: assets.sha256 })
+    .from(issueAttachments).innerJoin(assets, and(eq(assets.id, issueAttachments.assetId), eq(assets.companyId, args.companyId)))
+    .where(and(eq(issueAttachments.companyId, args.companyId), eq(issueAttachments.issueId, args.issueId),
+      eq(issueAttachments.id, args.target.attachmentId), eq(assets.id, args.target.assetId), eq(assets.sha256, args.target.sha256)));
+  const rows = await (args.lockForUpdate ? query.for("update", { of: [issueAttachments, assets] }) : query);
+  return rows[0] ?? null;
+}
+
 function buildIssueDocumentTargetFromSnapshot(args: {
   issueId: string;
   snapshot: {
@@ -1837,6 +1857,12 @@ async function assertRequestConfirmationTargetIsCurrent(
   },
 ) {
   if (!args.target) return;
+  if (args.target.type === "issue_attachment") {
+    if (!await getIssueAttachmentTargetSnapshot(db, { ...args, target: args.target })) {
+      throw unprocessable("request_confirmation target must reference the exact attachment bytes on this task");
+    }
+    return;
+  }
   if (args.target.type !== "issue_document") return;
   const snapshot = await getIssueDocumentTargetSnapshot(db, {
     companyId: args.companyId,
@@ -1874,14 +1900,16 @@ async function expireStaleRequestConfirmationTarget(
   const interaction = hydrateInteraction(args.row) as TargetBoundInteraction;
   const target = interaction.payload.target ?? null;
   if (!target) return null;
-  if (target.type !== "issue_document") return null;
+  if (target.type !== "issue_document" && target.type !== "issue_attachment") return null;
 
-  const snapshot = await getIssueDocumentTargetSnapshot(db, {
+  const snapshot = target.type === "issue_document" ? await getIssueDocumentTargetSnapshot(db, {
     companyId: args.row.companyId,
     issueId: args.row.issueId,
     target,
-  });
-  const isCurrent =
+  }) : null;
+  const isCurrent = target.type === "issue_attachment"
+    ? await getIssueAttachmentTargetSnapshot(db, { companyId: args.row.companyId, issueId: args.row.issueId, target })
+    :
     snapshot &&
     snapshot.latestRevisionId === target.revisionId &&
     (!target.revisionNumber ||
@@ -2227,6 +2255,11 @@ export function issueThreadInteractionService(
         lockedCurrent,
         args.actor,
       );
+
+      const lockedTarget = (hydrateInteraction(lockedCurrent) as RequestConfirmationLikeInteraction).payload.target;
+      await assertRequestConfirmationTargetIsCurrent(tx, {
+        companyId: args.issue.companyId, issueId: args.issue.id, target: lockedTarget, lockForUpdate: true,
+      });
 
       const interaction = hydrateInteraction(lockedCurrent);
       const selectedOptionIds =
@@ -3396,6 +3429,18 @@ export function issueThreadInteractionService(
       const data = normalizeCreateInteractionInput(
         createIssueThreadInteractionSchema.parse(input),
       );
+      const qualityItems = data.kind === "request_confirmation" && data.payload.qualityReview
+        ? [data.payload] : data.kind === "request_item_verdicts"
+          ? data.payload.items.filter(item => item.qualityReview) : [];
+      if (qualityItems.length) {
+        if (data.addresseeAgentId) throw unprocessable("Required quality review must be addressed to a human");
+        const [owner] = await db.select({ executionPolicy: issues.executionPolicy }).from(issues)
+          .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)));
+        for (const item of qualityItems) item.qualityReview = bindQualityReview(requiredQualityReview(owner?.executionPolicy), item.qualityReview!, item.target, issue.id);
+        data.resolverPolicy = "human_only";
+        data.continuationPolicy = "wake_assignee";
+        if (data.kind === "request_confirmation" || data.kind === "request_item_verdicts") data.payload.supersedeOnUserComment = false;
+      }
       // Chat ownership is server-owned and immutable. Ordinary human questions
       // must not depend on a model copying an opaque user identity correctly.
       let defaultAddresseeUserId: string | null = null;
@@ -3604,7 +3649,7 @@ export function issueThreadInteractionService(
         const result = await db.transaction(async (tx) => {
           await assertInteractionRunWriteAllowed(tx as unknown as Db, issue, actor);
           const [issueRow] = await tx
-            .select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId, assigneeUserId: issues.assigneeUserId, conversationAgentId: issues.conversationAgentId, conversationUserId: issues.conversationUserId })
+            .select({ executionPolicy: issues.executionPolicy, status: issues.status, assigneeAgentId: issues.assigneeAgentId, assigneeUserId: issues.assigneeUserId, conversationAgentId: issues.conversationAgentId, conversationUserId: issues.conversationUserId })
             .from(issues)
             .where(
               and(
@@ -3691,6 +3736,11 @@ export function issueThreadInteractionService(
               lockForUpdate: true,
             });
           }
+          for (const item of qualityItems) {
+            const binding = bindQualityReview(requiredQualityReview(issueRow.executionPolicy), item.qualityReview!, item.target, issue.id);
+            if (binding.requirementHash !== item.qualityReview!.requirementHash) throw conflict("Quality review requirements changed; read the task again");
+            await assertRequestConfirmationTargetIsCurrent(tx, { companyId: issue.companyId, issueId: issue.id, target: item.target, lockForUpdate: true });
+          }
           // An unverified phone caller has no authenticated human identity.
           // Their clarifications use the ordinary task-comment/follow-up queue;
           // a protected native question would otherwise wait indefinitely.
@@ -3744,7 +3794,8 @@ export function issueThreadInteractionService(
             options.supersedePendingSiblingInteractions !== false &&
             ((data.kind === "request_confirmation" &&
               data.payload.toolAction === undefined &&
-              data.payload.secretProposal === undefined) ||
+              data.payload.secretProposal === undefined &&
+              data.payload.qualityReview === undefined) ||
               (data.kind === "ask_user_questions" && (!issueRow.conversationAgentId || !issueRow.conversationUserId)));
           if (!actor.agentId || !canSupersedeSiblingCards) {
             await enqueueIssueInteractionChatPublications(
@@ -3777,6 +3828,7 @@ export function issueThreadInteractionService(
                 eq(issueThreadInteractions.createdByAgentId, actor.agentId),
                 eq(issueThreadInteractions.status, "pending"),
                 ne(issueThreadInteractions.id, row.id),
+                sql`${issueThreadInteractions.payload}->'qualityReview' IS NULL`,
 
               ),
             )
@@ -3999,6 +4051,8 @@ export function issueThreadInteractionService(
                 id: issues.id,
                 identifier: issues.identifier,
                 companyId: issues.companyId,
+                conversationAgentId: issues.conversationAgentId,
+                conversationSessionGeneration: issues.conversationSessionGeneration,
               })
               .from(issues)
               .where(
@@ -4016,6 +4070,9 @@ export function issueThreadInteractionService(
       const parentById = new Map(
         parentRows.map((row) => [row.id, row] as const),
       );
+      const sourceConversation = parentById.get(issue.id)?.conversationAgentId
+        ? parentById.get(issue.id)!
+        : null;
       const createdByClientKey = new Map<
         string,
         SuggestTasksResultCreatedTask
@@ -4025,6 +4082,20 @@ export function issueThreadInteractionService(
       await db.transaction(async (tx) => {
         await mutationOptions.beforeResolveInTransaction?.(tx);
         await assertInteractionRunWriteAllowed(tx as unknown as Db, issue, actor);
+        if (sourceConversation) {
+          await lockAcceptedChatHandoffSource(tx, {
+            companyId: issue.companyId, conversationId: sourceConversation.id,
+            sessionGeneration: sourceConversation.conversationSessionGeneration,
+            userId: actor.userId, agentId: actor.agentId,
+          });
+          if (interaction.sourceRunId) {
+            const [sourceRun] = await tx.select({ context: heartbeatRuns.contextSnapshot }).from(heartbeatRuns)
+              .where(and(eq(heartbeatRuns.id, interaction.sourceRunId), eq(heartbeatRuns.companyId, issue.companyId)));
+            if (sourceRun?.context?.conversationSessionGeneration !== sourceConversation.conversationSessionGeneration) {
+              throw conflict("The originating conversation was reset; request a new task suggestion");
+            }
+          }
+        }
         const resolvedAt = new Date();
         const [claimed] = await tx
           .update(issueThreadInteractions)
@@ -4049,27 +4120,27 @@ export function issueThreadInteractionService(
         }
 
         for (const task of orderedTasks) {
-          const parentIssueId = task.parentClientKey
+          const proposedParentId = task.parentClientKey
             ? (createdByClientKey.get(task.parentClientKey)?.issueId ?? null)
             : (task.parentId ??
               interaction.payload.defaultParentId ??
-              issue.id);
-          if (!parentIssueId) {
+              (sourceConversation ? null : issue.id));
+          const parentIssueId = proposedParentId === sourceConversation?.id ? null : proposedParentId;
+          if (!parentIssueId && task.parentClientKey) {
             throw unprocessable(
               `Unable to resolve parent for suggested task ${task.clientKey}`,
             );
           }
 
-          const { issue: createdIssue } = await issueService(
-            tx as unknown as Db,
-          ).createChild(parentIssueId, {
+          const createInput = {
             title: task.title,
             description: task.description ?? null,
+            initialPlan: task.initialPlan ?? null,
+            ...(task.requiredQualityReview ? { executionPolicy: { mode: "normal" as const, commentRequired: true, stages: [], requiredQualityReview: task.requiredQualityReview } } : {}),
             status: "todo",
             workMode: task.workMode ?? "standard",
             priority: task.priority ?? "medium",
-            assigneeAgentId: task.assigneeAgentId ?? null,
-            assigneeUserId: task.assigneeUserId ?? null,
+            ...resolveChatTaskAssignment(task, sourceConversation?.conversationAgentId),
             projectId: task.projectId ?? issue.projectId,
             goalId: task.goalId ?? issue.goalId,
             billingCode: task.billingCode ?? null,
@@ -4079,11 +4150,19 @@ export function issueThreadInteractionService(
             originRunId: interaction.sourceRunId ?? null,
             actorAgentId: actor.agentId ?? null,
             actorUserId: actor.userId ?? null,
-          } as Parameters<ReturnType<typeof issueService>["createChild"]>[1]);
+            ...(sourceConversation ? { conversationHandoff: {
+              conversationId: sourceConversation.id,
+              sessionGeneration: sourceConversation.conversationSessionGeneration,
+            } } : {}),
+          } satisfies Parameters<ReturnType<typeof issueService>["createChild"]>[1];
+          const service = issueService(tx as unknown as Db);
+          const createdIssue = parentIssueId
+            ? (await service.createChild(parentIssueId, createInput)).issue
+            : await service.create(issue.companyId, createInput);
 
           const parentIdentifier =
             createdByClientKey.get(task.parentClientKey ?? "")?.identifier ??
-            parentById.get(parentIssueId)?.identifier ??
+            (parentIssueId ? parentById.get(parentIssueId)?.identifier : null) ??
             null;
           createdByClientKey.set(task.clientKey, {
             clientKey: task.clientKey,
@@ -4188,6 +4267,13 @@ export function issueThreadInteractionService(
       const submission = await db.transaction(async (tx) => {
         await mutationOptions.beforeResolveInTransaction?.(tx);
         await assertInteractionRunWriteAllowed(tx as unknown as Db, issue, actor);
+        // Match completion/confirmation ordering: issue -> interaction -> output.
+        // A pending multi-item review can contain already-approved output slots,
+        // so a replay must not lock those outputs ahead of task completion.
+        const lockedIssue = await tx.select({ id: issues.id, companyId: issues.companyId, status: issues.status })
+          .from(issues).where(eq(issues.id, issue.id)).for("update").then(rows => rows[0] ?? null);
+        if (!lockedIssue || lockedIssue.companyId !== issue.companyId) throw notFound("Issue not found");
+        assertIssueOpenForInteractionResolution(lockedIssue);
         const current = await tx
           .select()
           .from(issueThreadInteractions)
@@ -4248,6 +4334,13 @@ export function issueThreadInteractionService(
           };
         }
 
+        await assertRequestConfirmationTargetIsCurrent(tx, {
+          companyId: issue.companyId, issueId: issue.id,
+          target: interaction.payload.target, lockForUpdate: true,
+        });
+        for (const item of interaction.payload.items.filter(item => item.qualityReview && data.verdicts.some(verdict => verdict.id === item.id))) {
+          await assertRequestConfirmationTargetIsCurrent(tx, { companyId: issue.companyId, issueId: issue.id, target: item.target, lockForUpdate: true });
+        }
         const now = new Date();
         const { items, complete, newlyResolvedItemIds } =
           resolveRequestItemVerdictSubmissions({

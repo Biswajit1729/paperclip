@@ -46,6 +46,13 @@ import { getLastProjectId, trackRecentProject } from "../lib/recent-projects";
 import { ApiError } from "../api/client";
 import type { issuesApi } from "../api/issues";
 
+// These page fixtures exercise Classic task behavior. Preference identity and
+// persistence have their own hook tests; keep their readiness explicit here.
+const coordinatorPreference = vi.hoisted(() => ({ enabled: false, loaded: true }));
+vi.mock("../hooks/useCoordinatorWorkspaceEnabled", () => ({
+  useCoordinatorWorkspaceEnabled: () => coordinatorPreference,
+}));
+
 const mockGrokBotApi = vi.hoisted(() => ({ stop: vi.fn().mockResolvedValue({ stopped: true }) }));
 vi.mock("../api/grokBot", () => ({ grokBotApi: mockGrokBotApi }));
 
@@ -1316,6 +1323,7 @@ describe("IssueDetail", () => {
   }
 
   beforeEach(() => {
+    Object.assign(coordinatorPreference, { enabled: false, loaded: true });
     localStorage.clear();
     sessionStorage.clear();
     mockPanelState.panelVisible = true;
@@ -1523,6 +1531,35 @@ describe("IssueDetail", () => {
     expect(getLastProjectId("company-2")).toBeUndefined();
   });
 
+  it("waits for the personal workspace preference before exposing task controls", async () => {
+    coordinatorPreference.loaded = false;
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    await act(async () => renderIssueView());
+    await flushReact();
+    expect(mockIssueChatThreadRender).not.toHaveBeenCalled();
+    coordinatorPreference.loaded = true;
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => expect(mockIssueChatThreadRender).toHaveBeenCalled());
+  });
+
+  it("uses Coordinator task presentation and panel scope without changing the Classic preference", async () => {
+    coordinatorPreference.enabled = true;
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableStreamlinedUi: false,
+      enableClassicTaskInterface: true,
+    });
+    mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-1" } });
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => expect(container.querySelector('[data-testid="task-chat-thread"]')).not.toBeNull());
+    expect(container.querySelector('[data-testid="issue-chat-thread"]')).toBeNull();
+    await waitForAssertion(() => expect(mockOpenPanel.mock.calls.at(-1)?.[0]?.props.children?.props).toMatchObject({ accountScope: "coordinator:user-1" }));
+    coordinatorPreference.enabled = false;
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => expect(container.querySelector('[data-testid="issue-chat-thread"]')).not.toBeNull());
+    expect(container.querySelector('[data-testid="task-chat-thread"]')).toBeNull();
+  });
+
   it("keeps an existing conversation on its agent-addressed route", async () => {
     const agent = createAgent();
     const canonical = createIssue({ conversationAgentId: agent.id, conversationUserId: "user-1", conversationState: "waiting", status: "in_review" });
@@ -1602,6 +1639,36 @@ describe("IssueDetail", () => {
     await act(async () => props.onAdd("Research only"));
     expect(mockIssuesApi.update).toHaveBeenNthCalledWith(2, canonical.id, { workMode: "ask" });
     expect(mockIssuesApi.addComment).toHaveBeenCalledOnce();
+  });
+
+  it.each([false, true])("saves chat model preferences before the ordered message (existing conversation: %s)", async (existing) => {
+    const agent = createAgent();
+    const canonical = createIssue({ assigneeAgentId: agent.id, conversationAgentId: agent.id, conversationUserId: "user-1", status: "in_review" });
+    const ensureIssue = vi.fn().mockResolvedValue(canonical);
+    const calls: string[] = [];
+    mockIssuesApi.get.mockResolvedValue(canonical);
+    mockIssuesApi.update.mockClear().mockImplementation(async () => { calls.push("settings"); return canonical; });
+    mockIssuesApi.addComment.mockClear().mockImplementation(async () => { calls.push("comment"); return createIssueComment(); });
+    await act(async () => renderIssueView(<TaskDetailSurface conversation={{ agent, issue: existing ? canonical : null, ensureIssue }} />));
+    await flushReact();
+    const props = mockIssueChatThreadRender.mock.calls.at(-1)![0];
+    await act(async () => props.onAdd("Outline the launch", undefined, undefined, undefined, "model-message", { model: "gpt-6-astra", effort: "high", fast: false }));
+    expect(ensureIssue).toHaveBeenCalledOnce();
+    expect(mockIssuesApi.update).toHaveBeenCalledWith(canonical.id, { assigneeAdapterOverrides: { adapterConfig: { model: "gpt-6-astra", modelReasoningEffort: "high" } } });
+    expect(mockIssuesApi.addComment).toHaveBeenCalledWith(canonical.id, "Outline the launch", undefined, undefined, undefined, "model-message");
+    expect(calls).toEqual(["settings", "comment"]);
+  });
+
+  it("does not send a chat message when its selected model preferences fail to save", async () => {
+    const agent = createAgent();
+    const canonical = createIssue({ conversationAgentId: agent.id, conversationUserId: "user-1" });
+    mockIssuesApi.update.mockRejectedValueOnce(new Error("Settings could not be saved"));
+    mockIssuesApi.addComment.mockClear();
+    await act(async () => renderIssueView(<TaskDetailSurface conversation={{ agent, issue: null, ensureIssue: async () => canonical }} />));
+    await flushReact();
+    const props = mockIssueChatThreadRender.mock.calls.at(-1)![0];
+    await act(async () => expect(props.onAdd("Outline the launch", undefined, undefined, undefined, "failed-model-message", { model: "gpt-6-astra", effort: "high", fast: false })).rejects.toThrow("Settings could not be saved"));
+    expect(mockIssuesApi.addComment).not.toHaveBeenCalled();
   });
 
   it("opens artifact cards in the shared gallery at the selected image without duplicating attachments", async () => {

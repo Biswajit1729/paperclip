@@ -24,6 +24,7 @@ import {
 } from "../lib/project-workspace-defaults";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { useStreamlinedUiEnabled } from "../hooks/useStreamlinedUiEnabled";
+import { useCoordinatorWorkspaceEnabled } from "../hooks/useCoordinatorWorkspaceEnabled";
 import { getRecentAssigneeIds, getRecentAssigneeSelectionIds, sortAgentsByRecency, trackRecentAssignee, trackRecentAssigneeUser } from "../lib/recent-assignees";
 import { getLastProjectId, getRecentProjectIds, trackRecentProject } from "../lib/recent-projects";
 import { recordRecentTask } from "../lib/recent-tasks";
@@ -153,7 +154,15 @@ function loadDraft(): IssueDraft | null {
   try {
     const raw = localStorage.getItem(DRAFT_KEY);
     if (!raw) return null;
-    return JSON.parse(raw) as IssueDraft;
+    const { successCriteria, ...draft } = JSON.parse(raw) as IssueDraft & { successCriteria?: string };
+    // Keep text entered in the retired field visible and editable in the brief.
+    const criteria = typeof successCriteria === "string" ? successCriteria.trim() : "";
+    return {
+      ...draft,
+      description: criteria
+        ? [draft.description, `## Success criteria\n${criteria}`].filter(Boolean).join("\n\n")
+        : draft.description,
+    };
   } catch {
     return null;
   }
@@ -286,6 +295,7 @@ export function NewIssueDialog() {
   const navigate = useNavigate();
   const { pushToast } = useToastActions();
   const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
+  const { enabled: coordinatorEnabled } = useCoordinatorWorkspaceEnabled();
   const [title, setTitle] = useState("");
   const [hasTitle, setHasTitle] = useState(false);
   const [description, setDescription] = useState("");
@@ -1147,7 +1157,7 @@ export function NewIssueDialog() {
           onDragLeave={handleFileDragLeave}
           onDrop={handleFileDrop}
         >
-          <TaskChatPresentationProvider mode={streamlinedUiEnabled ? "streamlined" : "production"}>
+          <TaskChatPresentationProvider mode={streamlinedUiEnabled || coordinatorEnabled ? "streamlined" : "production"}>
             <TaskChatComposer
               workMode={workMode}
               onWorkModeChange={setWorkMode}
@@ -1203,7 +1213,7 @@ export function NewIssueDialog() {
                 runSettings: composerSettings,
                 onRunSettingsChange: setComposerSettings,
                 header:
-                  hasTitle || isSubIssueMode ? (
+                  hasTitle || isSubIssueMode || coordinatorEnabled ? (
                     <div className="mb-3 flex flex-col gap-2 text-xs">
                       {hasTitle ? (
                         <input
@@ -1232,6 +1242,7 @@ export function NewIssueDialog() {
                           </div>
                         </div>
                       ) : null}
+                      {coordinatorEnabled ? <p className="text-sm font-medium text-foreground">New Task</p> : null}
                     </div>
                   ) : undefined,
                 details: (

@@ -864,3 +864,12 @@ Company-managed [Prompt Injection Prevention](prompt-injection-prevention.md)
 optionally classifies existing tool-result boundaries through a shared OpenRouter
 connection. Settings → Connections is permanent; valid model verdicts take
 precedence and dependency failures use the original built-in detector.
+
+
+### Personal workspace presentation experiments
+
+A person may opt into an experimental workspace in Settings and return to the
+classic workspace. The presentation choice belongs to the person across companies
+on an instance; it does not grant execution capabilities or change shared work.
+The concrete current contract is in `SPEC-implementation.md` under Personal
+experimental workspace preference.

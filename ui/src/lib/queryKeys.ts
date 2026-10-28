@@ -1,4 +1,7 @@
 export const queryKeys = {
+  workspacePreferences: {
+    mine: (userId: string | null) => ["workspace-preferences", userId] as const,
+  },
   agentCommentary: {
     list: (companyId: string, filters: object) => ["agent-commentary", companyId, "list", filters] as const,
     detail: (companyId: string, id: string | null) => ["agent-commentary", companyId, "detail", id] as const,

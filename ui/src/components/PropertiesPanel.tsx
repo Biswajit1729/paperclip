@@ -1,3 +1,4 @@
+import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { X } from "lucide-react";
 import { usePanel } from "../context/PanelContext";
@@ -21,11 +22,12 @@ export function PropertiesPanel({ taskDetailLayout = false }: { taskDetailLayout
   const { enabled: classicTaskInterfaceEnabled } = useClassicTaskInterfaceEnabled();
   const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
   const designSandbox = useDesignSandbox();
-  const streamlinedTaskDetailLayout = streamlinedUiEnabled && taskDetailLayout;
+  const { enabled: coordinatorWorkspaceEnabled } = useCoordinatorWorkspaceEnabled();
+  const streamlinedTaskDetailLayout = (streamlinedUiEnabled || coordinatorWorkspaceEnabled) && taskDetailLayout;
 
   if (!panelContent) return null;
 
-  if (classicTaskInterfaceEnabled) {
+  if (classicTaskInterfaceEnabled && !coordinatorWorkspaceEnabled) {
     return (
       <aside
         className="hidden md:flex border-l border-border bg-card flex-col shrink-0 overflow-hidden transition-(--tp-width-opacity) duration-200 ease-in-out h-full"

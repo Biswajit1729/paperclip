@@ -1,4 +1,6 @@
 import { useShowAgentCreatedTasks } from "../hooks/useShowAgentCreatedTasks";
+import { useCoordinatorWorkspaceEnabled } from "../hooks/useCoordinatorWorkspaceEnabled";
+import { CoordinatorTasks } from "./CoordinatorTasks";
 import { useDesignSandbox } from "../context/DesignSandboxContext";
 import { DesignSandboxTasks } from "./DesignSandboxTasks";
 import { useEffect, useMemo, useCallback, useRef, useState } from "react";
@@ -96,9 +98,10 @@ export function Issues() {
   const designSandbox = useDesignSandbox();
   const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
   const { enabled: combinedInboxTasksEnabled } = useCombinedInboxTasksEnabled();
+  const { enabled: coordinatorEnabled } = useCoordinatorWorkspaceEnabled();
   // The merged surface is Combined Inbox + Task List only. With the flag off, and always in
   // the legacy shell, Tasks is the plain task list and Inbox keeps its pages.
-  return designSandbox ? <DesignSandboxTasks /> : streamlinedUiEnabled && combinedInboxTasksEnabled ? <StreamlinedTasks /> : <OrganizationIssues />;
+  return designSandbox ? <DesignSandboxTasks /> : coordinatorEnabled ? <CoordinatorTasks /> : streamlinedUiEnabled && combinedInboxTasksEnabled ? <StreamlinedTasks /> : <OrganizationIssues />;
 }
 
 function StreamlinedTasks() {

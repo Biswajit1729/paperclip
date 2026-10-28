@@ -41,7 +41,8 @@ export async function callProjectTool(input: {
     body = createIssueSchema.parse({
       title: args.title, description: args.description, priority: args.priority,
       projectId: args.projectId, initialPlan: args.initialPlan,
-      assigneeAgentId: args.assigneeActorId ?? input.agentId,
+      assigneeAgentId: args.assigneeActorId ?? (args.assigneeUserId ? null : input.agentId),
+      assigneeUserId: args.assigneeUserId,
       parentId: input.conversation ? null : input.issueId,
       status: Array.isArray(args.blockedByTaskIds) && args.blockedByTaskIds.length ? "blocked" : "todo",
       blockedByIssueIds: args.blockedByTaskIds,
