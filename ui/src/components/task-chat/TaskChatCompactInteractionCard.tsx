@@ -1,3 +1,4 @@
+import { itemVerdictHref } from "@/lib/item-verdict-links";
 import {
   useEffect,
   useMemo,
@@ -1641,9 +1642,7 @@ function ItemVerdictsCard({
     );
   const resolved = resolvedById.get(item.id);
   const draft = drafts.get(item.id);
-  const itemHref = item.href
-    ? normalizeRequestConfirmationTargetHref(item.href)
-    : null;
+  const itemHref = itemVerdictHref(item, interaction);
   const rejectionNeedsConfirmation = Boolean(
     !resolved &&
     draft &&

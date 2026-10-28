@@ -127,6 +127,16 @@ const support = await getEmbeddedPostgresTestSupport();
     }
   });
 
+  it("persists required output review supplied through MCP creation", async () => {
+    const f = await server.fixture({ conversation: true });
+    const requirement = { version: 1, deliverables: [{ key: "copy", label: "Launch copy" }] };
+    const result = await callProjectTool({ name: "create_task", arguments: {
+      title: "MCP review gate", projectId: f.projectId, idempotencyKey: "mcp-quality-gate", requiredQualityReview: requirement,
+    }, apiUrl: server.apiUrl, token: createLocalAgentJwt(f.agentId, f.companyId, "paperclip_runner", f.runId, f.responsibleUserId)!, companyId: f.companyId, issueId: f.issueId, agentId: f.agentId, conversation: true }) as any;
+    const [task] = await server.db.select().from(issues).where(eq(issues.id, result.id));
+    expect(task.executionPolicy).toMatchObject({ requiredQualityReview: requirement });
+  });
+
   it("rejects creation, child helpers, and reparenting under a chat, while retaining legacy children", async () => {
     const f = await server.fixture({ conversation: true });
     const svc = issueService(server.db);

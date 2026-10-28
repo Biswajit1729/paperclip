@@ -2,11 +2,17 @@ import { randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, companies, createDb, decisions, decisionTargetIssues, heartbeatRuns, issues, issueThreadInteractions } from "@paperclipai/db";
-import { decisionHistoryService, decodeDecisionHistoryCursor, decisionHistoryHref, decisionHistoryTarget } from "../services/decision-history.js";
+import { decisionHistoryService, decodeDecisionHistoryCursor, decisionHistoryHref, decisionHistoryTarget, itemVerdictsHistoryLabel } from "../services/decision-history.js";
 import { documentService } from "../services/documents.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 describe("decision receipt navigation", () => {
+  it("preserves all verdict outcomes in a mixed review summary", () => {
+    expect(itemVerdictsHistoryLabel({ outcome: "resolved", items: [{ verdict: "approve" }, { verdict: "reject" }, { verdict: "defer" }] }))
+      .toBe("1 approved · 1 rejected · 1 deferred");
+    expect(itemVerdictsHistoryLabel({ outcome: "resolved", items: [{ verdict: "reject" }] })).toBe("1 rejected");
+    expect(itemVerdictsHistoryLabel({ outcome: "cancelled", items: [{ verdict: "approve" }] })).toBeNull();
+  });
   it("pins the reviewed document and interaction and ignores arbitrary custom URLs", () => {
     const target = decisionHistoryTarget({ target: { type: "issue_document", key: "launch copy", revisionId: "old-revision", href: "https://untrusted.example" } });
     expect(decisionHistoryHref("PAP", "PAP-1", "issue_thread_interaction", "interaction", target)).toBe("/PAP/issues/PAP-1#document-launch%20copy&revision=old-revision&interaction=interaction");
@@ -32,6 +38,21 @@ const support = await getEmbeddedPostgresTestSupport();
     db = createDb(temp.connectionString);
   }, 30_000);
   afterAll(async () => { vi.unstubAllEnvs(); await temp?.cleanup(); });
+
+  it("projects mixed review verdicts into history instead of generic answers", async () => {
+    const companyId = randomUUID(), issueId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Review history", issuePrefix: "VRD" });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Reviewed outputs" });
+    await db.insert(issueThreadInteractions).values({ companyId, issueId, kind: "request_item_verdicts", status: "answered",
+      resolvedAt: new Date(), resolvedByUserId: "reviewer", payload: { version: 1, prompt: "Review outputs", items: [] },
+      result: { version: 1, outcome: "resolved", complete: true, items: [
+        { id: "copy", verdict: "approve", resolvedAt: new Date().toISOString() },
+        { id: "art", verdict: "reject", resolvedAt: new Date().toISOString() },
+        { id: "extra", verdict: "defer", resolvedAt: new Date().toISOString() },
+      ] } });
+    const page = await decisionHistoryService(db).list(companyId, { actor: { type: "board", userId: "reviewer" }, userId: "reviewer" });
+    expect(page.items[0]?.label).toBe("1 approved · 1 rejected · 1 deferred");
+  });
 
   it("returns a cross-task document receipt whose exact revision belongs to the target, not the origin", async () => {
     const companyId = randomUUID(), originId = randomUUID(), documentOwnerId = randomUUID(), interactionId = randomUUID();

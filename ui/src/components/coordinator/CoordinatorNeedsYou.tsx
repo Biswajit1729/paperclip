@@ -89,6 +89,8 @@ export function CoordinatorNeedsYou() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [now, setNow] = useState(Date.now);
   const [settling, setSettling] = useState<AttentionItem[]>([]);
+  const [savedIds, setSavedIds] = useState<Set<string>>(() => new Set());
+  useEffect(() => { setSettling([]); setSavedIds(new Set()); }, [selectedCompanyId, userId]);
   const [renderLimit, setRenderLimit] = useState(40);
   const feed = useQuery({ queryKey: coordinatorAttentionQueryKey(selectedCompanyId!),
     queryFn: () => attentionApi.list(selectedCompanyId!, { all: true }), enabled: !!selectedCompanyId, refetchOnWindowFocus: true });
@@ -122,8 +124,8 @@ export function CoordinatorNeedsYou() {
     const receipts = new Set(recentItems.map((item) => item.id));
     const items = new Map((feed.data?.items ?? []).map((item) => [`${item.sourceKind}:${item.subject.id}`, item]));
     for (const item of settling) if (!items.has(`${item.sourceKind}:${item.subject.id}`)) items.set(`${item.sourceKind}:${item.subject.id}`, item);
-    return [...items].filter(([key]) => !receipts.has(key) || settlingIds.has(key)).map(([, item]) => item);
-  }, [feed.data, settling, settlingIds, recentItems]);
+    return [...items].filter(([key]) => settlingIds.has(key) || (!receipts.has(key) && !savedIds.has(key))).map(([, item]) => item);
+  }, [feed.data, settling, settlingIds, recentItems, savedIds]);
   const filtered = useMemo(() => pendingItems.filter((item) => {
     const agentId = String(item.subject.metadata?.createdByAgentId ?? item.subject.metadata?.originAgentId ?? "");
     if (agentFilter && agentId !== agentFilter && item.originAgentName !== agentMap.get(agentFilter)?.name) return false;
@@ -161,7 +163,15 @@ export function CoordinatorNeedsYou() {
     const timer = window.setTimeout(() => setNow(Date.now()), Math.max(0, next - Date.now()) + 1);
     return () => window.clearTimeout(timer);
   }, [recentItems]);
-  const onResolved = (item: AttentionItem) => { setSettling((current) => current.some((entry) => entry.id === item.id) ? current : [...current, item]); void recent.refetch(); void feed.refetch(); };
+  const onResolved = (item: AttentionItem) => {
+    const id = `${item.sourceKind}:${item.subject.id}`;
+    setSavedIds(current => new Set([...current, id]));
+    setSettling(current => current.some(entry => entry.id === item.id) ? current : [...current, item]);
+    void recent.refetch().then(result => {
+      if (result.isError) setSettling(current => current.filter(entry => `${entry.sourceKind}:${entry.subject.id}` !== id));
+    });
+    void feed.refetch();
+  };
   const duration = typeof document === "undefined" ? 0 : parseCssTimeMs(getComputedStyle(document.documentElement).getPropertyValue("--motion-duration-base")) / 1_000;
   if (!selectedCompanyId) return <p className="text-sm text-muted-foreground">Choose a company to see its decisions.</p>;
   return <LayoutGroup id="coordinator-decisions"><section className="coordinator-needs-you mx-auto w-full max-w-4xl space-y-6" aria-label="Needs You">

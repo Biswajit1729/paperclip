@@ -7,6 +7,17 @@ import { badRequest } from "../errors.js";
 type HistoryOptions = DecisionHistoryQuery & { actor: AuthorizationActor; userId: string; issueIds?: string[] };
 type Cursor = { at: string; id: string; sort: "newest" | "oldest" };
 
+export function itemVerdictsHistoryLabel(result: unknown): string | null {
+  if (!result || typeof result !== "object" || !("outcome" in result) || result.outcome !== "resolved"
+    || !("items" in result) || !Array.isArray(result.items)) return null;
+  const counts = { approve: 0, reject: 0, defer: 0 };
+  for (const item of result.items) {
+    if (item?.verdict === "approve" || item?.verdict === "reject" || item?.verdict === "defer") counts[item.verdict as keyof typeof counts]++;
+  }
+  return [counts.approve ? `${counts.approve} approved` : null, counts.reject ? `${counts.reject} rejected` : null,
+    counts.defer ? `${counts.defer} deferred` : null].filter(Boolean).join(" · ") || "Review recorded";
+}
+
 export function decodeDecisionHistoryCursor(value: string | undefined, sort: Cursor["sort"]): Cursor | null {
   if (!value) return null;
   try {
@@ -84,7 +95,7 @@ export function decisionHistoryService(db: Db) {
         agentId: agents.id, agentName: agents.name, projectId: projects.id, projectName: projects.name,
         title: issueThreadInteractions.title, outcome: issueThreadInteractions.status, resolvedAt: issueThreadInteractions.resolvedAt,
         resolvedByUserId: issueThreadInteractions.resolvedByUserId, resolvedByAgentId: issueThreadInteractions.resolvedByAgentId,
-        payload: issueThreadInteractions.payload, result: issueThreadInteractions.result })
+        kind: issueThreadInteractions.kind, payload: issueThreadInteractions.payload, result: issueThreadInteractions.result })
         .from(issueThreadInteractions).innerJoin(issues, and(eq(issues.id, issueThreadInteractions.issueId), eq(issues.companyId, companyId)))
         .leftJoin(agents, and(eq(agents.id, issueThreadInteractions.createdByAgentId), eq(agents.companyId, companyId)))
         .leftJoin(projects, and(eq(projects.id, issues.projectId), eq(projects.companyId, companyId)))
@@ -108,12 +119,12 @@ export function decisionHistoryService(db: Db) {
           ...conditions(decisionTime, decisionKey, decisions.title)))
         .orderBy(order(decisionTime), order(decisionKey)).limit(limit + 1),
     ]);
-    const interactionItems: DecisionHistoryItem[] = interactionRows.map(({ payload, result, ...row }) => {
+    const interactionItems: DecisionHistoryItem[] = interactionRows.map(({ kind, payload, result, ...row }) => {
       const target = decisionHistoryTarget(payload);
       const resultOutcome = result && "outcome" in result ? String(result.outcome) : row.outcome;
       const labels: Record<string, string> = { accepted: "Approved", rejected: "Changes requested", answered: "Answers recorded", cancelled: "Cancelled", expired: "Expired", failed: "Failed", stale_target: "Superseded", superseded_by_newer_request: "Superseded", superseded_by_comment: "Answered in task" };
       return { ...row, title: row.title ?? row.issueTitle, resolvedAt: new Date(row.resolvedAt!).toISOString(),
-        id: `issue_thread_interaction:${row.sourceId}`, sourceKind: "issue_thread_interaction", label: labels[resultOutcome] ?? labels[row.outcome] ?? "Decision recorded", target,
+        id: `issue_thread_interaction:${row.sourceId}`, sourceKind: "issue_thread_interaction", label: (kind === "request_item_verdicts" ? itemVerdictsHistoryLabel(result) : null) ?? labels[resultOutcome] ?? labels[row.outcome] ?? "Decision recorded", target,
         href: decisionHistoryHref(company.prefix, row.issueIdentifier ?? row.issueId, "issue_thread_interaction", row.sourceId, target) };
     });
     const decisionItems: DecisionHistoryItem[] = decisionRows.map(({ chosenOptionId, options: choices, ...row }) => ({

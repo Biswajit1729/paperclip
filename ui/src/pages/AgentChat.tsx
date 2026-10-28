@@ -86,7 +86,7 @@ export function AgentChat() {
   if (!enabled && !chat.data)
     return (
       <p className="text-sm text-muted-foreground">
-        Agent Chat is off for this instance. An administrator can enable it in{" "}
+        Agent Chat is disabled for this instance. An administrator can enable it in{" "}
         <Link className="underline underline-offset-4" to="/company/settings/instance/experimental#experimental-enableAgentChat">Experimental settings</Link>.
         {" "}Your workspace preference does not change Chat availability. Existing history remains available through task links.
       </p>

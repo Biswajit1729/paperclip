@@ -6,6 +6,7 @@ import { formatAssigneeUserLabel } from "../lib/assignees";
 import { describeInteractionAudience, type InteractionAudienceDescription } from "../lib/interaction-audience";
 import { interactionResolutionErrorMessage } from "../lib/interaction-resolution-error";
 import { buildDocumentAnnotationHash } from "../lib/document-annotation-hash";
+import { itemVerdictHref } from "@/lib/item-verdict-links";
 import {
   isInteractionPreparingApproval,
   buildSuggestedTaskTree,
@@ -3239,8 +3240,8 @@ function VerdictConsequenceChip({ verdict }: { verdict: RequestItemVerdictValue 
   );
 }
 
-function ItemVerdictDeepLink({ item }: { item: RequestItemVerdictsItem }) {
-  const href = item.href ? normalizeRequestConfirmationTargetHref(item.href) : null;
+function ItemVerdictDeepLink({ item, interaction }: { item: RequestItemVerdictsItem; interaction: RequestItemVerdictsInteraction }) {
+  const href = itemVerdictHref(item, interaction);
   if (!href) return null;
   const isInternal = href.startsWith("/") || href.startsWith("#");
   const className =
@@ -3516,7 +3517,7 @@ function RequestItemVerdictsCard({
                 <div className="min-w-0 flex-1 basis-64">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="text-sm font-medium leading-5 text-foreground">{item.label}</span>
-                    <ItemVerdictDeepLink item={item} />
+                    <ItemVerdictDeepLink item={item} interaction={interaction} />
                   </div>
                   {item.description ? (
                     <p className="mt-0.5 text-sm leading-5 text-muted-foreground">{item.description}</p>

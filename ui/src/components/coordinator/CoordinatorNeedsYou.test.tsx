@@ -7,7 +7,7 @@ import type { AttentionItem, DecisionHistoryItem } from "@paperclipai/shared";
 import { CoordinatorNeedsYou } from "./CoordinatorNeedsYou";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-const fixture = vi.hoisted(() => ({ pending: [] as AttentionItem[], history: [] as DecisionHistoryItem[], openPanel: vi.fn(), closePanel: vi.fn(), setPanelVisible: vi.fn(), navigate: vi.fn(), breadcrumbs: vi.fn() }));
+const fixture = vi.hoisted(() => ({ pending: [] as AttentionItem[], history: [] as DecisionHistoryItem[], historyFail: false, feedFail: false, openPanel: vi.fn(), closePanel: vi.fn(), setPanelVisible: vi.fn(), navigate: vi.fn(), breadcrumbs: vi.fn() }));
 vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: "company" }) }));
 vi.mock("@/context/BreadcrumbContext", () => ({ useBreadcrumbs: () => ({ setBreadcrumbs: fixture.breadcrumbs }) }));
 vi.mock("@/context/PanelContext", () => ({ usePanel: () => ({ openPanel: fixture.openPanel, closePanel: fixture.closePanel, setPanelVisible: fixture.setPanelVisible }) }));
@@ -16,8 +16,8 @@ vi.mock("@/lib/router", () => ({ useNavigate: () => fixture.navigate }));
 vi.mock("@/api/agents", () => ({ agentsApi: { list: async () => [] } }));
 vi.mock("@/api/projects", () => ({ projectsApi: { list: async () => [] } }));
 vi.mock("@/api/attention", () => ({ attentionApi: {
-  list: async () => ({ items: [...fixture.pending] }),
-  history: async () => ({ items: [...fixture.history], nextCursor: null }),
+  list: async () => { if (fixture.feedFail) throw new Error("Feed unavailable"); return { items: [...fixture.pending] }; },
+  history: async () => { if (fixture.historyFail) throw new Error("History unavailable"); return { items: [...fixture.history], nextCursor: null }; },
 } }));
 vi.mock("motion/react", () => ({
   LayoutGroup: ({ children }: { children: ReactNode }) => children,
@@ -42,6 +42,7 @@ let container: HTMLDivElement;
 beforeEach(() => {
   fixture.pending = ["1", "2", "3"].map((id) => ({ id, sourceKind: "issue_thread_interaction", inlineResolvable: true, subject: { id, kind: "interaction", title: `Review ${id}`, metadata: { issueId: `task-${id}` } }, relatedIssue: { id: `task-${id}`, identifier: `PAP-${id}`, title: `Task ${id}`, href: `/PAP/issues/PAP-${id}` }, activityAt: new Date().toISOString() } as unknown as AttentionItem));
   fixture.history = []; vi.clearAllMocks();
+  fixture.historyFail = false; fixture.feedFail = false;
   container = document.createElement("div"); document.body.appendChild(container); root = createRoot(container);
 });
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.useRealTimers(); vi.restoreAllMocks(); });
@@ -52,6 +53,17 @@ async function click(text: string) {
   await act(async () => button!.click()); await flush();
 }
 describe("Coordinator Needs You", () => {
+  it.each([false, true])("does not restore a saved decision when history refresh fails (stale feed: %s)", async staleFeed => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => root.render(<QueryClientProvider client={client}><CoordinatorNeedsYou /></QueryClientProvider>));
+    await flush();
+    fixture.historyFail = true; fixture.feedFail = staleFeed;
+    await click("Resolve 1"); await flush();
+    expect([...container.querySelectorAll("button")].some(button => button.textContent === "Resolve 1")).toBe(false);
+    expect(container.textContent).toContain("Recent decisions could not be loaded");
+    expect(container.textContent).toContain("Resolve 2");
+    client.clear();
+  });
   it("sorts, groups, and filters the recent decisions shown beneath the toolbar", async () => {
     fixture.pending = [];
     const now = Date.now();

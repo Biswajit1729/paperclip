@@ -838,6 +838,15 @@ describe("TaskChatInteractionCard", () => {
     }]);
   });
 
+  it("opens the bound output revision from a compact review item", () => {
+    const interaction = { ...pendingRequestItemVerdictsInteraction, payload: { ...pendingRequestItemVerdictsInteraction.payload,
+      items: [{ id: "copy", label: "Reviewed copy", target: { type: "issue_document" as const, issueId: "owner", key: "copy", revisionId: "reviewed-v1" } }],
+    } };
+    flushSync(() => root.render(<TooltipProvider><ThemeProvider><TaskChatInteractionCard item={interactionItem(interaction)} presentation="takeover" onSubmitInteractionVerdicts={() => undefined} /></ThemeProvider></TooltipProvider>));
+    expect(container.querySelector('a[href*="document-copy&revision=reviewed-v1"]')?.getAttribute("href"))
+      .toBe(`/issues/owner#document-copy&revision=reviewed-v1&interaction=${interaction.id}`);
+  });
+
   it("paginates item verdicts instead of expanding the whole review set", async () => {
     flushSync(() => {
       root.render(

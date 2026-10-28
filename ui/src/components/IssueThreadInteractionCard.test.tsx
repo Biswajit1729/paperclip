@@ -1148,6 +1148,16 @@ describe("IssueThreadInteractionCard", () => {
     );
   });
 
+  it("links a bound review item to its exact document without requiring href", () => {
+    const host = renderCard({ interaction: { ...pendingRequestItemVerdictsInteraction,
+      payload: { ...pendingRequestItemVerdictsInteraction.payload, items: [{ id: "copy", label: "Reviewed copy", target: {
+        type: "issue_document", issueId: "document-owner", key: "copy", revisionId: "reviewed-v1",
+      } }] },
+    } });
+    expect(host.querySelector('a[href*="document-copy&revision=reviewed-v1"]')?.getAttribute("href"))
+      .toBe(`/issues/document-owner#document-copy&revision=reviewed-v1&interaction=${pendingRequestItemVerdictsInteraction.id}`);
+  });
+
   it("submits an approve verdict once a draft is marked and applied", async () => {
     const onSubmitInteractionVerdicts = vi.fn(async () => undefined);
     const host = renderCard({
