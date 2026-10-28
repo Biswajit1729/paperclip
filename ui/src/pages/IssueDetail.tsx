@@ -4886,12 +4886,14 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     },
   });
 
-  const addComment = useMutation({
+  const addComment = useAccountBoundMutation({
     mutationFn: async ({ body, reopen, interrupt, attachmentIds, clientRequestId }: {
       body: string; reopen?: boolean; interrupt?: boolean; attachmentIds?: string[]; clientRequestId?: string;
-    }) => {
+    }, { assertCurrentAccount }) => {
       if (issue?.conversationAgentId) clearLegacyChatMessageRequests(`${issue.companyId}:${currentUserId}:${issue.conversationAgentId}`);
-      return issuesApi.addComment(await resolveWritableIssueId(), body, reopen, interrupt, attachmentIds, clientRequestId ?? crypto.randomUUID());
+      const writableIssueId = await resolveWritableIssueId();
+      assertCurrentAccount();
+      return issuesApi.addComment(writableIssueId, body, reopen, interrupt, attachmentIds, clientRequestId ?? crypto.randomUUID());
     },
     onMutate: async ({ body, reopen, interrupt }) => {
       // Start cache cancellation immediately but do not put it in front of the
@@ -5039,6 +5041,10 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       if (classifySendFailure(err) === "pending") return;
       const { title, body } = describeError(err, { action: "post the comment" });
       pushToast({ title, body, tone: "error" });
+    },
+    onFinished: (_variables, context) => {
+      if (context?.optimisticCommentId) setOptimisticComments(current =>
+        current.filter(entry => entry.clientId !== context.optimisticCommentId));
     },
     onSettled: (result, _error, variables) => {
       if (result && !issueId) void queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(result.issueId) });

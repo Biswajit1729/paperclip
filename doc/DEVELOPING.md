@@ -3444,6 +3444,14 @@ file-to-document-key mapping before fingerprint comparison and upload.
 Document editors remount on subject changes, and a message attempt settles only
 once when a server receipt races its HTTP retry. Startup autosaves bind to the
 first resolved account; a later known-account change still cancels old work.
+Account-bound status changes and decisions also wait for the first lookup rather
+than rejecting an action made while it loads. Comment retries check the original
+account generation at the click and again immediately before their POST, including
+after optimistic cache cancellation or conversation creation. A retained accepted
+comment returns its existing receipt before the route can reopen a completed task.
+Large comment request records use the same readable range as successful writes,
+including JSON-escaped bodies. Account changes retire only the original optimistic
+echo and cannot apply its rollback to the next account.
 
 ### Browser realtime connection recovery
 

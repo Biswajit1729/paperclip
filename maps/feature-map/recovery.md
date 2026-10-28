@@ -87,8 +87,11 @@ The startup browser journey in
 [disconnect recovery](../../tests/e2e/disconnect-write-recovery.spec.ts) holds the
 first session response while a title save waits, simulates an offline event with
 API failures while keeping static assets reachable, then verifies the real saved
-server title after account resolution and reload. Provider calls remain outside
-this controlled browser fixture.
+server title after account resolution and reload. The accepted-comment journey
+then completes and assigns a task before repeating its saved comment request;
+the original receipt must return once, and the task must stay Done. Reusing that
+key with different text must return a conflict without changing the task. This
+uses a disposable process agent and makes no provider call.
 
 ### `source-task`
 

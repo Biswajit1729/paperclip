@@ -141,3 +141,33 @@ test("a queued startup save survives the first session lookup during an API outa
     await request.patch(`/api/companies/${company.id}`, { data: { status: "archived" } });
   }
 });
+
+test("replaying an accepted comment does not reopen completed work", async ({ page, request }) => {
+  const company = await json(await request.post("/api/companies", { data: { name: `Comment recovery ${Date.now()}` } }));
+  try {
+    const issue = await json(await request.post(`/api/companies/${company.id}/issues`, {
+      data: { title: "Completed work stays completed", status: "backlog", assigneeAgentId: null, assigneeUserId: null },
+    }));
+    const body = "A comment whose response was lost";
+    const clientRequestId = crypto.randomUUID();
+    const first = await json(await request.post(`/api/issues/${issue.id}/comments`, { data: { body, clientRequestId } }));
+    const agent = await json(await request.post(`/api/companies/${company.id}/agents`, {
+      data: { name: "Completed comment worker", role: "engineer", adapterType: "process", runner: "legacy",
+        adapterConfig: { command: "/usr/bin/true" }, runtimeConfig: { heartbeat: { enabled: false } } },
+    }));
+    await json(await request.patch(`/api/issues/${issue.id}`, { data: { status: "done", assigneeAgentId: agent.id } }));
+    const receipt = await json(await request.post(`/api/issues/${issue.id}/comments`, { data: { body, clientRequestId } }));
+    expect(receipt.id).toBe(first.id);
+    expect((await json(await request.get(`/api/issues/${issue.id}`))).status).toBe("done");
+    const conflict = await request.post(`/api/issues/${issue.id}/comments`, { data: { body: "Different request", clientRequestId } });
+    expect(conflict.status()).toBe(409);
+    expect((await json(await request.get(`/api/issues/${issue.id}`))).status).toBe("done");
+    const comments = await json(await request.get(`/api/issues/${issue.id}/comments`));
+    expect(comments.filter((comment: { clientRequestId?: string }) => comment.clientRequestId === clientRequestId)).toHaveLength(1);
+    await page.goto(`/${company.issuePrefix}/issues/${issue.id}`);
+    await expect(page.getByRole("heading", { name: issue.title, exact: true })).toBeVisible();
+    await expect(page.getByText(body, { exact: true })).toBeVisible();
+  } finally {
+    await request.patch(`/api/companies/${company.id}`, { data: { status: "archived" } });
+  }
+});

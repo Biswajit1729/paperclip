@@ -573,6 +573,23 @@ describe("issue comment reopen routes", () => {
     );
   });
 
+  it.each([false, true])("returns a retained comment before reopening completed work (changed body=%s)", async (changed) => {
+    const issue = makeIssue("done");
+    const requestId = "77777777-7777-4777-8777-777777777777";
+    mockIssueService.getById.mockResolvedValue(issue);
+    const selectFrom = mockDbSelectFrom.getMockImplementation()!;
+    mockDbSelectFrom.mockImplementation((table) => getTableName(table as Parameters<typeof getTableName>[0]) === "issue_comments"
+      ? { where: vi.fn(async () => [{ id: "comment-1" }]) } as any : selectFrom(table));
+    if (changed) mockIssueService.addComment.mockRejectedValue(new HttpError(409, "Message request ID was already used for different content"));
+    const response = await request(await installActor(createApp())).post(`/api/issues/${issue.id}/comments`)
+      .send({ body: changed ? "Changed body" : "hello", clientRequestId: requestId });
+    expect(response.status).toBe(changed ? 409 : 201);
+    if (!changed) expect(response.body.id).toBe("comment-1");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
   it("treats reopen=true as a no-op when the issue is already open", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
     mockIssueService.update.mockImplementation(

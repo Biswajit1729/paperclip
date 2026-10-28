@@ -1,12 +1,14 @@
-import { useCallback } from "react";
+import { useCallback, useContext } from "react";
 import {
   useMutation,
   useQueryClient,
+  QueryClientContext,
   type DefaultError,
   type MutateOptions,
   type QueryClient,
   type UseMutationOptions,
   type UseMutationResult,
+  type MutationFunctionContext,
 } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queryKeys";
 
@@ -18,7 +20,7 @@ function currentOwner(client: QueryClient): string | undefined {
   return session === undefined ? undefined : session?.user?.id ?? session?.session?.userId ?? "signed-out";
 }
 
-function bindAccount(client: QueryClient): () => boolean {
+function bindAccount(client: QueryClient) {
   let account = accounts.get(client);
   if (!account) {
     account = { owner: currentOwner(client), generation: 0 };
@@ -27,39 +29,67 @@ function bindAccount(client: QueryClient): () => boolean {
     client.getQueryCache().subscribe(() => {
       const owner = currentOwner(client);
       if (owner !== tracked.owner) {
+        if (tracked.owner !== undefined || tracked.generation !== 0) tracked.generation += 1;
         tracked.owner = owner;
-        tracked.generation += 1;
       }
     });
   }
   const { owner, generation } = account;
-  return () => owner !== undefined && account.owner === owner && account.generation === generation;
+  const isCurrentAccount = () => account.owner !== undefined && account.generation === generation
+    && (owner === undefined ? generation === 0 : account.owner === owner);
+  const whenAccountReady = () => {
+    if (account.owner !== undefined || account.generation !== generation) return Promise.resolve();
+    return new Promise<void>(resolve => {
+      const unsubscribe = client.getQueryCache().subscribe(() => {
+        if (account.owner !== undefined || account.generation !== generation) {
+          unsubscribe();
+          resolve();
+        }
+      });
+    });
+  };
+  return { isCurrentAccount, whenAccountReady };
 }
 
+export function useCurrentAccountGuard(): () => boolean {
+  const client = useContext(QueryClientContext);
+  return client ? bindAccount(client).isCurrentAccount : () => true;
+}
+
+type AccountMutationContext = MutationFunctionContext & { assertCurrentAccount: () => void };
+
 export function useAccountBoundMutation<TData = unknown, TError = DefaultError, TVariables = void, TContext = unknown>(
-  options: UseMutationOptions<TData, TError, TVariables, TContext> & {
+  options: Omit<UseMutationOptions<TData, TError, TVariables, TContext>, "mutationFn"> & {
+    mutationFn?: (variables: TVariables, context: AccountMutationContext) => Promise<TData>;
     waitForTurn?: (variables: TVariables) => Promise<void> | undefined;
-    onFinished?: (variables: TVariables) => void;
+    onFinished?: (variables: NoInfer<TVariables>, context: NoInfer<TContext> | undefined) => void;
   },
 ): UseMutationResult<TData, TError, TVariables, TContext> {
   const client = useQueryClient();
-  type OwnedVariables = { input: TVariables; isCurrentAccount: () => boolean; operation: typeof options };
+  type OwnedVariables = { input: TVariables; operation: typeof options } & ReturnType<typeof bindAccount>;
   const { mutationFn, onMutate, onSuccess, onError, onSettled, waitForTurn, onFinished, ...rest } = options;
   const mutation = useMutation<TData, TError, OwnedVariables, TContext | undefined>({
     ...rest,
-    mutationFn: async ({ input, isCurrentAccount, operation }, context) => {
+    mutationFn: async ({ input, isCurrentAccount, whenAccountReady, operation }, context) => {
+      await whenAccountReady();
       await operation.waitForTurn?.(input);
-      if (!isCurrentAccount()) throw new DOMException("Your account changed. Retry this action from your current account.", "AbortError");
+      const assertCurrentAccount = () => {
+        if (!isCurrentAccount()) throw new DOMException("Your account changed. Retry this action from your current account.", "AbortError");
+      };
+      assertCurrentAccount();
       if (!operation.mutationFn) throw new Error("Missing account-bound mutation function");
-      const result = await operation.mutationFn(input, context);
-      if (!isCurrentAccount()) throw new DOMException("Your account changed. Retry this action from your current account.", "AbortError");
+      const result = await operation.mutationFn(input, { ...context, assertCurrentAccount });
+      assertCurrentAccount();
       return result;
     },
-    onMutate: ({ input, isCurrentAccount, operation }, context) => isCurrentAccount() ? operation.onMutate?.(input, context) : undefined,
+    onMutate: async ({ input, isCurrentAccount, whenAccountReady, operation }, context) => {
+      await whenAccountReady();
+      return isCurrentAccount() ? operation.onMutate?.(input, context) : undefined;
+    },
     onSuccess: (data, { input, isCurrentAccount, operation }, result, context) => isCurrentAccount() ? operation.onSuccess?.(data, input, result as TContext, context) : undefined,
     onError: (error, { input, isCurrentAccount, operation }, result, context) => isCurrentAccount() ? operation.onError?.(error, input, result, context) : undefined,
     onSettled: async (data, error, { input, operation, isCurrentAccount }, result, context) => {
-      operation.onFinished?.(input);
+      operation.onFinished?.(input, result);
       if (isCurrentAccount()) await operation.onSettled?.(data, error, input, result, context);
     },
   });
@@ -69,10 +99,10 @@ export function useAccountBoundMutation<TData = unknown, TError = DefaultError, 
     onSettled: (data, error, { input, isCurrentAccount }, result, context) => { if (isCurrentAccount()) callbacks?.onSettled?.(data, error, input, result, context); },
   });
   const mutate = useCallback((input: TVariables, callbacks?: MutateOptions<TData, TError, TVariables, TContext>) => {
-    mutation.mutate({ input, isCurrentAccount: bindAccount(client), operation: options }, wrapOptions(callbacks));
+    mutation.mutate({ input, ...bindAccount(client), operation: options }, wrapOptions(callbacks));
   }, [client, mutation.mutate, options]);
   const mutateAsync = useCallback((input: TVariables, callbacks?: MutateOptions<TData, TError, TVariables, TContext>) => {
-    return mutation.mutateAsync({ input, isCurrentAccount: bindAccount(client), operation: options }, wrapOptions(callbacks));
+    return mutation.mutateAsync({ input, ...bindAccount(client), operation: options }, wrapOptions(callbacks));
   }, [client, mutation.mutateAsync, options]);
   return { ...mutation, variables: mutation.variables?.input, mutate, mutateAsync } as UseMutationResult<TData, TError, TVariables, TContext>;
 }

@@ -1,3 +1,4 @@
+import { useCurrentAccountGuard } from "../hooks/useAccountBoundMutation";
 import { resolveIssueChatHumanAuthor } from "@/lib/issue-chat-human-author";
 import { useCurrentWorkspaceRetry, useWorkspaceBaseRefRecovery, useWorkspaceRetry } from "./WorkspaceBaseRefRecovery";
 import { WorkspaceBaseRefRecoveryNotice } from "./WorkspaceBaseRefRecoveryNotice";
@@ -4725,6 +4726,7 @@ const IssueChatComposer = forwardRef<
   const reconciledSubmissionRef = useRef<{ draftKey: string | undefined; attemptId: string } | null>(null);
   // Only the account that made a request may replay it.
   const draftOwner = useDraftOwner();
+  const isCurrentAccount = useCurrentAccountGuard();
   const pendingDraftRef = useRef<{
     draftKey: string;
     attemptId: string;
@@ -4919,6 +4921,7 @@ const IssueChatComposer = forwardRef<
   }, [confirmedSubmissionIds, draftKey, resentSubmissionIds, sharedDraftKey, uncertainSubmission]);
 
   async function resendUncertainSubmission(): Promise<SendOutcome> {
+    if (!isCurrentAccount()) return "pending";
     const submission = uncertainSubmission;
     const request = replayableRequest(submission, draftOwner);
     if (!submission || !request) return "rejected";
@@ -4934,6 +4937,7 @@ const IssueChatComposer = forwardRef<
       if (request.runSettings) await onSend(...args, request.runSettings as unknown as ComposerRunSettings);
       else await onSend(...args);
     } catch (error) {
+      if (!isCurrentAccount()) return "pending";
       const failure = classifySendFailure(error);
       if (failure === "rejected") {
         // A definitive answer: the text is already back in the editor.

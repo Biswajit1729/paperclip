@@ -25,7 +25,7 @@ describe("task draft upload receipts", () => {
     inline: false,
     contentPath: `/api/attachments/${id}/content`,
   };
-  beforeEach(() => localStorage.clear());
+  beforeEach(() => { localStorage.clear(); sessionStorage.clear(); });
   it("persists a tab recovery without touching shared text, receipts, or pending submission", () => {
     sessionStorage.clear();
     saveDraft(key, "Other tab text");
@@ -83,6 +83,19 @@ describe("task draft upload receipts", () => {
     expect(loadDraftAttachments(key)).toEqual([nextReceipt]);
     expect(loadDraftSubmission(key)).toBeNull();
   });
+  it.each([
+    { label: "long task comment", draftKey: key, body: "a".repeat(300_000) },
+    { label: "escaped task comment", draftKey: key, body: "\n".repeat(150_000) },
+    { label: "long chat comment", draftKey: "paperclip:agent-chat-draft:large", body: "a".repeat(300_000) },
+    { label: "escaped chat comment", draftKey: "paperclip:agent-chat-draft:large", body: "\n".repeat(150_000) },
+  ])("restores a large accepted request with its original key ($label)", ({ draftKey, body }) => {
+    const request = { body };
+    saveDraftSubmission(draftKey, { attemptId: id, reviewed: false, request, requestOwner: "user-1" });
+    const loaded = loadDraftSubmission(draftKey);
+    expect(loaded?.attemptId).toBe(id);
+    expect(loaded?.request?.body === body).toBe(true);
+  });
+
   it("keeps chat drafts and pending submission fences within the current tab", () => {
     sessionStorage.clear();
     const chatKey = "paperclip:agent-chat-draft:company:user:agent";

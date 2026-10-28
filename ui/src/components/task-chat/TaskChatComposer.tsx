@@ -1,3 +1,4 @@
+import { useCurrentAccountGuard } from "@/hooks/useAccountBoundMutation";
 import { AgentAvatar } from "../AgentAvatar";
 import {
   useEffect,
@@ -497,6 +498,7 @@ export function TaskChatComposer({
   bodyRef.current = body;
   // Only the account that made a request may replay it.
   const draftOwner = useDraftOwner();
+  const isCurrentAccount = useCurrentAccountGuard();
   const pendingDraftRef = useRef<{
     draftKey: string;
     attemptId: string;
@@ -1184,6 +1186,7 @@ export function TaskChatComposer({
   }, [confirmedSubmissionIds, draftKey, uncertainSubmission]);
 
   async function resendUncertainSubmission(): Promise<SendOutcome> {
+    if (!isCurrentAccount()) return "pending";
     const submission = uncertainSubmission;
     const request = replayableRequest(submission, draftOwner);
     if (!submission || !request || !onAdd) return "rejected";
@@ -1199,6 +1202,7 @@ export function TaskChatComposer({
       if (request.runSettings) await onAdd(...args, request.runSettings as unknown as ComposerRunSettings);
       else await onAdd(...args);
     } catch (error) {
+      if (!isCurrentAccount()) return "pending";
       const failure = classifySendFailure(error);
       if (settledSubmissionIds.current.has(JSON.stringify([taskKey, submission.attemptId]))) return failure;
       if (failure === "rejected") {

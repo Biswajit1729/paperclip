@@ -113,3 +113,16 @@ it("does not apply an old response to the next account", async () => {
   expect(await pending).toMatchObject({ name: "AbortError" });
   expect(success).not.toHaveBeenCalled();
 });
+
+it("keeps an action pending through the first session lookup", async () => {
+  client.removeQueries({ queryKey: queryKeys.auth.session });
+  render();
+  let pending!: Promise<unknown>;
+  await act(async () => { pending = current.mutateAsync({ id: "startup" }).catch(error => error); });
+  expect(send).not.toHaveBeenCalled();
+  render("another-task");
+  await act(async () => { client.setQueryData(queryKeys.auth.session, { user: { id: "account-a" } }); });
+  expect(await pending).toBe("saved");
+  expect(send).toHaveBeenCalledExactlyOnceWith("original", { id: "startup" });
+  expect(success).toHaveBeenCalledTimes(1);
+});

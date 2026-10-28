@@ -16,7 +16,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Agent } from "@paperclipai/shared";
 import { CommentSubmissionUnknownError } from "../lib/comment-submit-result";
-import { loadDraft, preserveDraftInTab, settleDraftSubmission } from "../lib/composer-draft";
+import { loadDraft, saveDraft, saveDraftSubmission, loadDraftSubmission, preserveDraftInTab, settleDraftSubmission } from "../lib/composer-draft";
 import { queryKeys } from "../lib/queryKeys";
 import {
   IssueAssigneePausedNotice,
@@ -2913,6 +2913,31 @@ describe("IssueChatThread", () => {
       act(() => root.unmount());
     }
     expect(localStorage.getItem(key)).toBe(nextDraft);
+  });
+
+  it.each([false, true])("does not retry a stale account render (returns to original=%s)", async (returns) => {
+    const key = "stale-thread-account";
+    const attemptId = "9af8228f-0be7-45ae-a104-6fbe0af6f1d3";
+    saveDraft(key, "Account A text");
+    saveDraftSubmission(key, { attemptId, reviewed: false, request: { body: "Account A text" }, requestOwner: "user-1" });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    const onAdd = vi.fn().mockResolvedValue(undefined);
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<QueryClientProvider client={client}><MemoryRouter>
+        <IssueChatThread comments={[]} currentUserId="user-1" linkedRuns={[]} timelineEvents={[]} liveRuns={[]}
+          onAdd={onAdd} draftKey={key} enableLiveTranscriptPolling={false} />
+      </MemoryRouter></QueryClientProvider>));
+      const resend = Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Resend now")!;
+      await act(async () => {
+        client.setQueryData(queryKeys.auth.session, { user: { id: "user-2" } });
+        if (returns) client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+        resend.click();
+      });
+      expect(onAdd).not.toHaveBeenCalled();
+      expect(loadDraftSubmission(key)?.attemptId).toBe(attemptId);
+    } finally { act(() => root.unmount()); client.clear(); }
   });
 
   it("resends an unconfirmed comment with the same request ID and keeps the next draft", async () => {

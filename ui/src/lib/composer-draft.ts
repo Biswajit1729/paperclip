@@ -139,7 +139,7 @@ export function isComposerSendRequest(value: unknown): value is ComposerSendRequ
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const row = value as Record<string, unknown>;
   if (!Object.keys(row).every((key) => ["body", "reopen", "reassignment", "attachmentIds", "runSettings"].includes(key))) return false;
-  if (typeof row.body !== "string" || row.body.length > 200_000) return false;
+  if (typeof row.body !== "string") return false;
   if (row.reopen !== undefined && typeof row.reopen !== "boolean") return false;
   if (row.reassignment !== undefined) {
     const reassignment = row.reassignment as Record<string, unknown> | null;
@@ -167,7 +167,7 @@ export function loadDraftSubmission(
 ): ComposerDraftSubmission | null {
   try {
     const raw = draftStorage(draftKey).getItem(`${draftKey}:submission:v1`);
-    if (!raw || raw.length > 262_144) return null;
+    if (!raw) return null;
     const record = JSON.parse(raw);
     return record?.version === 1 &&
       record.draftKey === draftKey &&

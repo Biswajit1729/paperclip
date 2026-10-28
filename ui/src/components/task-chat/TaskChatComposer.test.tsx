@@ -420,6 +420,28 @@ describe("TaskChatComposer", () => {
     expect(onAdd).not.toHaveBeenCalled();
   });
 
+  it.each([false, true])("does not retry from a stale account render (returns to original=%s)", async (returns) => {
+    const key = "stale-account-retry";
+    const attemptId = "9af8228f-0be7-45ae-a104-6fbe0af6f1d3";
+    saveDraft(key, "Original account text");
+    saveDraftSubmission(key, { attemptId, reviewed: false, request: { body: "Original account text" }, requestOwner: "user-1" });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    const onAdd = vi.fn().mockResolvedValue(undefined);
+    render(<QueryClientProvider client={client}><TaskChatComposer onAdd={onAdd} workMode="standard" draftKey={key} /></QueryClientProvider>);
+    await flushAsync();
+    const resend = Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Resend now")!;
+    flushSync(() => {
+      client.setQueryData(queryKeys.auth.session, { user: { id: "user-2" } });
+      if (returns) client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+      resend.click();
+    });
+    await flushAsync();
+    expect(onAdd).not.toHaveBeenCalled();
+    expect(loadDraftSubmission(key)?.attemptId).toBe(attemptId);
+    client.clear();
+  });
+
   it.each(["success", "rejection"])("settles a receipt before its in-flight resend %s without cutting the next draft", async (outcome) => {
     const key = "receipt-and-resend";
     const attemptId = "9af8228f-0be7-45ae-a104-6fbe0af6f1d3";
