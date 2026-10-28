@@ -46,7 +46,7 @@ describe("exact reviewed revision panel", () => {
     await render("task-b");
     expect(mocks.get).toHaveBeenCalledWith("task-b", "copy");
     expect(mocks.revision).not.toHaveBeenCalled();
-    expect(container.textContent).toContain("The document could not be loaded");
+    expect(container.textContent).toContain("Couldn't load the document");
     expect(container.querySelector("article")).toBeNull();
   });
 });
