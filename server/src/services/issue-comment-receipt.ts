@@ -21,7 +21,7 @@ export async function completeIssueCommentReceipt(db: Db, references: CommentRef
     const connection = tx as unknown as Db;
     const [issue] = await tx.select({ id: issues.id }).from(issues).where(and(
       eq(issues.id, input.issueId), eq(issues.companyId, input.companyId),
-    )).for("update");
+    )).for("no key update");
     if (!issue) throw notFound("Issue not found");
     const [comment] = await tx.select({ id: issueComments.id }).from(issueComments).where(and(
       eq(issueComments.id, input.commentId), eq(issueComments.companyId, input.companyId),

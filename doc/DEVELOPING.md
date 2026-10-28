@@ -3452,7 +3452,8 @@ comment returns its existing receipt before the route can reopen a completed tas
 `server/src/services/issue-comment-receipt.ts` completes reference and activity
 records for keyed board comments. It locks the same-company task and comment in
 that order, repairs references and inserts a missing activity record in one
-transaction, and publishes after commit. Both the initial send and a retained
+transaction, and publishes after commit. The task uses `FOR NO KEY UPDATE` so
+concurrent comments can reference each other without blocking foreign-key checks. Both the initial send and a retained
 receipt use this owner so concurrent completion cannot duplicate the activity.
 Large comment request records use the same readable range as successful writes,
 including JSON-escaped bodies. Account changes retire only the original optimistic
