@@ -5,8 +5,9 @@
  * now?" for the whole app. Inputs:
  *
  * - React Query cache events: a connectivity-level failure (network drop, proxy
- *   5xx, gateway `tenant_app_unavailable`) makes the store suspicious; any
- *   success confirms the server is reachable.
+ *   5xx, gateway `tenant_app_unavailable`) makes the store suspicious. Cache
+ *   success can come from another service, so only server health and the
+ *   live-updates WebSocket confirm recovery.
  * - The live-updates WebSocket opening (reachable) or closing (suspicious).
  * - `navigator.onLine` and the window `online`/`offline` events.
  *

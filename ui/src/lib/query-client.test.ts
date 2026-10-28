@@ -157,6 +157,34 @@ describe("createAppQueryClient", () => {
     expect(store.getSnapshot().status).toBe("reconnecting");
   });
 
+  it("does not infer server recovery from an unrelated in-flight query", async () => {
+    let finish!: (value: null) => void;
+    const pending = new Promise<null>(resolve => { finish = resolve; });
+    const observer = new QueryObserver(client, { queryKey: ["npm-registry"], queryFn: () => pending });
+    const unsubscribe = observer.subscribe(() => {});
+    await vi.advanceTimersByTimeAsync(0);
+    store.reportError(gatewayDown());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.getSnapshot().status).toBe("reconnecting");
+    finish(null);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.getSnapshot().status).toBe("reconnecting");
+    expect(onlineManager.isOnline()).toBe(false);
+    probe.mockResolvedValue({ reachable: true });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(store.getSnapshot().status).toBe("online");
+    unsubscribe();
+  });
+
+  it("does not infer server recovery from an unrelated mutation", async () => {
+    store.reportError(gatewayDown());
+    await vi.advanceTimersByTimeAsync(0);
+    const observer = new MutationObserver(client, { mutationFn: async () => "external success" });
+    await observer.mutate();
+    expect(store.getSnapshot().status).toBe("reconnecting");
+    expect(onlineManager.isOnline()).toBe(false);
+  });
+
   it("fails an ordinary mutation fast during an outage", async () => {
     const mutationFn = vi.fn(async () => {
       throw gatewayDown();

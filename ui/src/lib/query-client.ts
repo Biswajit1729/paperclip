@@ -109,7 +109,7 @@ export interface MutationErrorToast {
 }
 
 export interface AppQueryClientDeps {
-  connectivity: Pick<ConnectivityStore, "reportError" | "reportSuccess" | "getSnapshot">;
+  connectivity: Pick<ConnectivityStore, "reportError" | "getSnapshot">;
   reportError?: (error: unknown) => void;
   /** Show a toast for a failed opted-in mutation that has no handler of its own. */
   notifyMutationError?: (toast: MutationErrorToast) => void;
@@ -175,14 +175,12 @@ export function createAppQueryClient(deps: AppQueryClientDeps, config: QueryClie
   queryCache.subscribe((event) => {
     if (event.type !== "updated") return;
     if (event.action.type === "failed" || event.action.type === "error") deps.connectivity.reportError(event.action.error);
-    // `setQueryData` (optimistic and live-event writes) dispatches a manual
-    // success that never touched the server; only fetched data proves reachability.
-    else if (event.action.type === "success" && !event.action.manual) deps.connectivity.reportSuccess();
+    // Queries can read other services or return local data. Only the health
+    // probe and the server WebSocket can prove that Paperclip recovered.
   });
   mutationCache.subscribe((event) => {
     if (event.type !== "updated") return;
     if (event.action.type === "failed" || event.action.type === "error") deps.connectivity.reportError(event.action.error);
-    else if (event.action.type === "success") deps.connectivity.reportSuccess();
   });
 
   return new AppQueryClient({
