@@ -14,7 +14,7 @@ import { EmptyState } from "@/components/EmptyState";
 import { EntityRow } from "@/components/EntityRow";
 import { IssueReferencePill } from "@/components/IssueReferencePill";
 import { PageSkeleton } from "@/components/PageSkeleton";
-import { QueryErrorState, useQueryView } from "@/components/QueryView";
+import { QueryErrorState, queryViewKind, useQueryView } from "@/components/QueryView";
 import { CaseDocumentPreview } from "@/components/cases/CaseDocumentPreview";
 import { CaseHandoffHistory } from "@/components/cases/CaseHandoffHistory";
 import { CaseStatus } from "@/components/cases/CaseStatus";
@@ -137,7 +137,7 @@ export function CaseDetail() {
         <summary className="w-fit cursor-pointer text-sm font-semibold">Related cases</summary>
         {caseData.parent && <div className="space-y-1"><h3 className="text-xs text-muted-foreground">Parent</h3><CaseRelation item={caseData.parent} search={search} /></div>}
         {children.length > 0 && <div className="space-y-1"><h3 className="text-xs text-muted-foreground">Children {children.length}</h3>{children.map(child => <CaseRelation key={child.id} item={child} search={search} />)}</div>}
-        {childrenQuery.isError && <p role="alert" className="text-sm text-destructive">Child cases couldn’t be loaded.</p>}
+        {queryViewKind(childrenQuery) === "error" && <p role="alert" className="text-sm text-destructive">Child cases couldn’t be loaded.</p>}
       </details>}
 
       {!fields.length && !caseData.documents.length && !taskDocuments.length && !caseData.attachments.length && <p className="text-sm text-muted-foreground">No findings recorded yet.</p>}
