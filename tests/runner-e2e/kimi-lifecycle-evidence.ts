@@ -130,7 +130,7 @@ export function readKimiLifecycleSettlement(input: KimiLifecycleState & { pendin
       && Array.isArray(stop.effects) && stop.effects.length === 1 && stop.effects[0] === "release_run_resources"
       && id(stop.intentAuditId) && id(stop.acknowledgementAuditId) && stop.intentAuditId !== stop.acknowledgementAuditId, "caller-owned Stop acknowledgement missing");
   } else demand(c.event.eventType === "runtime_request.expired" && cp.reason === "provider_process_lost" && cp.requestType === "permission" && cp.replayAllowed === false
-    && hash(cp.request) === hash(p.request) && t.event.eventType === "turn.failed" && run.status === "failed" && issue.status === "blocked"
+    && cp.request === undefined && t.event.eventType === "turn.failed" && run.status === "failed" && issue.status === "blocked"
     && run.resultJson?.nativeCancellation == null && run.resultJson?.startupCancellation == null, "spontaneous native-worker loss did not expire the original callback");
   return { schema: "paperclip.e2e.kimi-native-write-settlement.v1", branch: input.branch, pending: b,
     requestClosure: c.event.eventType, closedRowSha256: hash(c.row), terminalRowSha256: hash(t.row), replayAllowed: false, completedMutation: false };

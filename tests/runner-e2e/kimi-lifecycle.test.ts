@@ -38,7 +38,7 @@ function fixture(remote = false) {
       events.push(row("turn.cancelled", events.length + 1, { status: "cancelled", error: null }));
     } else {
       run.status = "failed"; issue.status = "blocked";
-      events.push(row("runtime_request.expired", events.length + 1, { requestId: "request", requestKind: "permission_approval", requestType: "permission", turnId: "turn", itemId: "permission-item", reason: "provider_process_lost", replayAllowed: false, request }));
+      events.push(row("runtime_request.expired", events.length + 1, { requestId: "request", requestKind: "permission_approval", requestType: "permission", turnId: "turn", itemId: "permission-item", reason: "provider_process_lost", replayAllowed: false }));
       events.push(row("turn.failed", events.length + 1, { error: { code: "provider_transport_lost" } }));
     }
     const dispatchMonotonicNs = process.hrtime.bigint().toString();
@@ -88,12 +88,20 @@ describe("Kimi native Write lifecycle evidence", () => {
     payload(f.events.at(-2)!).requestId = "other";
     expect(() => readKimiLifecycleSettlement({ ...f.state(), ...binding })).toThrow();
   });
-  it.each(["replay", "cancelled", "wrong-reason", "changed-request", "new-turn", "new-operation", "success", "Stop"])("rejects false native loss %s", kind => {
+  it("keeps the observed permission row bound when native expiry omits its full request", () => {
+    const f = fixture(), binding = f.settle("loss");
+    expect(payload(f.events.at(-2)!)).not.toHaveProperty("request");
+    expect(readKimiLifecycleSettlement({ ...f.state(), ...binding })).toMatchObject({ branch: "loss", replayAllowed: false });
+    f.request.choices[0].label = "Changed after pending observation";
+    expect(() => readKimiLifecycleSettlement({ ...f.state(), ...binding })).toThrow("original pre-action pending receipt changed or missing");
+  });
+  it.each(["replay", "cancelled", "wrong-reason", "changed-request", "injected-original-request", "new-turn", "new-operation", "success", "Stop"])("rejects false native loss %s", kind => {
     const f = fixture(), binding = f.settle("loss"), expiry = f.events.at(-2)!;
     if (kind === "replay") payload(expiry).replayAllowed = true;
     if (kind === "cancelled") expiry.eventType = expiry.payload.prpEvent.eventType = "runtime_request.cancelled";
     if (kind === "wrong-reason") payload(expiry).reason = "durable_handoff";
     if (kind === "changed-request") payload(expiry).request = { ...f.request, prompt: "replacement" };
+    if (kind === "injected-original-request") payload(expiry).request = f.request;
     if (kind === "new-turn") { f.events.at(-1)!.payload.prpEvent.turnId = "replacement"; }
     if (kind === "new-operation") f.events.push(f.row("tool.execution.started", 6, f.tool("late", "Write", "edit", f.scope.target)));
     if (kind === "success") f.run.status = "succeeded";
