@@ -1520,5 +1520,5 @@ export function IssueDocumentsSection(props: Parameters<typeof AccountIssueDocum
     if (previousOwner.current !== undefined) generation.current += 1;
     previousOwner.current = owner;
   }
-  return <AccountIssueDocumentsSection key={generation.current} {...props} />;
+  return <AccountIssueDocumentsSection key={JSON.stringify([generation.current, props.subject?.id ?? props.issue?.id])} {...props} />;
 }

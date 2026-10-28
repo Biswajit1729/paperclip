@@ -77,6 +77,18 @@ lookup survives that initial lookup and is backed up under the resolved owner. C
 [inline editor tests](../../ui/src/components/InlineEditor.test.tsx) and
 [connected-channel tests](../../ui/src/components/chat/ExternallyConnectedTaskBanner.test.tsx);
 these controlled session changes do not establish hosted authentication acceptance.
+Also switch accounts during a restored task create and while its files are
+uploading: later uploads stop, the next account sees a fresh form, and the
+original request key remains owned by the first account. Reselect colliding
+text-document filenames in reverse order and verify their original keys and
+contents. Switch between cached document subjects without copying either draft.
+A receipt arriving before an in-flight resend must preserve the next message.
+The startup browser journey in
+[disconnect recovery](../../tests/e2e/disconnect-write-recovery.spec.ts) holds the
+first session response while a title save waits, simulates an offline event with
+API failures while keeping static assets reachable, then verifies the real saved
+server title after account resolution and reload. Provider calls remain outside
+this controlled browser fixture.
 
 ### `source-task`
 

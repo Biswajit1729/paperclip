@@ -931,6 +931,32 @@ describe("IssueDocumentsSection", () => {
     expect(container.textContent).not.toContain("Private unpublished text");
     act(() => root.unmount()); queryClient.clear();
   });
+  it("restores task B without copying task A's mounted document draft", async () => {
+    const a = createIssue();
+    const b = { ...a, id: "task-b", identifier: "DOC-2" };
+    const document = createIssueDocument({ body: "Server plan" });
+    mockIssuesApi.listDocuments.mockResolvedValue([document]);
+    const key = (id: string) => `paperclip:document-draft:v2:user-1:${id}:plan`;
+    const stored = (body: string) => JSON.stringify({ key: "plan", title: "Plan", body, baseRevisionId: "revision-4", isNew: false });
+    localStorage.setItem(key(a.id), stored("Task A private edit"));
+    const originalB = stored("Task B private edit");
+    localStorage.setItem(key(b.id), originalB);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } } });
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    client.setQueryData(queryKeys.issues.documents(a.id), [document]);
+    client.setQueryData(queryKeys.issues.documents(b.id), [document]);
+    const root = createRoot(container);
+    const show = (issue: Issue) => root.render(<QueryClientProvider client={client}><IssueDocumentsSection issue={issue} canDeleteDocuments={false} /></QueryClientProvider>);
+    try {
+      await act(async () => show(a)); await flush();
+      expect(container.textContent).toContain("Task A private edit");
+      await act(async () => show(b)); await flush();
+      expect(container.textContent).not.toContain("Task A private edit");
+      expect(container.textContent).toContain("Task B private edit");
+      expect(localStorage.getItem(key(b.id))).toBe(originalB);
+    } finally { act(() => root.unmount()); client.clear(); localStorage.clear(); }
+  });
+
   it("keeps the known account's drafts while a session refetch fails", async () => {
     const document = createIssueDocument({ body: "Server body" });
     const issue = createIssue();

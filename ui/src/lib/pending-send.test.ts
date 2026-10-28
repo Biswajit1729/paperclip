@@ -4,12 +4,13 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { ApiError } from "@/api/client";
 import { ApiUnavailableError } from "@/api/response";
 import { CommentSubmissionUnknownError } from "./comment-submit-result";
-import { classifySendFailure, clearPendingSend, readPendingSend, writePendingSend } from "./pending-send";
+import { classifySendFailure, clearPendingSend, readPendingSend, writePendingSend, PendingSendAccountChangedError } from "./pending-send";
 
 const isText = (value: unknown): value is string => typeof value === "string";
 
 describe("classifySendFailure", () => {
   it.each([
+    ["an interrupted account-bound request", new PendingSendAccountChangedError()],
     ["a lost comment receipt", new CommentSubmissionUnknownError()],
     ["a gateway outage with a 4xx status", new ApiError("x", 400, { error: "tenant_app_unavailable" })],
     ["a 503", new ApiError("x", 503, null)],
@@ -39,6 +40,16 @@ describe("pending-send records", () => {
     expect(readPendingSend("k", isText)).toEqual({ idempotencyKey: "key-12345", payload: "body", createdAt: 5 });
     expect(readPendingSend("k", (value): value is number => typeof value === "number")).toBeNull();
     expect(readPendingSend("other", isText)).toBeNull();
+  });
+
+  it.each(["local", "session"] as const)("restores a successfully persisted large request from %s storage", (storage) => {
+    const payload = "x".repeat(300_000);
+    const record = { idempotencyKey: "large-original-request", payload, createdAt: 5 };
+    expect(writePendingSend("large", record, storage)).toBe(true);
+    const restored = readPendingSend("large", isText, storage);
+    expect(restored?.idempotencyKey).toBe(record.idempotencyKey);
+    expect(restored?.payload === payload).toBe(true);
+    clearPendingSend("large", record.idempotencyKey, storage);
   });
 
   it("clears only the matching send when given its key", () => {

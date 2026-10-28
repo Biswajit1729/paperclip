@@ -155,6 +155,24 @@ describe("useDurableAutosave", () => {
     client.clear();
   });
 
+  it("keeps an admitted startup save through the first account lookup", async () => {
+    store.setBrowserOnline(false);
+    const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false, enabled: false } } });
+    const save = vi.fn().mockResolvedValue(undefined);
+    act(() => root.render(<QueryClientProvider client={client}><ConnectivityProvider store={store}>
+      <Harness sourceId="startup-title" save={save} />
+    </ConnectivityProvider></QueryClientProvider>));
+    await act(async () => { await current.run("Startup title"); });
+    expect(current.status).toBe("waiting");
+    act(() => client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } }));
+    await advance(0);
+    await act(async () => { store.setBrowserOnline(true); store.reportSuccess(); });
+    await advance(2_000);
+    expect(save).toHaveBeenCalledExactlyOnceWith("Startup title");
+    expect(store.getSnapshot().pendingWrites).toBe(0);
+    client.clear();
+  });
+
   it("bounds retries after an editor unmounts", async () => {
     const save = vi.fn().mockRejectedValue(outage());
     render({ save });

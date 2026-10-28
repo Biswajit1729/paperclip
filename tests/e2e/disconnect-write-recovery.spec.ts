@@ -91,3 +91,53 @@ test("two cached tasks keep separate title saves while the browser is offline", 
     await request.patch(`/api/companies/${company.id}`, { data: { status: "archived" } });
   }
 });
+
+test("a queued startup save survives the first session lookup during an API outage", async ({ page, request }) => {
+  const company = await json(await request.post("/api/companies", { data: { name: `Startup recovery ${Date.now()}` } }));
+  const session = await json(await request.get("/api/auth/get-session"));
+  let releaseSession!: () => void;
+  const sessionReady = new Promise<void>(resolve => { releaseSession = resolve; });
+  const savedTitle = "Saved through first session lookup";
+  let apiUnavailable = false;
+  try {
+    const issue = await json(await request.post(`/api/companies/${company.id}/issues`, {
+      data: { title: "Startup original title", status: "backlog" },
+    }));
+    await page.route("**/api/**", async route => {
+      const path = new URL(route.request().url()).pathname;
+      if (apiUnavailable && (path === "/api/health" || (route.request().method() === "PATCH" && path.startsWith("/api/issues/")))) {
+        return route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "tenant_app_unavailable" }) });
+      }
+      await route.continue();
+    });
+    await page.route("**/api/auth/get-session", async route => {
+      await sessionReady;
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(session) });
+    });
+    await page.goto(`/${company.issuePrefix}/issues/${issue.identifier}`);
+    const header = page.getByTestId("issue-detail-header");
+    await expect(header.getByRole("heading", { name: issue.title, exact: true })).toBeVisible();
+    apiUnavailable = true;
+    await page.evaluate(() => window.dispatchEvent(new Event("offline")));
+    await expect(page.locator('[data-connection-status="offline"]')).toBeVisible();
+    await header.getByRole("heading", { name: issue.title, exact: true }).click();
+    await header.locator("textarea").fill(savedTitle);
+    await header.locator("textarea").press("Enter");
+    expect((await json(await request.get(`/api/issues/${issue.id}`))).title).toBe(issue.title);
+    releaseSession();
+    await expect.poll(() => page.evaluate(({ owner, title }) => Object.keys(localStorage).some(key =>
+      key.startsWith(`paperclip:inline-draft:v2:${owner}:`) && JSON.parse(localStorage.getItem(key) ?? "null")?.draft === title),
+    { owner: session.user.id, title: savedTitle })).toBe(true);
+    apiUnavailable = false;
+    await page.evaluate(() => window.dispatchEvent(new Event("online")));
+    await expect.poll(async () => (await json(await request.get(`/api/issues/${issue.id}`))).title,
+      { timeout: 15_000 }).toBe(savedTitle);
+    await page.reload();
+    await expect(header.getByRole("heading", { name: savedTitle, exact: true })).toBeVisible();
+  } finally {
+    releaseSession();
+    apiUnavailable = false;
+    await page.evaluate(() => window.dispatchEvent(new Event("online"))).catch(() => {});
+    await request.patch(`/api/companies/${company.id}`, { data: { status: "archived" } });
+  }
+});

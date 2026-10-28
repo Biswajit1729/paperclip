@@ -551,7 +551,7 @@ describe("NewIssueDialog", () => {
     primaryState.primaryAgentId = primary;
     if (recent) trackRecentAssignee(recent, "company-1");
     if (explicit) dialogState.newIssueDefaults = { assigneeAgentId: explicit };
-    if (draft) localStorage.setItem("paperclip:issue-draft", JSON.stringify({ title: "Saved request", description: "", assigneeValue: `agent:${draft}`, projectId: "" }));
+    if (draft) localStorage.setItem("paperclip:issue-draft:user-1", JSON.stringify({ title: "Saved request", description: "", assigneeValue: `agent:${draft}`, projectId: "" }));
     const { root } = renderDialog(container);
     await waitForAssertion(() => expect(container.querySelector('[data-testid="task-chat-composer-assignee-label"]')?.textContent).toBe(expected));
     act(() => root.unmount());
@@ -748,7 +748,7 @@ describe("NewIssueDialog", () => {
   });
 
   it("restores private visibility from a saved draft without a project", async () => {
-    localStorage.setItem("paperclip:issue-draft", JSON.stringify({ title: "Private draft", description: "", status: "todo", priority: "", projectId: "", isPrivate: true }));
+    localStorage.setItem("paperclip:issue-draft:user-1", JSON.stringify({ title: "Private draft", description: "", status: "todo", priority: "", projectId: "", isPrivate: true }));
     const { root } = renderDialog(container);
     await flush();
     const toggle = container.querySelector<HTMLButtonElement>('button[data-testid="composer-private-chip"]')!;
@@ -808,7 +808,7 @@ describe("NewIssueDialog", () => {
     // Saving this form must retain only the explicit toggle choice. A later
     // standalone draft must not acquire a sticky private flag from its parent.
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 850)); });
-    expect(JSON.parse(localStorage.getItem("paperclip:issue-draft")!).isPrivate).toBe(false);
+    expect(JSON.parse(localStorage.getItem("paperclip:issue-draft:user-1")!).isPrivate).toBe(false);
     const submit = Array.from(container.querySelectorAll("button")).find(button => button.getAttribute("aria-label") === "Create sub-task")!;
     await act(async () => submit.click());
     await flush();
@@ -1057,7 +1057,7 @@ describe("NewIssueDialog", () => {
       id: "project-1", name: "Alpha", workspaces: [{ id: "source-default", isPrimary: true }],
       executionWorkspacePolicy: { enabled: true, defaultMode: "isolated_workspace" },
     }]);
-    localStorage.setItem("paperclip:issue-draft", JSON.stringify({
+    localStorage.setItem("paperclip:issue-draft:user-1", JSON.stringify({
       title: "Draft task", description: "", status: "todo", priority: "medium", assigneeValue: "",
       reviewerValue: "", approverValue: "", projectId: "project-1",
       projectWorkspaceId: "stale-source", selectedExecutionWorkspaceId: "stale-workspace", executionWorkspaceMode: "reuse_existing",
@@ -1328,7 +1328,7 @@ describe("NewIssueDialog", () => {
 
 
   it("restores a description-only draft", async () => {
-    localStorage.setItem("paperclip:issue-draft", JSON.stringify({
+    localStorage.setItem("paperclip:issue-draft:user-1", JSON.stringify({
       title: "", description: "Keep the request without a title", status: "todo", priority: "medium",
       assigneeValue: "", reviewerValue: "", approverValue: "", projectId: "",
       assigneeModelOverride: "", assigneeThinkingEffort: "", assigneeChrome: false,
@@ -1691,12 +1691,108 @@ describe("NewIssueDialog", () => {
     act(() => root.unmount());
   });
 
+  it("drops an account's restored create and staged files when the account changes", async () => {
+    dialogState.newIssueDefaults = { title: "Account A saved task" };
+    const file = new File(["a"], "spec.pdf", { lastModified: 1 });
+    const original = JSON.stringify({ version: 1, key: "paperclip:issue-draft:create-awaiting-files:user-1", idempotencyKey: "account-a-create-key", createdAt: Date.now(), payload: { fingerprint: JSON.stringify({ stagedFiles: ["attachment::spec.pdf:1:1"] }), data: { companyId: "company-1", title: "Account A saved task" }, stagedFileNames: ["spec.pdf"] } });
+    localStorage.setItem("paperclip:issue-draft:create-awaiting-files:user-1", original);
+    const { root, queryClient } = renderDialog(container);
+    try {
+      await waitForAssertion(() => expect(container.textContent).toContain("spec.pdf"));
+      const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+      Object.defineProperty(input, "files", { configurable: true, value: [file] });
+      await act(async () => { input.dispatchEvent(new Event("change", { bubbles: true })); }); await flush();
+      mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-2" } });
+      queryClient.setQueryData(queryKeys.auth.session, { user: { id: "user-2" } });
+      await waitForAssertion(() => expect(container.querySelector<HTMLInputElement>('input[aria-label="Task title"]')?.value ?? "").toBe(""));
+      expect(container.textContent).not.toContain("spec.pdf");
+      expect(localStorage.getItem("paperclip:issue-draft:create-awaiting-files:user-1")).toBe(original);
+      await typeTextareaValue(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe a task…"]')!, "Account B fresh task");
+      mockIssuesApi.create.mockResolvedValue({ id: "task-b", identifier: "PAP-2", companyId: "company-1" });
+      await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Create task"]')!.click());
+      await waitForAssertion(() => expect(mockIssuesApi.create).toHaveBeenCalledTimes(1));
+      expect(mockIssuesApi.create.mock.calls[0][1].description).toBe("Account B fresh task");
+      expect(mockIssuesApi.create.mock.calls[0][1].idempotencyKey).not.toBe("account-a-create-key");
+      expect(mockIssuesApi.uploadAttachment).not.toHaveBeenCalled();
+    } finally { act(() => root.unmount()); queryClient.clear(); }
+  });
+
+  it.each([false, true])("keeps task typing through the first session lookup (storage unavailable=%s)", async (unavailable) => {
+    mockAuthApi.getSession.mockReturnValue(new Promise(() => {}));
+    const { root, queryClient } = renderDialog(container);
+    let storage: ReturnType<typeof vi.spyOn> | undefined;
+    try {
+      await flush();
+      await typeTextareaValue(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe a task…"]')!, "Typed before account lookup");
+      if (unavailable) storage = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("Storage unavailable"); });
+      queryClient.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+      await flush(); await flush();
+      expect(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe a task…"]')?.value).toBe("Typed before account lookup");
+      if (!unavailable) expect(localStorage.getItem("paperclip:issue-draft:user-1")).toContain("Typed before account lookup");
+      expect(mockIssuesApi.create).not.toHaveBeenCalled();
+    } finally { storage?.mockRestore(); act(() => root.unmount()); queryClient.clear(); }
+  });
+
+  it.each(["create", "upload"] as const)("stops old staged work after an account change during %s", async (during) => {
+    dialogState.newIssueDefaults = { title: "Account A in-flight task" };
+    let finish!: (value: unknown) => void;
+    const waiting = new Promise(resolve => { finish = resolve; });
+    const created = { id: "task-a", identifier: "PAP-1", companyId: "company-1" };
+    mockIssuesApi.create.mockImplementation(() => during === "create" ? waiting : Promise.resolve(created));
+    mockIssuesApi.uploadAttachment.mockImplementation(() => during === "upload" ? waiting : Promise.resolve({}));
+    const { root, queryClient } = renderDialog(container);
+    try {
+      await flush(); await flush();
+      const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+      Object.defineProperty(input, "files", { configurable: true, value: [new File(["a"], "first.pdf"), new File(["b"], "second.pdf")] });
+      await act(async () => { input.dispatchEvent(new Event("change", { bubbles: true })); }); await flush();
+      await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="Create task"]')!.click(); });
+      await waitForAssertion(() => expect(mockIssuesApi.create).toHaveBeenCalledTimes(1));
+      if (during === "upload") await waitForAssertion(() => expect(mockIssuesApi.uploadAttachment).toHaveBeenCalledTimes(1));
+      const key = mockIssuesApi.create.mock.calls[0][1].idempotencyKey;
+      mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-2" } });
+      queryClient.setQueryData(queryKeys.auth.session, { user: { id: "user-2" } });
+      await flush(); await flush();
+      finish(during === "create" ? created : {});
+      await waitForAssertion(() => {
+        const mutation = queryClient.getMutationCache().getAll().find(item => (item.state.variables as { idempotencyKey?: string } | undefined)?.idempotencyKey === key);
+        expect(mutation?.state.status).toMatch(/^(success|error)$/);
+      });
+      expect(mockIssuesApi.uploadAttachment).toHaveBeenCalledTimes(during === "create" ? 0 : 1);
+      expect(dialogState.closeNewIssue).not.toHaveBeenCalled();
+      expect(localStorage.getItem("paperclip:issue-draft:pending-create:user-1")).toContain(key);
+      expect(container.textContent).not.toContain("Account A in-flight task");
+    } finally { act(() => root.unmount()); queryClient.clear(); }
+  });
+
+  it("restores original document keys when colliding document names are reattached in reverse", async () => {
+    dialogState.newIssueDefaults = { title: "Has documents" };
+    mockIssuesApi.create.mockResolvedValue({ id: "issue-1", identifier: "PAP-1", companyId: "company-1" });
+    mockIssuesApi.upsertDocument.mockResolvedValue({});
+    const markdown = new File(["a"], "notes.md", { type: "text/markdown", lastModified: 1 });
+    const text = new File(["bb"], "notes.txt", { type: "text/plain", lastModified: 2 });
+    localStorage.setItem("paperclip:issue-draft:create-awaiting-files:user-1", JSON.stringify({ version: 1, key: "paperclip:issue-draft:create-awaiting-files:user-1", idempotencyKey: "original-doc-create-key", createdAt: Date.now(), payload: { fingerprint: JSON.stringify({ stagedFiles: ["document:notes:notes.md:1:1", "document:notes-2:notes.txt:2:2"] }), data: { companyId: "company-1", title: "Has documents" }, stagedFileNames: ["notes.md", "notes.txt"] } }));
+    const { root } = renderDialog(container);
+    try {
+      await waitForAssertion(() => expect(container.textContent).toContain("notes.md"));
+      const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+      Object.defineProperty(input, "files", { configurable: true, value: [text, markdown] });
+      await act(async () => { input.dispatchEvent(new Event("change", { bubbles: true })); }); await flush();
+      await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Create task"]')!.click());
+      await waitForAssertion(() => expect(mockIssuesApi.create).toHaveBeenCalledTimes(1));
+      expect(mockIssuesApi.create.mock.calls[0][1].idempotencyKey).toBe("original-doc-create-key");
+      await waitForAssertion(() => expect(mockIssuesApi.upsertDocument).toHaveBeenCalledTimes(2));
+      expect(mockIssuesApi.upsertDocument).toHaveBeenCalledWith("issue-1", "notes", expect.objectContaining({ body: "a" }));
+      expect(mockIssuesApi.upsertDocument).toHaveBeenCalledWith("issue-1", "notes-2", expect.objectContaining({ body: "bb" }));
+    } finally { act(() => root.unmount()); }
+  });
+
   it("restores a saved subtask's parent and goal when opened from the normal New Task action", async () => {
     dialogState.newIssueDefaults = {};
     mockIssuesApi.create.mockResolvedValue({ id: "issue-1", identifier: "PAP-1", companyId: "company-1" });
     mockIssuesApi.uploadAttachment.mockResolvedValue({});
     mockIssuesApi.get.mockResolvedValue({ id: "parent-1", identifier: "PAP-2", title: "Parent", isPrivate: false });
-    localStorage.setItem("paperclip:issue-draft", JSON.stringify({ title: "Saved subtask", description: "", status: "todo", priority: "", projectId: "", assigneeValue: "" }));
+    localStorage.setItem("paperclip:issue-draft:user-1", JSON.stringify({ title: "Saved subtask", description: "", status: "todo", priority: "", projectId: "", assigneeValue: "" }));
     localStorage.setItem("paperclip:issue-draft:create-awaiting-files:user-1", JSON.stringify({
       version: 1, key: "paperclip:issue-draft:create-awaiting-files:user-1", idempotencyKey: "subtask-key-123", createdAt: Date.now(),
       payload: { fingerprint: JSON.stringify({ stagedFiles: ["attachment::spec.pdf:1:1"] }),
@@ -2185,7 +2281,7 @@ describe("NewIssueDialog", () => {
       enableIsolatedWorkspaces: false,
     });
     localStorage.setItem(
-      "paperclip:issue-draft",
+      "paperclip:issue-draft:user-1",
       JSON.stringify({
         title: "Watched task",
         description: "",
@@ -2249,7 +2345,7 @@ describe("NewIssueDialog", () => {
 
   it("restores shared model, effort, and fast settings into the created task", async () => {
     mockAgentsApi.list.mockResolvedValue([{ id: "agent-1", name: "Coder", status: "active", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} }]);
-    localStorage.setItem("paperclip:issue-draft", JSON.stringify({
+    localStorage.setItem("paperclip:issue-draft:user-1", JSON.stringify({
       title: "", description: "Use the saved run settings", status: "todo", priority: "medium",
       assigneeValue: "agent:agent-1", projectId: "", workMode: "planning",
       composerSettings: { model: "gpt-6-astra", effort: "ultra", fast: true },
@@ -2294,6 +2390,19 @@ describe("addStagedFilesToIssue", () => {
   });
 
   afterEach(() => vi.unstubAllGlobals());
+
+  it("keeps a confirmed upload receipt when ownership changes before the next file", async () => {
+    const files = ["one", "two"].map((name, index) => ({ id: name, kind: "attachment" as const, file: new File([name], `${name}.pdf`, { lastModified: index + 1 }) }));
+    let owned = true;
+    const assertCurrentOwner = () => { if (!owned) throw new Error("Account changed"); };
+    mockIssuesApi.uploadAttachment.mockResolvedValue({}).mockImplementationOnce(async () => { owned = false; return {}; });
+    const input = { companyId: "company-1", issueId: "task-1", stagedFiles: files, idempotencyKey: "original-upload-request", assertCurrentOwner };
+    await expect(addStagedFilesToIssue(input)).rejects.toThrow("Account changed");
+    expect(mockIssuesApi.uploadAttachment).toHaveBeenCalledTimes(1);
+    owned = true;
+    await expect(addStagedFilesToIssue(input)).resolves.toEqual([]);
+    expect(mockIssuesApi.uploadAttachment.mock.calls.map(call => call[2].name)).toEqual(["one.pdf", "two.pdf"]);
+  });
 
   it("uploads distinct files with the same metadata instead of treating one as a receipt", async () => {
     const stagedFiles = ["a", "b"].map((body, index) => ({

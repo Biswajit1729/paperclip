@@ -37,7 +37,15 @@ export type SendOutcome = "sent" | SendFailure;
  * before failing). Everything else, including a plain `Error` thrown by the
  * caller, is a definitive answer.
  */
+export class PendingSendAccountChangedError extends Error {
+  constructor() {
+    super("Your account changed. The original request is kept for its owner.");
+    this.name = "PendingSendAccountChangedError";
+  }
+}
+
 export function classifySendFailure(error: unknown): SendFailure {
+  if (error instanceof PendingSendAccountChangedError) return "pending";
   if (error instanceof CommentSubmissionUnknownError) return "pending";
   const kind = classifyError(error);
   if (kind === "transient") return "pending";
@@ -55,7 +63,6 @@ export interface PendingSend<T> {
 }
 
 const RECORD_VERSION = 1;
-const MAX_RECORD_LENGTH = 256_000;
 
 export type PendingSendStorage = "local" | "session";
 
@@ -79,7 +86,7 @@ export function readPendingSend<T>(
 ): PendingSend<T> | null {
   try {
     const raw = storageFor(storage)?.getItem(key);
-    if (!raw || raw.length > MAX_RECORD_LENGTH) return null;
+    if (!raw) return null;
     const record = JSON.parse(raw) as Record<string, unknown> | null;
     if (
       !record ||

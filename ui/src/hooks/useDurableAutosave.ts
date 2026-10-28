@@ -152,7 +152,29 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
     savedTimer.current = null;
   }, []);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; clearTimers(); detachedWork.current(); }; }, [clearTimers]);
+  const previousOwner = useRef(owner);
   useEffect(() => {
+    const previous = previousOwner.current;
+    previousOwner.current = owner;
+    if (previous === owner) return;
+    if (previous === undefined && owner !== undefined) {
+      for (const job of jobs.current.values()) {
+        if (job.owner !== undefined) continue;
+        const nextKey = JSON.stringify([owner, job.target]);
+        const superseded = registry.get(job.registryKey)?.latest !== job.token || registry.has(nextKey);
+        releaseJob(job);
+        if (superseded) {
+          jobs.current.delete(job.target);
+          if (generations.current.get(job.target) === job.id) generations.current.delete(job.target);
+          continue;
+        }
+        job.owner = owner;
+        job.registryKey = nextKey;
+        registry.set(nextKey, { latest: job.token, active: new Set([job.token]) });
+      }
+      refresh(value => value + 1);
+      return;
+    }
     for (const job of jobs.current.values()) releaseJob(job);
     jobs.current.clear(); generations.current.clear(); clearTimers();
     setView({ target: targetRef.current, status: "idle", error: null });
@@ -232,7 +254,8 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
   const run = useCallback(async (draft: T, overrides: DurableAutosaveJob<T> = {}) => {
     const current = optionsRef.current;
     const target = current.targetKey ?? current.sourceId;
-    const job: Job = { token: Symbol(), registryKey: JSON.stringify([ownerRef.current, target]), resends: 0, id: ++sequence.current, target, owner: ownerRef.current, draft,
+    const admittedOwner = ownerRef.current ?? readOwner();
+    const job: Job = { token: Symbol(), registryKey: JSON.stringify([admittedOwner, target]), resends: 0, id: ++sequence.current, target, owner: admittedOwner, draft,
       save: overrides.save ?? current.save, matchesServer: overrides.matchesServer ?? current.matchesServer,
       onRetryFailed: overrides.onRetryFailed, storageKey: current.storageKey ?? null, action: current.action ?? "save" };
     const previous = jobs.current.get(target);
@@ -243,7 +266,7 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
     generations.current.set(target, job.id); jobs.current.set(target, job);
     refresh(value => value + 1);
     return execute(job);
-  }, [execute]);
+  }, [execute, readOwner]);
   const waitingJobs = [...jobs.current.values()].filter(job => !job.saving).length;
   const auto = useAutoResend({ sourceId: options.sourceId, active: waitingJobs > 0, pendingCount: waitingJobs,
     resend: async (): Promise<SendOutcome> => {

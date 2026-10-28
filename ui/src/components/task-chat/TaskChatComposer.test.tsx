@@ -420,6 +420,31 @@ describe("TaskChatComposer", () => {
     expect(onAdd).not.toHaveBeenCalled();
   });
 
+  it.each(["success", "rejection"])("settles a receipt before its in-flight resend %s without cutting the next draft", async (outcome) => {
+    const key = "receipt-and-resend";
+    const attemptId = "9af8228f-0be7-45ae-a104-6fbe0af6f1d3";
+    saveDraft(key, "First request\n\nKeep this next draft");
+    saveDraftSubmission(key, { attemptId, reviewed: false, nextDraftOffset: 15, request: { body: "First request" }, requestOwner: "user-1" });
+    let finish!: () => void;
+    let fail!: (error: Error) => void;
+    const onAdd = vi.fn(() => new Promise<void>((resolve, reject) => { finish = resolve; fail = reject; }));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    const show = (confirmedSubmissionIds = new Set<string>()) => render(<QueryClientProvider client={client}><TaskChatComposer onAdd={onAdd} workMode="standard" draftKey={key} confirmedSubmissionIds={confirmedSubmissionIds} /></QueryClientProvider>);
+    show(); await flushAsync();
+    const resend = Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Resend now")!;
+    flushSync(() => resend.click()); await flushAsync();
+    expect(onAdd).toHaveBeenCalledTimes(1);
+    show(new Set([attemptId])); await flushAsync();
+    expect(editable().textContent).toBe("Keep this next draft");
+    if (outcome === "success") finish(); else fail(new Error("Late rejected resend"));
+    await flushAsync();
+    expect(container.textContent).not.toContain("Late rejected resend");
+    expect(editable().textContent).toBe("Keep this next draft");
+    expect(localStorage.getItem(key)).toBe("Keep this next draft");
+    client.clear();
+  });
+
   it("preserves the next draft when an uncertain submission is later confirmed after reload", async () => {
     const key = "uncertain-with-next-draft";
     let rejectSend!: (error: Error) => void;

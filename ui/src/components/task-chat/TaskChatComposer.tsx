@@ -1160,7 +1160,11 @@ export function TaskChatComposer({
   }
 
   /** A confirmed receipt for the retained send: drop its text, keep any next draft. */
+  const settledSubmissionIds = useRef(new Set<string>());
   function settleUncertainSubmission(submission: ComposerDraftSubmission) {
+    const settlementKey = JSON.stringify([draftKey, submission.attemptId]);
+    if (settledSubmissionIds.current.has(settlementKey)) return;
+    settledSubmissionIds.current.add(settlementKey);
     const nextDraft = submission.nextDraftOffset === undefined
       ? "" : bodyRef.current.slice(submission.nextDraftOffset);
     if (draftKey) settleDraftSubmission(draftKey, submission.attemptId, nextDraft);
@@ -1196,6 +1200,7 @@ export function TaskChatComposer({
       else await onAdd(...args);
     } catch (error) {
       const failure = classifySendFailure(error);
+      if (settledSubmissionIds.current.has(JSON.stringify([taskKey, submission.attemptId]))) return failure;
       if (failure === "rejected") {
         // A definitive answer: the text is already back in the editor.
         if (taskKey) clearDraftSubmission(taskKey, submission.attemptId);
@@ -1221,6 +1226,7 @@ export function TaskChatComposer({
   /** Stop resending; the text stays in the editor to edit or send again. */
   function cancelUncertainSubmission() {
     if (!uncertainSubmission) return;
+    settledSubmissionIds.current.add(JSON.stringify([draftKey, uncertainSubmission.attemptId]));
     if (draftKey) clearDraftSubmission(draftKey, uncertainSubmission.attemptId);
     setUncertainSubmission(null);
   }

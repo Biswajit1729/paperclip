@@ -46,8 +46,8 @@ import { InlineBanner } from "./InlineBanner";
 import { PendingSendNotice } from "./PendingSendNotice";
 import { useDurableSubmit } from "../hooks/useDurableSubmit";
 import { describeError, type ErrorDescription } from "../api/errors";
-import { clearPendingSend, pendingSendKeyFor, readPendingSend, writePendingSend } from "../lib/pending-send";
-import { useDraftOwner } from "../hooks/useDraftOwner";
+import { clearPendingSend, pendingSendKeyFor, readPendingSend, writePendingSend, PendingSendAccountChangedError } from "../lib/pending-send";
+import { useDraftOwner, useDraftOwnerReader } from "../hooks/useDraftOwner";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
 import { getTrustPreset } from "../lib/trust-policy-ui";
 
@@ -98,6 +98,19 @@ function stagedFilesMissingDescription(names: string[]): ErrorDescription {
 function stagedFileIdentity(file: StagedIssueFile): string {
   return [file.kind, file.documentKey ?? "", file.file.name, file.file.size, file.file.lastModified].join(":");
 }
+function restoreStagedDocumentKeys(files: StagedIssueFile[], fingerprint: string | undefined): StagedIssueFile[] {
+  let required: unknown;
+  try { required = JSON.parse(fingerprint ?? "{}").stagedFiles; } catch { return files; }
+  if (!Array.isArray(required)) return files;
+  return files.map(file => {
+    if (file.kind !== "document") return file;
+    const suffix = `:${file.file.name}:${file.file.size}:${file.file.lastModified}`;
+    const matches = required.filter((identity): identity is string => typeof identity === "string" && identity.startsWith("document:") && identity.endsWith(suffix));
+    if (matches.length !== 1) return file;
+    return { ...file, documentKey: matches[0].slice("document:".length, -suffix.length) };
+  });
+}
+
 const DEBOUNCE_MS = 800;
 
 type VisualViewportLayout = {
@@ -235,11 +248,13 @@ export async function addStagedFilesToIssue(input: {
   issueId: string;
   stagedFiles: StagedIssueFile[];
   idempotencyKey?: string;
+  assertCurrentOwner?: () => void;
 }): Promise<string[]> {
   const { companyId, issueId, stagedFiles, idempotencyKey } = input;
   const receipts = idempotencyKey ? loadCreateUploadReceipts(idempotencyKey) : new Set<string>();
   const failures: string[] = [];
   for (const stagedFile of stagedFiles) {
+    input.assertCurrentOwner?.();
     let identity: string | undefined;
     if (idempotencyKey && globalThis.crypto?.subtle) {
       try {
@@ -257,10 +272,12 @@ export async function addStagedFilesToIssue(input: {
         identity = undefined;
       }
     }
+    input.assertCurrentOwner?.();
     if (identity && receipts.has(identity)) continue;
     try {
       if (stagedFile.kind === "document") {
         const body = await stagedFile.file.text();
+        input.assertCurrentOwner?.();
         await issuesApi.upsertDocument(issueId, stagedFile.documentKey ?? "document", {
           title: stagedFile.documentKey === "plan" ? null : (stagedFile.title ?? null),
           format: "markdown",
@@ -274,7 +291,9 @@ export async function addStagedFilesToIssue(input: {
         receipts.add(identity);
         saveCreateUploadReceipts(idempotencyKey, receipts);
       }
+      input.assertCurrentOwner?.();
     } catch {
+      input.assertCurrentOwner?.();
       failures.push(stagedFile.file.name);
     }
   }
@@ -284,9 +303,10 @@ export async function addStagedFilesToIssue(input: {
 import { Badge } from "@/components/ui/badge";
 import { buildAssigneeAdapterOverrides, type IssueModelLane } from "../lib/issue-assignee-overrides";
 
-function loadDraft(): IssueDraft | null {
+function loadDraft(owner: string | undefined): IssueDraft | null {
+  if (owner === undefined) return null;
   try {
-    const raw = localStorage.getItem(DRAFT_KEY);
+    const raw = localStorage.getItem(pendingSendKeyFor(DRAFT_KEY, owner));
     if (!raw) return null;
     return JSON.parse(raw) as IssueDraft;
   } catch {
@@ -294,12 +314,12 @@ function loadDraft(): IssueDraft | null {
   }
 }
 
-function saveDraft(draft: IssueDraft) {
-  localStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
+function saveDraft(owner: string, draft: IssueDraft) {
+  try { localStorage.setItem(pendingSendKeyFor(DRAFT_KEY, owner), JSON.stringify(draft)); } catch {}
 }
 
-function clearDraft() {
-  localStorage.removeItem(DRAFT_KEY);
+function clearDraft(owner: string | undefined) {
+  try { if (owner !== undefined) localStorage.removeItem(pendingSendKeyFor(DRAFT_KEY, owner)); } catch {}
 }
 
 function isTextDocumentFile(file: File) {
@@ -412,8 +432,24 @@ function isWorkModeEscapeShortcut(e: Pick<KeyboardEvent, "key" | "metaKey">) {
 }
 
 export function NewIssueDialog() {
+  const owner = useDraftOwner();
+  const { newIssueDefaults } = useDialog();
+  const [scope, setScope] = useState({ owner, generation: 0, ignoredDefaults: null as typeof newIssueDefaults | null });
+  const changed = scope.owner !== owner;
+  const knownChange = changed && scope.owner !== undefined;
+  const next = changed ? { owner, generation: scope.generation + (knownChange ? 1 : 0), ignoredDefaults: knownChange ? newIssueDefaults : scope.ignoredDefaults } : scope;
+  if (changed) setScope(next);
+  return <AccountNewIssueDialog key={next.generation} ignoreDefaults={next.ignoredDefaults === newIssueDefaults} />;
+}
+
+function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) {
   const { visible: workspaceIsolationControlsVisible } = useWorkspaceIsolationControls();
-  const { newIssueOpen, newIssueDefaults, closeNewIssue } = useDialog();
+  const { newIssueOpen, newIssueDefaults: sharedDefaults, closeNewIssue } = useDialog();
+  const newIssueDefaults = useMemo(() => ignoreDefaults ? {} as typeof sharedDefaults : sharedDefaults, [ignoreDefaults, sharedDefaults]);
+  const readOwner = useDraftOwnerReader();
+  const active = useRef(true);
+  useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
+  const unboundFormDraft = useRef<IssueDraft | null>(null);
   const visualViewportLayout = useVisualViewportLayout(newIssueOpen);
   const dialogBodyRef = useRef<HTMLDivElement>(null);
   const { companies, selectedCompanyId: effectiveCompanyId } = useCompany();
@@ -570,6 +606,9 @@ export function NewIssueDialog() {
     });
   }, [agents, companyMembers?.users, orderedProjects, mentionIssues]);
 
+  const assertCurrentOwner = () => {
+    if (!active.current || draftOwner === undefined || readOwner() !== draftOwner) throw new PendingSendAccountChangedError();
+  };
   const createIssue = useMutation({
     mutationFn: async ({
       companyId,
@@ -577,17 +616,22 @@ export function NewIssueDialog() {
       navigateOnCreate,
       ...data
     }: { companyId: string; stagedFiles: StagedIssueFile[]; navigateOnCreate?: boolean } & Record<string, unknown>) => {
+      assertCurrentOwner();
       const issue = await issuesApi.create(companyId, data);
+      assertCurrentOwner();
       const failures = await addStagedFilesToIssue({
         companyId,
         issueId: issue.id,
         stagedFiles: pendingStagedFiles,
+        assertCurrentOwner,
         idempotencyKey: typeof data.idempotencyKey === "string" ? data.idempotencyKey : undefined,
       });
 
+      assertCurrentOwner();
       return { issue, companyId, failures, navigateOnCreate };
     },
     onSuccess: ({ issue, companyId, failures, navigateOnCreate }) => {
+      assertCurrentOwner();
       trackRecentProject(issue.projectId ?? "", companyId);
       if (issue.assigneeAgentId) trackRecentAssignee(issue.assigneeAgentId, companyId);
       if (issue.assigneeUserId) trackRecentAssigneeUser(issue.assigneeUserId, companyId);
@@ -617,7 +661,7 @@ export function NewIssueDialog() {
           action: openIssueAction,
         });
       }
-      clearDraft();
+      clearDraft(draftOwner);
       reset();
       closeNewIssue();
       if (navigateOnCreate) navigate(openIssueAction?.href ?? `/issues/${issueRef}`);
@@ -695,11 +739,13 @@ export function NewIssueDialog() {
 
   // Debounced draft saving
   const scheduleSave = useCallback((draft: IssueDraft) => {
+    if (draftOwner === undefined && (draft.title.trim() || draft.description.trim())) unboundFormDraft.current = draft;
     if (draftTimer.current) clearTimeout(draftTimer.current);
     draftTimer.current = setTimeout(() => {
-      if (draft.title.trim() || draft.description.trim()) saveDraft(draft);
+      const owner = readOwner();
+      if (owner !== undefined && (draftOwner === undefined || owner === draftOwner) && (draft.title.trim() || draft.description.trim())) saveDraft(owner, draft);
     }, DEBOUNCE_MS);
-  }, []);
+  }, [draftOwner, readOwner]);
 
   const setIssueText = useCallback((nextTitle: string, nextDescription: string) => {
     setHasTitle(Boolean(nextTitle));
@@ -803,13 +849,18 @@ export function NewIssueDialog() {
       defaultProjectPendingRef.current = false;
       return;
     }
-    const initializationKey = `${effectiveCompanyId ?? ""}:${JSON.stringify(newIssueDefaults)}`;
+    const initializationKey = `${draftOwner ?? "unknown"}:${effectiveCompanyId ?? ""}:${JSON.stringify(newIssueDefaults)}`;
     if (initializationKeyRef.current === initializationKey) return;
     initializationKeyRef.current = initializationKey;
 
     executionWorkspaceDefaultProjectId.current = null;
 
-    const draft = loadDraft();
+    if (draftOwner !== undefined && unboundFormDraft.current) {
+      saveDraft(draftOwner, unboundFormDraft.current);
+      unboundFormDraft.current = null;
+      return;
+    }
+    const draft = loadDraft(draftOwner);
     defaultProjectPendingRef.current = newIssueDefaults.projectId === undefined && !newIssueDefaults.parentId;
     defaultAssigneePendingRef.current = !newIssueDefaults.assigneeAgentId && !newIssueDefaults.assigneeUserId;
     setComposerSettings(null);
@@ -948,7 +999,7 @@ export function NewIssueDialog() {
           ? defaultProjectId || null
           : null;
     }
-  }, [newIssueOpen, newIssueDefaults, orderedProjects, effectiveCompanyId, setIssueText]);
+  }, [newIssueOpen, newIssueDefaults, orderedProjects, effectiveCompanyId, setIssueText, draftOwner]);
 
   // Cleanup timer on unmount
   useEffect(() => {
@@ -958,6 +1009,7 @@ export function NewIssueDialog() {
   }, []);
 
   function reset() {
+    unboundFormDraft.current = null;
     createRequestRef.current = null; setRestoredLaunch(null);
     if (awaitingFilesKey) clearPendingSend(awaitingFilesKey);
     setIssueText("", "");
@@ -1070,8 +1122,9 @@ export function NewIssueDialog() {
     // always for a create waiting for its files: it may already have reached
     // the server, and its key then replays that task instead of a second one.
     // The file set is compared without regard to selection order.
-    const fingerprint = JSON.stringify({ ...createData, stagedFiles: stagedFiles.map(stagedFileIdentity).sort() });
     let request = createRequestRef.current;
+    const createFiles = request?.recovering ? restoreStagedDocumentKeys(stagedFiles, request.payload?.fingerprint) : stagedFiles;
+    const fingerprint = JSON.stringify({ ...createData, stagedFiles: createFiles.map(stagedFileIdentity).sort() });
     if (!request || (!request.recovering && request.fingerprint !== fingerprint)) {
       request = { fingerprint, idempotencyKey: createUuid() };
       createRequestRef.current = request;
@@ -1091,7 +1144,7 @@ export function NewIssueDialog() {
       try { originalFingerprint = JSON.parse(original!.fingerprint); } catch {}
       const requiredFiles = originalFingerprint.stagedFiles;
       if (original!.stagedFileNames?.length && (!Array.isArray(requiredFiles) ||
-          JSON.stringify([...requiredFiles].sort()) !== JSON.stringify(stagedFiles.map(stagedFileIdentity).sort()))) {
+          JSON.stringify([...requiredFiles].sort()) !== JSON.stringify(createFiles.map(stagedFileIdentity).sort()))) {
         rejectRecovery(`Attach the original files again: ${original!.stagedFileNames.join(", ")}.`);
       }
       const normalize = (_key: string, value: unknown) => value && typeof value === "object" && !Array.isArray(value)
@@ -1106,7 +1159,7 @@ export function NewIssueDialog() {
     }
     request.payload = createPayload;
     const { idempotencyKey } = request;
-    stagedFilesByKey.current.set(idempotencyKey, stagedFiles);
+    stagedFilesByKey.current.set(idempotencyKey, createFiles);
     firstAttemptKey.current = idempotencyKey;
     setResendError(null);
     let result;
