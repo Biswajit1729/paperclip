@@ -1,4 +1,5 @@
 import { itemVerdictHref } from "@/lib/item-verdict-links";
+import { Link } from "@/lib/router";
 import {
   useEffect,
   useMemo,
@@ -1773,9 +1774,13 @@ function ItemVerdictsCard({
             </p>
           ) : null}
         </div>
-        {itemHref ? (
+        {itemHref && !itemHref.startsWith("/api/") && (itemHref.startsWith("/") || itemHref.startsWith("#")) ? (
+          <Link to={itemHref} disableIssueQuicklook className="text-xs font-medium text-primary hover:underline">Open</Link>
+        ) : itemHref ? (
           <a
             href={itemHref}
+            target="_blank"
+            rel="noreferrer"
             className="text-xs font-medium text-primary hover:underline"
           >
             Open

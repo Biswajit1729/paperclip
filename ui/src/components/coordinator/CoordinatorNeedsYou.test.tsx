@@ -7,7 +7,7 @@ import type { AttentionItem, DecisionHistoryItem } from "@paperclipai/shared";
 import { CoordinatorNeedsYou } from "./CoordinatorNeedsYou";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-const fixture = vi.hoisted(() => ({ pending: [] as AttentionItem[], history: [] as DecisionHistoryItem[], historyFail: false, feedFail: false, openPanel: vi.fn(), closePanel: vi.fn(), setPanelVisible: vi.fn(), navigate: vi.fn(), breadcrumbs: vi.fn() }));
+const fixture = vi.hoisted(() => ({ pending: [] as AttentionItem[], history: [] as DecisionHistoryItem[], partial: false, historyFail: false, feedFail: false, openPanel: vi.fn(), closePanel: vi.fn(), setPanelVisible: vi.fn(), navigate: vi.fn(), breadcrumbs: vi.fn() }));
 vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: "company" }) }));
 vi.mock("@/context/BreadcrumbContext", () => ({ useBreadcrumbs: () => ({ setBreadcrumbs: fixture.breadcrumbs }) }));
 vi.mock("@/context/PanelContext", () => ({ usePanel: () => ({ openPanel: fixture.openPanel, closePanel: fixture.closePanel, setPanelVisible: fixture.setPanelVisible }) }));
@@ -30,11 +30,12 @@ vi.mock("@/components/StalledReviewActions", () => ({ StalledReviewActions: ({ i
   fixture.pending = fixture.pending.filter((item) => item.subject.id !== issueId);
   onResolved();
 }}>{approveLabel}</button> }));
-vi.mock("@/components/AttentionInteractionResolver", () => ({ AttentionInteractionResolver: ({ issueId, interactionId, footerSlot, onResolved }: { issueId: string; interactionId: string; footerSlot?: ReactNode; onResolved: () => void }) => <>{footerSlot}<button data-issue-id={issueId} onClick={() => {
+vi.mock("@/components/AttentionInteractionResolver", () => ({ AttentionInteractionResolver: ({ issueId, interactionId, footerSlot, onResolved }: { issueId: string; interactionId: string; footerSlot?: ReactNode; onResolved: (interaction: { status: string }) => void }) => <>{footerSlot}<button data-issue-id={issueId} onClick={() => {
+  if (fixture.partial) { onResolved({ status: "pending" }); return; }
   fixture.pending = fixture.pending.filter((item) => item.subject.id !== interactionId);
   fixture.history.push({ id: `issue_thread_interaction:${interactionId}`, sourceKind: "issue_thread_interaction", sourceId: interactionId,
     issueId: `task-${interactionId}`, issueIdentifier: `PAP-${interactionId}`, issueTitle: `Task ${interactionId}`, title: "Decision", label: interactionId === "3" ? "Answers recorded" : "Approved", outcome: interactionId === "3" ? "answered" : "accepted", resolvedAt: new Date().toISOString(), resolvedByUserId: "reviewer", resolvedByAgentId: null, agentId: null, agentName: null, projectId: null, projectName: null, href: `/PAP/issues/PAP-${interactionId}#interaction-${interactionId}`, target: null });
-  onResolved();
+  onResolved({ status: "answered" });
 }}>Resolve {interactionId}</button></> }));
 
 let root: Root;
@@ -42,7 +43,7 @@ let container: HTMLDivElement;
 beforeEach(() => {
   fixture.pending = ["1", "2", "3"].map((id) => ({ id, sourceKind: "issue_thread_interaction", inlineResolvable: true, subject: { id, kind: "interaction", title: `Review ${id}`, metadata: { issueId: `task-${id}` } }, relatedIssue: { id: `task-${id}`, identifier: `PAP-${id}`, title: `Task ${id}`, href: `/PAP/issues/PAP-${id}` }, activityAt: new Date().toISOString() } as unknown as AttentionItem));
   fixture.history = []; vi.clearAllMocks();
-  fixture.historyFail = false; fixture.feedFail = false;
+  fixture.historyFail = false; fixture.feedFail = false; fixture.partial = false;
   container = document.createElement("div"); document.body.appendChild(container); root = createRoot(container);
 });
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.useRealTimers(); vi.restoreAllMocks(); });
@@ -53,6 +54,19 @@ async function click(text: string) {
   await act(async () => button!.click()); await flush();
 }
 describe("Coordinator Needs You", () => {
+  it("keeps a partial review actionable even when history is unavailable", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => root.render(<QueryClientProvider client={client}><CoordinatorNeedsYou /></QueryClientProvider>));
+    await flush();
+    fixture.partial = true; fixture.historyFail = true;
+    await click("Resolve 1"); await flush();
+    expect([...container.querySelectorAll("button")].some(button => button.textContent === "Resolve 1")).toBe(true);
+    expect(container.querySelector('[data-motion="gather"]')).toBeNull();
+    fixture.partial = false;
+    await click("Resolve 1"); await flush();
+    expect([...container.querySelectorAll("button")].some(button => button.textContent === "Resolve 1")).toBe(false);
+    client.clear();
+  });
   it.each([false, true])("does not restore a saved decision when history refresh fails (stale feed: %s)", async staleFeed => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     await act(async () => root.render(<QueryClientProvider client={client}><CoordinatorNeedsYou /></QueryClientProvider>));

@@ -1148,6 +1148,16 @@ describe("IssueThreadInteractionCard", () => {
     );
   });
 
+  it("opens a bound attachment directly without experimental panel routing", () => {
+    const host = renderCard({ interaction: { ...pendingRequestItemVerdictsInteraction,
+      payload: { ...pendingRequestItemVerdictsInteraction.payload, items: [{ id: "file", label: "Reviewed file", target: {
+        type: "issue_attachment", attachmentId: "immutable-file", assetId: "asset", sha256: "hash",
+      } }] },
+    } });
+    const link = host.querySelector('a[href="/api/attachments/immutable-file/content"]');
+    expect(link?.getAttribute("target")).toBe("_blank");
+  });
+
   it("links a bound review item to its exact document without requiring href", () => {
     const host = renderCard({ interaction: { ...pendingRequestItemVerdictsInteraction,
       payload: { ...pendingRequestItemVerdictsInteraction.payload, items: [{ id: "copy", label: "Reviewed copy", target: {

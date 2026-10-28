@@ -28,8 +28,8 @@ interface AttentionInteractionResolverProps {
   userLabelMap?: ReadonlyMap<string, string> | null;
   footerSlot?: ReactNode;
   presentation?: "default" | "coordinator-decision";
-  /** Called after a resolution so the parent can refresh the feed. */
-  onResolved?: () => void;
+  /** Successful updates include partial item reviews; inspect status before settling the whole card. */
+  onResolved?: (interaction?: IssueThreadInteraction) => void;
 }
 
 export function replaceResolvedInteraction(
@@ -90,7 +90,7 @@ export function AttentionInteractionResolver({
     queryClient.invalidateQueries({ queryKey: queryKeys.attention(companyId) });
     queryClient.invalidateQueries({ queryKey: ["issues", "pending-questions"] });
     queryClient.invalidateQueries({ queryKey: ["issues", "decision-receipts"] });
-    onResolved?.();
+    onResolved?.(resolvedInteraction);
   };
 
   const acceptMutation = useMutation({

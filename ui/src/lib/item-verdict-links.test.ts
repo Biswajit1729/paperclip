@@ -10,7 +10,7 @@ describe("review output links", () => {
   });
   it("opens the immutable attachment in its owning task", () => {
     expect(itemVerdictHref({ id: "art", label: "Artwork", target: { type: "issue_attachment", issueId: "owner", attachmentId: "asset-file", assetId: "asset", sha256: "hash" } }, interaction))
-      .toBe("/issues/owner#interaction-review&attachment=asset-file");
+      .toBe("/api/attachments/asset-file/content");
   });
   it("keeps safe legacy links and rejects unsafe custom URLs", () => {
     expect(itemVerdictHref({ id: "legacy", label: "Legacy", href: "javascript:alert(1)" }, interaction)).toBeNull();

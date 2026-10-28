@@ -11,7 +11,9 @@ export function itemVerdictHref(item: RequestItemVerdictsItem, interaction: { is
     })}`;
   }
   if (target?.type === "issue_attachment") {
-    return `/issues/${encodeURIComponent(target.issueId ?? interaction.issueId)}#interaction-${encodeURIComponent(interaction.id)}&attachment=${encodeURIComponent(target.attachmentId)}`;
+    // Use the authenticated immutable-content route in both interface modes.
+    // This does not depend on the experimental task attachment panel.
+    return `/api/attachments/${encodeURIComponent(target.attachmentId)}/content`;
   }
   return item.href ? normalizeRequestConfirmationTargetHref(item.href) : null;
 }

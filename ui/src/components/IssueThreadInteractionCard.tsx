@@ -3243,7 +3243,7 @@ function VerdictConsequenceChip({ verdict }: { verdict: RequestItemVerdictValue 
 function ItemVerdictDeepLink({ item, interaction }: { item: RequestItemVerdictsItem; interaction: RequestItemVerdictsInteraction }) {
   const href = itemVerdictHref(item, interaction);
   if (!href) return null;
-  const isInternal = href.startsWith("/") || href.startsWith("#");
+  const isInternal = !href.startsWith("/api/") && (href.startsWith("/") || href.startsWith("#"));
   const className =
     "inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1";
   const label = (
