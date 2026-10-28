@@ -377,6 +377,32 @@ describe("TaskChatComposer", () => {
     expect(editable().textContent).toBe("");
   });
 
+  it.each([
+    { reassignment: { assigneeAgentId: "old-agent", assigneeUserId: null } },
+    { runSettings: { model: "old-model" } },
+    { reopen: true },
+  ])("keeps an uncertain composite send for reconciliation without resending task changes: %j", async (changes) => {
+    const key = "uncertain-composite";
+    const attemptId = "9af8228f-0be7-45ae-a104-6fbe0af6f1d3";
+    saveDraft(key, "Keep the comment");
+    saveDraftSubmission(key, { attemptId, reviewed: false, request: { body: "Keep the comment", ...changes }, requestOwner: "user-1" });
+    const onAdd = vi.fn();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    render(<QueryClientProvider client={client}><TaskChatComposer onAdd={onAdd} workMode="standard" draftKey={key} /></QueryClientProvider>);
+    await flushAsync();
+    expect(container.textContent).toContain("We couldn’t confirm whether this message was sent.");
+    expect(container.textContent).not.toContain("Resend now");
+    expect(onAdd).not.toHaveBeenCalled();
+    const cancel = Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Cancel")!;
+    flushSync(() => cancel.click());
+    await flushAsync();
+    expect(editable().textContent).toBe("Keep the comment");
+    expect(loadDraftSubmission(key)).toBeNull();
+    expect(onAdd).not.toHaveBeenCalled();
+    client.clear();
+  });
+
   it("automatically reconciles a restored submission by its server receipt, not its text", async () => {
     const key = "saved-receipt";
     const attemptId = "9af8228f-0be7-45ae-a104-6fbe0af6f1d3";

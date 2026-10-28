@@ -240,8 +240,24 @@ export async function addStagedFilesToIssue(input: {
   const receipts = idempotencyKey ? loadCreateUploadReceipts(idempotencyKey) : new Set<string>();
   const failures: string[] = [];
   for (const stagedFile of stagedFiles) {
-    const identity = stagedFileIdentity(stagedFile);
-    if (receipts.has(identity)) continue;
+    let identity: string | undefined;
+    if (idempotencyKey && globalThis.crypto?.subtle) {
+      try {
+        const bytes = await new Promise<ArrayBuffer>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as ArrayBuffer);
+          reader.onerror = () => reject(reader.error);
+          reader.onabort = () => reject(new Error("File read cancelled"));
+          reader.readAsArrayBuffer(stagedFile.file);
+        });
+        const digest = await crypto.subtle.digest("SHA-256", bytes);
+        const hash = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
+        identity = JSON.stringify([stagedFileIdentity(stagedFile), hash]);
+      } catch {
+        identity = undefined;
+      }
+    }
+    if (identity && receipts.has(identity)) continue;
     try {
       if (stagedFile.kind === "document") {
         const body = await stagedFile.file.text();
@@ -254,8 +270,10 @@ export async function addStagedFilesToIssue(input: {
       } else {
         await issuesApi.uploadAttachment(companyId, issueId, stagedFile.file);
       }
-      receipts.add(identity);
-      if (idempotencyKey) saveCreateUploadReceipts(idempotencyKey, receipts);
+      if (identity && idempotencyKey) {
+        receipts.add(identity);
+        saveCreateUploadReceipts(idempotencyKey, receipts);
+      }
     } catch {
       failures.push(stagedFile.file.name);
     }

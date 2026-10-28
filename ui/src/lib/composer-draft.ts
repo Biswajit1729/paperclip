@@ -125,7 +125,10 @@ export function replayableRequest(
   submission: ComposerDraftSubmission | null | undefined,
   owner: string | undefined,
 ): ComposerSendRequest | undefined {
-  return owner !== undefined && submission?.request && submission.requestOwner === owner ? submission.request : undefined;
+  const request = submission?.request;
+  if (owner === undefined || submission?.requestOwner !== owner || !request) return undefined;
+  if (request.reassignment !== undefined || request.runSettings !== undefined || request.reopen === true) return undefined;
+  return request;
 }
 
 function isNullableString(value: unknown): value is string | null {

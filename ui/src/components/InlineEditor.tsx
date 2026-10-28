@@ -148,10 +148,10 @@ export function InlineEditor({
   // An edit that never saved (reload, crash, outage) comes back. It saves on
   // its own only when the server value is still the one it was based on;
   // otherwise it waits in the editor for the user.
-  const restoredDraftRef = useRef(false);
+  const restoredDraftRef = useRef<string | null>(null);
   useEffect(() => {
-    if (restoredDraftRef.current || !storageKey) return;
-    restoredDraftRef.current = true;
+    if (!storageKey || restoredDraftRef.current === storageKey) return;
+    restoredDraftRef.current = storageKey;
     const stored = loadStructuredDraft<StoredInlineDraft | null>(storageKey, null);
     if (!stored || stored.version !== 1 || typeof stored.draft !== "string" || typeof stored.base !== "string") return;
     if (stored.draft.trim() === value.trim()) {

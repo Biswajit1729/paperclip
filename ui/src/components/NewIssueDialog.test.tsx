@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import type { ComponentProps, ReactNode } from "react";
+import { webcrypto } from "node:crypto";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -2263,8 +2264,35 @@ describe("NewIssueDialog", () => {
 
 describe("addStagedFilesToIssue", () => {
   beforeEach(() => {
+    vi.stubGlobal("crypto", webcrypto);
     localStorage.clear();
     mockIssuesApi.uploadAttachment.mockReset();
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("uploads distinct files with the same metadata instead of treating one as a receipt", async () => {
+    const stagedFiles = ["a", "b"].map((body, index) => ({
+      id: `staged-${index}`,
+      kind: "attachment" as const,
+      file: new File([body], "report.txt", { lastModified: 123 }),
+    }));
+    mockIssuesApi.uploadAttachment.mockResolvedValue({});
+    expect(await addStagedFilesToIssue({ companyId: "company-1", issueId: "issue-1", idempotencyKey: "metadata-collision", stagedFiles })).toEqual([]);
+    expect(mockIssuesApi.uploadAttachment).toHaveBeenCalledTimes(2);
+    expect(mockIssuesApi.uploadAttachment.mock.calls[0]?.[2]).toBe(stagedFiles[0]!.file);
+    expect(mockIssuesApi.uploadAttachment.mock.calls[1]?.[2]).toBe(stagedFiles[1]!.file);
+  });
+
+  it("still uploads files when browser hashing is unavailable", async () => {
+    vi.stubGlobal("crypto", {});
+    const stagedFiles = ["a", "b"].map((body, index) => ({
+      id: `staged-${index}`, kind: "attachment" as const,
+      file: new File([body], "report.txt", { lastModified: 123 }),
+    }));
+    mockIssuesApi.uploadAttachment.mockResolvedValue({});
+    expect(await addStagedFilesToIssue({ companyId: "company-1", issueId: "issue-1", idempotencyKey: "hashing-unavailable", stagedFiles })).toEqual([]);
+    expect(mockIssuesApi.uploadAttachment).toHaveBeenCalledTimes(2);
   });
 
   it("never adds a file twice when a create replays after a reload mid-upload", async () => {

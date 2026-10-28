@@ -166,6 +166,31 @@ describe("InlineEditor", () => {
     localStorage.clear();
   });
 
+  it("restores the next task's stored edit without remounting the editor", async () => {
+    localStorage.setItem("paperclip:inline-draft:v2:user-1:issue-b:description", JSON.stringify({ version: 1, draft: "Recovered B", base: "Original B" }));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    const saveA = vi.fn().mockResolvedValue(undefined);
+    const saveB = vi.fn().mockResolvedValue(undefined);
+    const root = createRoot(container);
+    const renderTask = (id: string, onSave: typeof saveA) => root.render(
+      <QueryClientProvider client={client}>
+        <InlineEditor value={`Original ${id.toUpperCase()}`} multiline draftKey={`issue-${id}:description`} onSave={onSave} />
+      </QueryClientProvider>,
+    );
+    try {
+      await act(async () => renderTask("a", saveA));
+      await act(async () => renderTask("b", saveB));
+      expect(container.querySelector<HTMLTextAreaElement>('[data-testid="multiline-md-mock"]')?.value).toBe("Recovered B");
+      expect(saveB).toHaveBeenCalledWith("Recovered B");
+      expect(saveA).not.toHaveBeenCalled();
+    } finally {
+      act(() => root.unmount());
+      localStorage.clear();
+      client.clear();
+    }
+  });
+
   it("restores an unsaved edit without overwriting a newer server value", async () => {
     localStorage.setItem("paperclip:inline-draft:v2:user-1:issue-2:description", JSON.stringify({ version: 1, draft: "My old edit", base: "Original" }));
     const onSave = vi.fn().mockResolvedValue(undefined);

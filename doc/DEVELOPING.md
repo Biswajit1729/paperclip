@@ -590,9 +590,15 @@ Writes keep the user's text through an outage:
   transient failure or a lost response, the composer shows **Sending when
   reconnected…** with **Resend now** and **Cancel**, and resends with the same
   key on recovery. The server dedupes by that key. Restored board publications
-  wait for an explicit retry. Restored comments and keyed requests resend after
-  their initial backoff. A new task restored without its staged
-  files is not sent; the dialog asks for the files again.
+  wait for an explicit retry. Restored plain comments and keyed requests resend
+  after their initial backoff. A combined comment that also reassigns, reopens,
+  or changes run settings waits for a matching server receipt or Cancel: comment
+  deduplication alone cannot safely replay those task changes. Cancel returns
+  the text for a fresh, intentional send. A new task restored without its staged
+  files is not sent; the dialog asks for the files again. Successful staged-file
+  uploads are identified by content digest as well as metadata, so distinct files
+  with identical names, sizes and timestamps are both uploaded. Without browser
+  hashing support, uploads proceed without receipt-based deduplication.
 - Document and inline-editor autosave (`ui/src/hooks/useDurableAutosave.ts`)
   keeps unsaved edits in browser storage, shows **Will save when reconnected**,
   and saves the newest draft for each task or document on recovery. A `409`

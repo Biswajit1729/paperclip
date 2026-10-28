@@ -173,6 +173,16 @@ describe("replayable comment requests", () => {
     expect(replayableRequest(stored, undefined)).toBeUndefined();
   });
 
+  it.each([
+    { reassignment: { assigneeAgentId: "old-agent", assigneeUserId: null } },
+    { runSettings: { model: "old-model" } },
+    { reopen: true },
+  ])("does not replay a composite mutation that can overwrite newer task changes: %j", (changes) => {
+    saveDraftSubmission(key, { attemptId: id, reviewed: false, request: { body: "Keep the comment", ...changes }, requestOwner: "user-1" });
+    expect(replayableRequest(loadDraftSubmission(key), "user-1")).toBeUndefined();
+    expect(loadDraftSubmission(key)?.request?.body).toBe("Keep the comment");
+  });
+
   it("never replays a request with no recorded account", () => {
     saveDraft(key, "Older record");
     saveDraftSubmission(key, { attemptId: id, reviewed: false, request: { body: "Older record" } });
