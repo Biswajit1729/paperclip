@@ -983,7 +983,7 @@ function useTaskDetailInterfaceMode(conversationMode = false) {
   };
 }
 
-function IssueDetailLoadingState({
+export function IssueDetailLoadingState({
   headerSeed,
 }: {
   headerSeed: ReturnType<typeof readIssueDetailHeaderSeed>;
