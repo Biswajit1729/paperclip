@@ -743,7 +743,11 @@ test.describe("Board send delivery refresh", () => {
       const statusReads: string[] = [];
       let terminal = false;
       const publicationsPath = `/api/chat-endpoints/${endpointId}/conversations/${conversationId}/publications`;
-      const storageKey = `paperclip:board-send:v1:${JSON.stringify([seed.companyId, issue.id, endpointId, conversationId])}`;
+      const session = await json<{ user: { id: string } }>(
+        await request.get("/api/auth/get-session"),
+        "read receipt owner",
+      );
+      const storageKey = `paperclip:board-send:v2:${JSON.stringify([session.user.id, seed.companyId, issue.id, endpointId, conversationId])}`;
       await page.route("**/api/instance/settings/experimental", (route) =>
         fulfill(route, { enableChatConnectors: true }),
       );
