@@ -607,6 +607,10 @@ Writes keep the user's text through an outage:
   Admitted edits can finish after route navigation unmounts the editor. That
   work waits for recovery events while offline, uses bounded backoff while
   online, and verifies the current account before each retry.
+  Replayable task-field updates and interaction resolutions bind the original
+  account, account generation and operation at dispatch. A sign-out or account
+  change cancels that intent before it can send, including after waiting behind
+  another write; callbacks cannot apply an old result to the next account.
   Stored document drafts and mounted editors belong to the signed-in user.
   Storage failure shows a warning to keep the tab open or copy the text.
 - Issue field updates go through `useUpdateIssueMutation`: optimistic, rolled

@@ -70,6 +70,7 @@ describe("useUpdateIssueMutation", () => {
     root = createRoot(container);
     store = createConnectivityStore({ probe: async () => ({ reachable: true }), browserOnline: true });
     queryClient = createAppQueryClient({ connectivity: store });
+    queryClient.setQueryData(queryKeys.auth.session, { user: { id: "account-a" } });
     queryClient.setQueryData(queryKeys.issues.detail("PAP-1"), issue());
     queryClient.setQueryData(queryKeys.issues.list("company-1"), [issue()]);
     queryClient.setQueryData(queryKeys.issues.listByProject("company-1", "project-1"), [issue()]);
@@ -149,6 +150,24 @@ describe("useUpdateIssueMutation", () => {
     expect(mockUpdate).toHaveBeenCalledTimes(1);
     expect(mockUpdate).toHaveBeenCalledWith("PAP-1", { priority: "high" });
     expect(mockPushToast).not.toHaveBeenCalled();
+  });
+
+  it.each(["account-b", "account-a"])("never resumes an old update after sign-out and sign-in as %s", async (nextAccount) => {
+    mockUpdate.mockResolvedValue({ ...issue({ priority: "high" }), changes: {} });
+    onlineManager.setOnline(false);
+    render();
+    let pending!: Promise<unknown>;
+    act(() => { pending = current.mutateAsync({ id: "PAP-1", data: { priority: "high" } }).catch(error => error); });
+    await act(async () => {});
+    expect(mockUpdate).not.toHaveBeenCalled();
+    await act(async () => {
+      await queryClient.resetQueries({ queryKey: queryKeys.auth.session });
+      queryClient.setQueryData(queryKeys.auth.session, { user: { id: nextAccount } });
+      onlineManager.setOnline(true);
+      await queryClient.resumePausedMutations();
+    });
+    expect(mockUpdate).not.toHaveBeenCalled();
+    expect(await pending).toMatchObject({ name: "AbortError" });
   });
 
   it("sends a newer update only after an older one still retrying settles", async () => {

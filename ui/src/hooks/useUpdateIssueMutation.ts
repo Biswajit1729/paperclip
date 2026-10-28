@@ -1,11 +1,11 @@
 import { useCallback, useMemo, useRef } from "react";
 import {
-  useMutation,
   useQueryClient,
   type MutateOptions,
   type QueryClient,
   type QueryKey,
 } from "@tanstack/react-query";
+import { useAccountBoundMutation } from "./useAccountBoundMutation";
 import type { Issue } from "@paperclipai/shared";
 import { describeError, isTransientError } from "@/api/errors";
 import { issuesApi, type IssueUpdateResponse } from "@/api/issues";
@@ -188,11 +188,8 @@ export function useUpdateIssueMutation(options: UseUpdateIssueMutationOptions): 
   const { companyId, invalidateKeys, onSuccess, onSettled, action = "update the task" } = options;
 
   const mutationOptions = {
-    mutationFn: async (variables: UpdateIssueVariables) => {
-      // Retries reuse the turn, which has already settled by then.
-      await issueWriteTurns.get(variables)?.ready;
-      return issuesApi.update(variables.id, variables.data);
-    },
+    waitForTurn: (variables: UpdateIssueVariables) => issueWriteTurns.get(variables)?.ready,
+    mutationFn: (variables: UpdateIssueVariables) => issuesApi.update(variables.id, variables.data),
     onMutate: async ({ id, data }: UpdateIssueVariables): Promise<UpdateIssueContext> => {
       const refs = new Set([id]);
       const cached = queryClient.getQueryData<Issue>(queryKeys.issues.detail(id));
@@ -216,8 +213,8 @@ export function useUpdateIssueMutation(options: UseUpdateIssueMutationOptions): 
       const { title, body } = describeError(error, { action });
       pushToast({ title, body, tone: "error" });
     },
+    onFinished: (variables: UpdateIssueVariables) => { issueWriteTurns.get(variables)?.release(); },
     onSettled: (_result: unknown, _error: unknown, variables: UpdateIssueVariables) => {
-      issueWriteTurns.get(variables)?.release();
       void queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(variables.id) });
       for (const queryKey of invalidateKeys ?? (companyId ? [queryKeys.issues.list(companyId)] : [])) {
         void queryClient.invalidateQueries({ queryKey });
@@ -227,8 +224,8 @@ export function useUpdateIssueMutation(options: UseUpdateIssueMutationOptions): 
   };
   // Two observers, because `meta` is fixed per mutation: absolute updates may
   // replay across an outage, anything else fails fast.
-  const replayable = useMutation({ ...mutationOptions, meta: { replay: "idempotent" } });
-  const direct = useMutation(mutationOptions);
+  const replayable = useAccountBoundMutation({ ...mutationOptions, meta: { replay: "idempotent" } });
+  const direct = useAccountBoundMutation(mutationOptions);
 
   // Stable callbacks: callers list `mutate` in effect and callback deps.
   const replayableRef = useRef(replayable);

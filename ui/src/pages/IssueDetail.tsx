@@ -1,3 +1,4 @@
+import { useAccountBoundMutation } from "@/hooks/useAccountBoundMutation";
 import { mergeWindowComments, useIssueHistoryWindow } from "../hooks/useIssueHistoryWindow";
 import { useTaskRunLiveUpdates } from "../context/LiveUpdatesProvider";
 import { liveRunRefetchInterval } from "../lib/live-runs-cache";
@@ -5032,7 +5033,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   // Resolutions may resend across an outage: the server refuses a second
   // resolution, and the API treats that refusal of our own earlier answer as
   // success.
-  const acceptInteraction = useMutation({
+  const acceptInteraction = useAccountBoundMutation({
     meta: { replay: "idempotent" },
     mutationFn: ({
       interaction,
@@ -5091,7 +5092,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       });
     },
   });
-  const rejectInteraction = useMutation({
+  const rejectInteraction = useAccountBoundMutation({
     meta: { replay: "idempotent" },
     mutationFn: ({
       interaction,
@@ -5120,7 +5121,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       });
     },
   });
-  const answerInteraction = useMutation({
+  const answerInteraction = useAccountBoundMutation({
     meta: { replay: "idempotent" },
     mutationFn: ({
       interaction,
