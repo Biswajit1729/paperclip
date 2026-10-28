@@ -670,10 +670,13 @@ preflight already exists. Review current official prices and context limits
 before updating `scheduled-prices.json`. `forecast.json` records the selected
 IDs, provenance-linked pilot measurements, compatibility gaps, uncertainty,
 reservations and price expiry. The historical daily/weekly successful model
-subtotals are $0.427624800/$0.791539400; they are not campaign bills. Setup model
+subtotals are $0.428650100/$0.793676500; they are not campaign bills. Setup model
 calls and attempt setup/teardown are included, while CI setup/build/queue and
 non-model charges are excluded. Current compatible totals stay unknown if any
-selected cell lacks a matching measurement. Hosted timing is still unmeasured.
+selected cell lacks a matching measurement. The historical hosted daily selection took 107.286 summed attempt seconds.
+The weekly Codex samples ran locally; a complete hosted weekly total remains
+unknown. Measurement hosts form separate cohorts. The original hosted workflow
+failed during report dependency setup after both worker cases passed.
 Per-cell medians describe only the retained samples; P95 requires at least 20
 matching samples and does not establish reliability. See
 [measurement provenance and limitations](OPERATIONS-COVERAGE.md#initial-cadence).
