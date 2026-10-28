@@ -239,6 +239,7 @@ async function createApp(transaction: (callback: (tx: Record<string, never>) => 
   });
   app.use("/api", issueRoutes({
     transaction,
+    select: () => ({ from: () => ({ where: async () => [] }) }),
   } as any, {} as any));
   app.use(errorHandler);
   return app;
