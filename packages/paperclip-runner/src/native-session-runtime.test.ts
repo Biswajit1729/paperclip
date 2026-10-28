@@ -31,6 +31,8 @@ import {
 } from "./contracts/runtime-context.js";
 import {
   executeNativeSession,
+  clearQuarantinedNativeSessionCleanup,
+  listQuarantinedNativeSessionCleanupRuns,
   completeTerminatedRemoteNativeSessionCleanup,
   completeTerminatedLocalNativeSessionCleanup,
   type ExecuteNativeSessionOptions,
@@ -4340,13 +4342,17 @@ describe("executeNativeSession recovery", () => {
     const scopedInput = { ...input, binding: { ...input.binding, companyId: scopedIdentity.companyId, runId: scopedIdentity.runId } };
     const failure = new NativeSessionCloseUnrecoverableError();
     const capabilities = { resume: true, typedEvents: true, steering: false, interruption: false, structuredResult: true };
+    let closeShouldFail = true;
+    const close = vi.fn(async () => {
+      if (closeShouldFail) throw failure;
+    });
     const session: NativeSession = {
       identity: () => scopedIdentity, capabilities: async () => capabilities,
       async *events() { throw new Error("local transport stopped"); },
       startTurn: async () => ({ turnId: "local-turn" }), result: async () => null,
       async snapshot() { return { backendKind: "mock", sessionId: "stop-session", identity: this.identity(),
         providerSessionId: "stop-provider", cursor: null, activeTurnId: null, pendingRuntimeRequests: [], lineage: [] }; },
-      close: vi.fn(async () => { throw failure; }),
+      close,
     };
     const backend: NativeSessionBackend = {
       descriptor: async () => ({ kind: "local", name: "local-stop-test", version: "1", capabilities }),
@@ -4363,12 +4369,33 @@ describe("executeNativeSession recovery", () => {
     completeTerminatedLocalNativeSessionCleanup({ ...binding, companyId: "other-company" });
     completeTerminatedLocalNativeSessionCleanup({ ...binding, runId: "other-run" });
     expect(completeTerminatedLocalNativeSessionCleanup({ ...binding, runnerInstanceId: "other-runner" })).toBe(false);
+
+    const otherRunIdentity = { ...scopedIdentity, runId: "independent-local-run" };
+    const otherRunSession = { ...session, identity: () => otherRunIdentity };
+    const otherRunBackend = { ...backend, openSession: vi.fn(async () => otherRunSession) };
+    await expect(executeNativeSession({
+      ...options,
+      input: { ...scopedInput, binding: { ...scopedInput.binding, runId: otherRunIdentity.runId } },
+      backend: otherRunBackend,
+    })).rejects.toMatchObject({ message: "local transport stopped", cleanupError: failure });
+    expect(otherRunBackend.openSession).toHaveBeenCalledOnce();
+
     await expect(executeNativeSession(options)).rejects.toBeInstanceOf(NativeSessionCleanupQuarantinedError);
     expect(backend.openSession).toHaveBeenCalledOnce();
-    expect(completeTerminatedLocalNativeSessionCleanup(binding)).toBe(true);
+    expect(listQuarantinedNativeSessionCleanupRuns()).toContainEqual({ companyId: binding.companyId, runId: binding.runId });
+    await expect(clearQuarantinedNativeSessionCleanup(binding)).rejects.toBe(failure);
+    await expect(executeNativeSession(options)).rejects.toBeInstanceOf(NativeSessionCleanupQuarantinedError);
+    closeShouldFail = false;
+    await expect(clearQuarantinedNativeSessionCleanup(binding)).resolves.toEqual({
+      cleared: 1,
+      pending: false,
+    });
+    expect(listQuarantinedNativeSessionCleanupRuns()).not.toContainEqual({ companyId: binding.companyId, runId: binding.runId });
+    closeShouldFail = true;
     await expect(executeNativeSession(options)).rejects.toMatchObject({ message: "local transport stopped", cleanupError: failure });
     expect(backend.openSession).toHaveBeenCalledTimes(2);
     expect(controlPlane.completeRun).not.toHaveBeenCalled();
+    completeTerminatedLocalNativeSessionCleanup({ ...binding, runId: otherRunIdentity.runId });
     completeTerminatedLocalNativeSessionCleanup(binding);
   });
 

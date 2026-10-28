@@ -177,7 +177,7 @@ export class NativeSessionCleanupQuarantinedError extends Error {
 
   constructor() {
     super(
-      "native_session_cleanup_quarantined: prior session cleanup requires operator recovery; verify its retained process ownership and checkpoint before a controlled restart. Clearing a task session does not resolve this quarantine.",
+      "native_session_cleanup_quarantined: prior session cleanup requires operator recovery; request cleanup for the exact run and verify that its retained process ownership has settled. Clearing a task session does not resolve this quarantine.",
     );
     this.name = "NativeSessionCleanupQuarantinedError";
   }

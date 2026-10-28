@@ -162,6 +162,8 @@ export const nativeRestartInterruptedTurnId = runner.nativeRestartInterruptedTur
 
 export const completeTerminatedRemoteNativeSessionCleanup = runner.completeTerminatedRemoteNativeSessionCleanup;
 export const completeTerminatedLocalNativeSessionCleanup = runner.completeTerminatedLocalNativeSessionCleanup;
+export const clearQuarantinedNativeSessionCleanup = runner.clearQuarantinedNativeSessionCleanup;
+export const listQuarantinedNativeSessionCleanupRuns = runner.listQuarantinedNativeSessionCleanupRuns;
 
 export const probeAcpxClaudeInstallation = runner.probeAcpxClaudeInstallation;
 export const probeAcpxGrokInstallation = runner.probeAcpxGrokInstallation;

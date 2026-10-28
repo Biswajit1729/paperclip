@@ -62,6 +62,7 @@ const mockWorkspaceDiffReprojection = vi.hoisted(() => ({
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockQueueRuntimeRequestResolution = vi.hoisted(() => vi.fn());
+const mockClearNativeSessionCleanup = vi.hoisted(() => vi.fn());
 const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(),
   decide: vi.fn(),
@@ -154,6 +155,13 @@ function registerModuleMocks() {
     detectAdapterModel: vi.fn(),
     findActiveServerAdapter: vi.fn(),
     requireServerAdapter: vi.fn(),
+  }));
+
+  vi.doMock("../vendor/paperclip-runner/index.js", async () => ({
+    ...(await vi.importActual<typeof import("../vendor/paperclip-runner/index.js")>(
+      "../vendor/paperclip-runner/index.js",
+    )),
+    clearQuarantinedNativeSessionCleanup: mockClearNativeSessionCleanup,
   }));
 }
 
@@ -299,6 +307,7 @@ describe("agent live run routes", () => {
     vi.doUnmock("../services/instance-settings.js");
     vi.doUnmock("../services/issues.js");
     vi.doUnmock("../adapters/index.js");
+    vi.doUnmock("../vendor/paperclip-runner/index.js");
     vi.doUnmock("../routes/agents.js");
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
@@ -306,6 +315,7 @@ describe("agent live run routes", () => {
     vi.clearAllMocks();
     mockChatRunRetries.prepareFailedChatRunRetry.mockReset();
     mockChatRunRetries.processFailedChatRunRetry.mockReset();
+    mockClearNativeSessionCleanup.mockReset().mockResolvedValue({ cleared: 0, pending: false });
     mockNativeReviewAssignment.mockReset().mockResolvedValue(null);
     mockAccessService.canUser.mockResolvedValue(true);
     mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
@@ -430,6 +440,7 @@ describe("agent live run routes", () => {
     const routes = [
       ["get", ""],
       ["post", "/cancel"],
+      ["post", "/native-session-cleanup/clear"],
       ["post", "/runtime-requests/approval-1/resolve"],
       ["post", "/watchdog-decisions"],
       ["get", "/provider-trace"],
@@ -469,6 +480,62 @@ describe("agent live run routes", () => {
       );
       expect(response.status).toBe(200);
       expect(mockHeartbeatService.getRunLogAccess).toHaveBeenCalledWith(runId);
+    });
+
+    it("clears native-session quarantine for the exact authorized run", async () => {
+      const runId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+      mockHeartbeatService.getRun.mockResolvedValueOnce({
+        id: runId,
+        companyId: "company-1",
+        agentId: "agent-1",
+        scopeKind: "company",
+        runtimeMode: "native",
+        status: "failed",
+        errorCode: "native_finalization_missing",
+      });
+      mockClearNativeSessionCleanup.mockResolvedValueOnce({ cleared: 1, pending: false });
+      const response = await requestApp(await createApp(), (url) =>
+        request(url).post(`/api/heartbeat-runs/${runId}/native-session-cleanup/clear`).send({}),
+      );
+
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({ runId, status: "cleared", cleared: 1 });
+      expect(mockClearNativeSessionCleanup).toHaveBeenCalledWith({ companyId: "company-1", runId });
+      expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: "heartbeat.native_session_cleanup_requested",
+        entityId: runId,
+      }));
+    });
+
+    it("refuses to clear native-session cleanup for a run that is still running", async () => {
+      const runId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+      mockHeartbeatService.getRun.mockResolvedValueOnce({
+        id: runId,
+        companyId: "company-1",
+        agentId: "agent-1",
+        scopeKind: "company",
+        runtimeMode: "native",
+        status: "running",
+        errorCode: null,
+      });
+      const response = await requestApp(await createApp(), (url) =>
+        request(url).post(`/api/heartbeat-runs/${runId}/native-session-cleanup/clear`).send({}),
+      );
+
+      expect(response.status).toBe(409);
+      expect(mockClearNativeSessionCleanup).not.toHaveBeenCalled();
+    });
+
+    it("does not allow agent callers to clear native-session quarantine", async () => {
+      const runId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+      const response = await requestApp(
+        await createApp({}, { type: "agent", agentId: "agent-1", companyIds: ["company-1"] }),
+        (url) => request(url).post(`/api/heartbeat-runs/${runId}/native-session-cleanup/clear`).send({}),
+      );
+
+      expect(response.status).toBe(403);
+      expect(mockClearNativeSessionCleanup).not.toHaveBeenCalled();
+      expect(mockLogActivity).not.toHaveBeenCalled();
     });
 
     it.each(["get", "log", "events"])("keeps missing and cross-company %s lookups indistinguishable", async (kind) => {

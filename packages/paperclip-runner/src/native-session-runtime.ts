@@ -103,8 +103,10 @@ export function completeRetainedNativeSessionCleanup(
     throw new NativeSessionCleanupQuarantinedError();
   const domain = JSON.stringify([
     proof.binding.companyId,
+    proof.binding.runId,
     proof.backend.kind,
     proof.backend.name,
+    null,
   ]);
   const matches = [...quarantinedSessionCleanups].filter((entry) => {
     const identity = entry.session.identity();
@@ -146,9 +148,8 @@ export function completeTerminatedRemoteNativeSessionCleanup(binding: {
   if (!binding.remoteCleanupScope) return false;
   const matches = [...quarantinedSessionCleanups].filter(({ session, domain }) => {
     const identity = session.identity();
-    // Domains are created internally from company, backend kind/name, and the
-    // optional remote resource. Local domains have no fourth element.
-    const [, , , remoteCleanupScope] = JSON.parse(domain) as string[];
+    // Domains include the run before the backend and remote resource scope.
+    const [, , , , remoteCleanupScope] = JSON.parse(domain) as (string | null)[];
     return identity.companyId === binding.companyId && identity.runId === binding.runId &&
       remoteCleanupScope === binding.remoteCleanupScope;
   });
@@ -172,8 +173,8 @@ export function completeTerminatedLocalNativeSessionCleanup(binding: {
 }): boolean {
   const matches = [...quarantinedSessionCleanups].filter(({ session, domain }) => {
     const identity = session.identity();
-    const parts = JSON.parse(domain) as string[];
-    return parts.length === 3 && identity.companyId === binding.companyId && identity.runId === binding.runId;
+    const parts = JSON.parse(domain) as (string | null)[];
+    return parts[4] === null && identity.companyId === binding.companyId && identity.runId === binding.runId;
   });
   if (matches.some(entry => entry.attempt || entry.recovery ||
       sessionOriginRunnerInstances.get(entry.session) !== binding.runnerInstanceId)) return false;
@@ -182,6 +183,53 @@ export function completeTerminatedLocalNativeSessionCleanup(binding: {
     quarantinedSessionCleanups.delete(entry);
   }
   return true;
+}
+
+/** Run bindings that currently own a quarantined cleanup. Read-only; callers
+ * must still prove the exact owner stopped before retiring it. */
+export function listQuarantinedNativeSessionCleanupRuns(): { companyId: string; runId: string }[] {
+  const seen = new Map<string, { companyId: string; runId: string }>();
+  for (const { session } of quarantinedSessionCleanups) {
+    const { companyId, runId } = session.identity();
+    seen.set(`${companyId}:${runId}`, { companyId, runId });
+  }
+  return [...seen.values()];
+}
+
+/** Operator-triggered cleanup still requires the session's close contract to
+ * complete. A timeout leaves the exact owner quarantined until its close settles. */
+export async function clearQuarantinedNativeSessionCleanup(binding: {
+  companyId: string;
+  runId: string;
+}): Promise<{ cleared: number; pending: boolean }> {
+  const matches = [...quarantinedSessionCleanups].filter(({ session }) => {
+    const identity = session.identity();
+    return identity.companyId === binding.companyId && identity.runId === binding.runId;
+  });
+  let cleared = 0;
+  for (const cleanup of matches) {
+    if (cleanup.attempt || cleanup.recovery) return { cleared, pending: true };
+    if (cleanup.timer) clearTimeout(cleanup.timer);
+    cleanup.timer = null;
+    const attempt = Promise.resolve().then(() =>
+      cleanup.session.close({ reason: "operator requested native session cleanup" }),
+    );
+    cleanup.attempt = attempt;
+    void attempt.then(
+      () => quarantinedSessionCleanups.delete(cleanup),
+      () => undefined,
+    ).finally(() => {
+      if (cleanup.attempt === attempt) cleanup.attempt = null;
+    });
+    const settled = await settlesWithin(
+      attempt.then(() => undefined, () => undefined),
+      QUARANTINED_SESSION_CLOSE_ATTEMPT_BOUND_MS,
+    );
+    if (!settled) return { cleared, pending: true };
+    await attempt;
+    cleared += 1;
+  }
+  return { cleared, pending: false };
 }
 
 export interface NativeSessionGoalControl {
@@ -1927,9 +1975,10 @@ export async function executeNativeSession(
   const descriptor = await options.backend.descriptor();
   const cleanupDomain = JSON.stringify([
     input.binding.companyId,
+    input.binding.runId,
     descriptor.kind,
     descriptor.name,
-    ...(options.remoteCleanupScope ? [options.remoteCleanupScope] : []),
+    options.remoteCleanupScope ?? null,
   ]);
   await retryQuarantinedSessionCleanups(cleanupDomain, options.signal);
   if ("runtimeContext" in input) {

@@ -1,6 +1,7 @@
 import { prepareRuntimeSettingsPatch } from "../services/agent-runtime-settings.js";
 import { completeSetupTokenAiConnection } from "../services/setup-token-ai-connection.js";
 import { cancellationRequestId } from "../services/native-runtime/native-cancellation-request.js";
+import { clearQuarantinedNativeSessionCleanup } from "../vendor/paperclip-runner/index.js";
 import { agentHarnessType, isEnvironmentDriverSupportedForAdapter, normalizeClaudeRunnerOptions, type AgentConfigurationWarning, type AgentRunnerChoice } from "@paperclipai/shared";
 import { resolveNewAgentRunnerForCompany } from "../services/agent-runner-selection.js";
 import { agentEnvironmentTestService } from "../services/agent-environment-test.js";
@@ -7119,6 +7120,53 @@ export function agentRoutes(
 
     res.json(run ? await runRedactions.redactForRun(run.companyId, run.id, run,
       getActorInfo(req).actorId) : null);
+  });
+
+  router.post("/heartbeat-runs/:runId/native-session-cleanup/clear", async (req, res) => {
+    assertBoard(req);
+    const runId = readHeartbeatRunId(req);
+    const existing = await getAccessibleResource(req, res, heartbeat.getRun(runId), "Heartbeat run not found");
+    if (!existing) return;
+    if (!(await assertRunReadAllowed(req, res, existing))) return;
+    // The quarantine is owned by the run whose session close failed (often a
+    // native_finalization_missing or provider failure), not by the runs it
+    // later rejected. Allow any settled native run; the runtime only clears
+    // the exact owner once its close contract completes.
+    if (
+      existing.runtimeMode !== "native" ||
+      ["queued", "scheduled_retry", "running"].includes(existing.status)
+    ) {
+      throw conflict("Only a settled native run can have its session cleanup cleared.");
+    }
+
+    await logActivity(db, {
+      companyId: existing.companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "heartbeat.native_session_cleanup_requested",
+      entityType: "heartbeat_run",
+      entityId: runId,
+      details: { agentId: existing.agentId },
+    });
+    let cleanup: Awaited<ReturnType<typeof clearQuarantinedNativeSessionCleanup>>;
+    try {
+      cleanup = await clearQuarantinedNativeSessionCleanup({
+        companyId: existing.companyId,
+        runId,
+      });
+    } catch {
+      throw conflict(
+        "Native-session close failed again; quarantine remains active for this run until its process ownership is verified.",
+      );
+    }
+    if (cleanup.pending) {
+      throw conflict("Native-session cleanup is still in progress; quarantine remains active.");
+    }
+    res.json({
+      runId,
+      status: cleanup.cleared > 0 ? "cleared" : "not_present",
+      cleared: cleanup.cleared,
+    });
   });
 
   router.post(

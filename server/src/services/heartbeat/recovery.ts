@@ -57,6 +57,7 @@ import {
   reconcileRetainedNativeSessionCleanups,
 } from "../native-runtime/index.js";
 import { drainRetainedRunnerdMaintenanceOperations } from "../../vendor/paperclip-runner/index.js";
+import { retireVerifiedStoppedNativeQuarantines } from "../native-runtime/stopped-native-quarantine-sweep.js";
 import { runningProcesses } from "../../adapters/index.js";
 import { parseObject } from "../../adapters/utils.js";
 import {
@@ -1905,6 +1906,18 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       .then(() => undefined)
       .catch((error) => {
         logger.warn({ err: error }, "retained native cleanup discovery failed");
+      })
+      // A settled local run whose provider close failed keeps an operator-only
+      // quarantine that denies every later admission on the same backend.
+      // Retire it only after the exact owner is proven stopped.
+      .then(() => retireVerifiedStoppedNativeQuarantines(db))
+      .then((retired) => {
+        if (retired?.length) {
+          logger.info({ runIds: retired }, "native.stopped_conversation_verified: retired native session cleanup quarantine");
+        }
+      })
+      .catch((error) => {
+        logger.warn({ err: error }, "stopped native quarantine sweep failed");
       })
       // The bounded maintenance attempt may fail before an already-started
       // database callback settles. Keep shutdown ownership until the original
