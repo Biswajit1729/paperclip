@@ -582,6 +582,29 @@ appears, followed briefly by **Back online**. Recovery does not reload the
 browser. Authorization failures still require sign-in or an explicit retry.
 Storybook **App / Connection recovery** shows the startup screens and banner.
 
+Writes keep the user's text through an outage:
+
+- Comments, new tasks, and board sends store the request and its key
+  (`clientRequestId` or `idempotencyKey`) before they send
+  (`ui/src/lib/pending-send.ts`, `ui/src/hooks/useDurableSubmit.ts`). After a
+  transient failure or a lost response, the composer shows **Sending when
+  reconnected…** with **Resend now** and **Cancel**, and resends with the same
+  key on recovery. The server dedupes by that key. A send restored after a
+  reload waits for an explicit retry. A new task restored without its staged
+  files is not sent; the dialog asks for the files again.
+- Document and inline-editor autosave (`ui/src/hooks/useDurableAutosave.ts`)
+  keeps unsaved edits in browser storage, shows **Will save when reconnected**,
+  and saves the newest draft on recovery. A `409` whose server copy equals the
+  draft counts as saved. Stored document drafts belong to the signed-in user.
+- Issue field updates go through `useUpdateIssueMutation`: optimistic, rolled
+  back with readable copy on failure, and replayed on reconnect for absolute
+  fields. Updates run in order, so an older update that retries cannot
+  overwrite a newer one.
+- Uploads and other non-idempotent requests never resend on their own; they
+  keep the input and offer **Retry**.
+
+The banner counts every write that waits for the connection.
+
 To reproduce a deploy blip in a dev or QA build, set the outage simulator in the
 browser console and remove it to end the outage:
 
@@ -3354,6 +3377,19 @@ reuse runs the workspace provision command (or `scripts/provision-worktree.sh`),
 which reinstalls dependencies when `node_modules` is missing. Repositories without
 a provision command rely on the agent's own install step, as they do for a new
 worktree.
+
+### Browser write recovery
+
+Use `useDurableAutosave` for replayable field updates and `useDurableSubmit` for
+user submissions that have an idempotent server contract. Bind queued jobs to
+the original task and save callback. A task switch must not retarget pending work.
+Keep the original creation key when a restored draft needs its attachments again;
+attachment selection order does not create a new request. Document and decision
+writes with an uncertain response verify the saved result before reporting failure.
+Verification reads can themselves need retry. Conflicts and permanent failures
+must reach the caller. Once automatic attempts stop, show **Resend now** instead
+of promising another automatic attempt. See the hook, document, task creation and
+connected-task banner tests for these contracts.
 
 ### Browser realtime connection recovery
 

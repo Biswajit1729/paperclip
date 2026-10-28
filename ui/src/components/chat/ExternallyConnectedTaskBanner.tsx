@@ -22,6 +22,9 @@ import { cn } from "@/lib/utils";
 import { queryKeys } from "@/lib/queryKeys";
 import { useChatConnectorsEnabled, chatProviderVisible } from "@/hooks/useChatConnectorsEnabled";
 import { issuesApi } from "@/api/issues";
+import { describeError } from "@/api/errors";
+import { classifySendFailure, type SendOutcome } from "@/lib/pending-send";
+import { useAutoResend } from "@/hooks/useDurableSubmit";
 import {
   boardSendDraftKey,
   clearBoardSendDraft,
@@ -366,16 +369,50 @@ function ConnectedTaskComposer({
         });
         return;
       }
+      // Outages and lost receipts resend on their own with the same request
+      // identity; the inline notice covers them.
+      if (classifySendFailure(error) === "pending") return;
       pushToast({
         title: "Couldn't confirm channel delivery",
-        body:
-          error instanceof Error
-            ? `${error.message} Your draft is kept; retrying here reuses the same request identity.`
-            : "Your draft is kept; retrying here reuses the same request identity.",
+        body: `${describeError(error).body} Your draft is kept; retrying here reuses the same request identity.`,
         tone: "error",
       });
     },
   });
+  // A send that failed with an outage or a lost receipt in this session
+  // resends with its saved key; the server returns the original publication
+  // instead of queueing another message. A send restored after reload has an
+  // unknown outcome and waits for an explicit retry.
+  const resendWaiting = Boolean(
+    deliveryScopeReady &&
+    unconfirmedRequest &&
+    retainedSend.current &&
+    !rejection &&
+    !publication &&
+    !storageError &&
+    publish.status === "error" &&
+    classifySendFailure(publish.error) === "pending",
+  );
+  const autoResend = useAutoResend({
+    sourceId: `board-send:${storageKey ?? issueId}`,
+    active: resendWaiting,
+    resend: async (): Promise<SendOutcome> => {
+      const input = retainedSend.current;
+      if (!input) return "sent";
+      try {
+        await publish.mutateAsync({
+          ...input,
+          endpointId: binding.endpointId,
+          conversationId: binding.conversationId,
+        });
+        return "sent";
+      } catch (error) {
+        return classifySendFailure(error);
+      }
+    },
+  });
+  // Automatic resends gave up while online; only Resend now tries again.
+  const resendStalled = resendWaiting && autoResend.stalled && !autoResend.resending;
   const uploadDisabled = Boolean(
     retainedSend.current ||
     publication ||
@@ -706,17 +743,26 @@ function ConnectedTaskComposer({
           )}
           {!rejection &&
             (publish.isError || unconfirmedRequest) &&
-            !publish.isPending &&
+            // An automatic resend keeps the waiting notice up while it runs.
+            (!publish.isPending || autoResend.resending) &&
             !publication && (
               <div
                 role="alert"
                 className="space-y-1 rounded-md border border-border bg-background p-3 text-xs"
               >
-                <p className="font-medium">Delivery result not confirmed</p>
+                <p className="font-medium">
+                  {resendStalled
+                    ? "Couldn’t send this update yet."
+                    : resendWaiting || autoResend.resending
+                      ? "Sending when reconnected…"
+                      : "Delivery result not confirmed"}
+                </p>
                 <p className="text-muted-foreground">
-                  Your exact draft and request identity are kept. Retry safely
-                  to learn the authoritative publication state without creating
-                  a duplicate.
+                  {resendStalled
+                    ? "Your exact draft and request identity are kept. Automatic resends stopped; choose Resend now to try again without creating a duplicate."
+                    : resendWaiting || autoResend.resending
+                      ? "Your exact draft and request identity are kept. It resends on its own without creating a duplicate."
+                      : "Your exact draft and request identity are kept. Retry safely to learn the authoritative publication state without creating a duplicate."}
                 </p>
                 <Link
                   className="inline-block font-medium underline underline-offset-4"
@@ -850,6 +896,11 @@ function ConnectedTaskComposer({
                   retainedScopeKey.current !== storageKey
                 )
                   return;
+                if (resendWaiting) {
+                  // Same saved request; also restarts the automatic resends.
+                  autoResend.resendNow();
+                  return;
+                }
                 idempotencyKey.current ??= crypto.randomUUID();
                 const input = retainedSend.current ?? {
                   attachmentIds: selectedAttachmentIds,
@@ -883,7 +934,9 @@ function ConnectedTaskComposer({
             >
               {publish.isPending
                 ? "Sending…"
-                : !rejection && (publish.isError || unconfirmedRequest)
+                : resendWaiting
+                  ? "Resend now"
+                  : !rejection && (publish.isError || unconfirmedRequest)
                   ? "Retry safely"
                   : "Send to channel"}
             </Button>

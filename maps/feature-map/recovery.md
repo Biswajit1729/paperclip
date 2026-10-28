@@ -55,6 +55,16 @@ Agent access: [companion](../agent-access-map/recovery.md).
 
 ## How to get to it (user POV)
 
+For `recovery/reconnect`, also interrupt a write response after the server accepts
+it. Keep a title draft bound to its original task while navigating. Restore a
+new-task draft with its files selected in another order and require the same
+creation key and one task. Verify lost document-create and decision responses,
+including an interrupted verification read. Once the bounded retry budget ends,
+require a visible **Resend now** action. Use
+[durable autosave tests](../../ui/src/hooks/useDurableAutosave.test.tsx) and
+[task creation tests](../../ui/src/components/NewIssueDialog.test.tsx) for the
+controlled source cases; repeat the real browser journey for acceptance.
+
 ### `source-task`
 
 Open the affected task from Tasks, Inbox/Blocked, search, or a direct task link.
