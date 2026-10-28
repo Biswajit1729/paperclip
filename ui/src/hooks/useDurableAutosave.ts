@@ -85,6 +85,14 @@ export interface DurableAutosave<T> {
   resendNow: () => void;
 }
 
+type AutosaveRevision = { latest: symbol; active: Set<symbol> };
+const latestAutosaves = new WeakMap<object, Map<string, AutosaveRevision>>();
+function autosaveRegistry(store: object): Map<string, AutosaveRevision> {
+  let registry = latestAutosaves.get(store);
+  if (!registry) { registry = new Map(); latestAutosaves.set(store, registry); }
+  return registry;
+}
+
 const SAVING_DELAY_MS = 250;
 const SAVED_LINGER_MS = 1600;
 
@@ -112,7 +120,7 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
   const targetKey = options.targetKey ?? options.sourceId;
   const targetRef = useRef(targetKey);
   targetRef.current = targetKey;
-  type Job = { resends: number; saving?: boolean; id: number; target: string; owner: string | undefined; draft: T;
+  type Job = { token: symbol; registryKey: string; resends: number; saving?: boolean; id: number; target: string; owner: string | undefined; draft: T;
     save: (draft: T) => Promise<unknown>; matchesServer?: DurableAutosaveOptions<T>["matchesServer"];
     onRetryFailed?: DurableAutosaveJob<T>["onRetryFailed"]; storageKey: string | null; action: string };
   const jobs = useRef(new Map<string, Job>());
@@ -128,6 +136,12 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
     });
   }, []);
   const store = useConnectivityStore();
+  const registry = autosaveRegistry(store);
+  const releaseJob = (job: Job) => {
+    const entry = registry.get(job.registryKey);
+    entry?.active.delete(job.token);
+    if (entry && !entry.active.size) registry.delete(job.registryKey);
+  };
   const mounted = useRef(true);
   const savingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -139,6 +153,7 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
   }, []);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; clearTimers(); detachedWork.current(); }; }, [clearTimers]);
   useEffect(() => {
+    for (const job of jobs.current.values()) releaseJob(job);
     jobs.current.clear(); generations.current.clear(); clearTimers();
     setView({ target: targetRef.current, status: "idle", error: null });
     refresh(value => value + 1);
@@ -157,12 +172,18 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
     return stored?.version === 1 && stored.draft !== undefined ? stored.draft : null;
   }, [storageKey]);
   const execute = useCallback(async (job: Job, retry = false): Promise<DurableAutosaveResult> => {
-    const owned = () => readOwner() === job.owner && generations.current.get(job.target) === job.id;
+    const owned = () => readOwner() === job.owner && generations.current.get(job.target) === job.id && registry.get(job.registryKey)?.latest === job.token;
     const visible = () => mounted.current && owned() && targetRef.current === job.target;
     const publish = (status: DurableAutosaveStatus, error: ErrorDescription | null = null) => {
       if (visible()) setView({ target: job.target, status, error });
     };
-    if (!owned() || job.saving) return { kind: "waiting" };
+    if (!owned()) {
+      if (jobs.current.get(job.target) === job) jobs.current.delete(job.target);
+      releaseJob(job);
+      if (mounted.current) refresh(value => value + 1);
+      return { kind: "waiting" };
+    }
+    if (job.saving) return { kind: "waiting" };
     if (visible()) clearTimers();
     if (store.getSnapshot().status !== "online") { publish("waiting"); return { kind: "waiting" }; }
     if (retry) job.resends += 1;
@@ -170,11 +191,11 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
     if (visible()) savingTimer.current = setTimeout(() => publish("saving"), SAVING_DELAY_MS);
     refresh(value => value + 1);
     const remove = () => {
+      releaseJob(job);
       if (jobs.current.get(job.target) === job) jobs.current.delete(job.target);
       if (mounted.current) refresh(value => value + 1);
     };
     const done = (): DurableAutosaveResult => {
-      remove();
       if (job.storageKey) {
         const stored = loadStructuredDraft<{ draft?: T } | null>(job.storageKey, null);
         if (stored && JSON.stringify(stored.draft) === JSON.stringify(job.draft)) {
@@ -183,8 +204,12 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
       }
       if (visible()) {
         clearTimers(); publish("saved");
-        savedTimer.current = setTimeout(() => publish("idle"), SAVED_LINGER_MS);
+        savedTimer.current = setTimeout(() => {
+          if (mounted.current && readOwner() === job.owner && generations.current.get(job.target) === job.id && targetRef.current === job.target)
+            setView(current => current.target === job.target && current.status === "saved" ? { ...current, status: "idle" } : current);
+        }, SAVED_LINGER_MS);
       }
+      remove();
       return { kind: "saved" };
     };
     try { await job.save(job.draft); return done(); }
@@ -198,18 +223,23 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
         if (visible()) clearTimers();
         publish("waiting"); return { kind: "waiting" };
       }
-      remove();
       if (visible()) clearTimers();
       publish("error", describeError(cause, { action: job.action }));
+      remove();
       return { kind: "failed", error: cause };
     } finally { job.saving = false; if (mounted.current) refresh(value => value + 1); else detachedWake.current?.(); }
   }, [clearTimers, store, readOwner]);
   const run = useCallback(async (draft: T, overrides: DurableAutosaveJob<T> = {}) => {
     const current = optionsRef.current;
     const target = current.targetKey ?? current.sourceId;
-    const job: Job = { resends: 0, id: ++sequence.current, target, owner: ownerRef.current, draft,
+    const job: Job = { token: Symbol(), registryKey: JSON.stringify([ownerRef.current, target]), resends: 0, id: ++sequence.current, target, owner: ownerRef.current, draft,
       save: overrides.save ?? current.save, matchesServer: overrides.matchesServer ?? current.matchesServer,
       onRetryFailed: overrides.onRetryFailed, storageKey: current.storageKey ?? null, action: current.action ?? "save" };
+    const previous = jobs.current.get(target);
+    if (previous) releaseJob(previous);
+    let revision = registry.get(job.registryKey);
+    if (!revision) { revision = { latest: job.token, active: new Set() }; registry.set(job.registryKey, revision); }
+    revision.latest = job.token; revision.active.add(job.token);
     generations.current.set(target, job.id); jobs.current.set(target, job);
     refresh(value => value + 1);
     return execute(job);
@@ -226,7 +256,8 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
     },
   });
   detachedWork.current = () => {
-    if (!jobs.current.size || auto.stalled) return;
+    if (!jobs.current.size) return;
+    if (auto.stalled) { for (const job of jobs.current.values()) releaseJob(job); jobs.current.clear(); return; }
     const admittedOwner = ownerRef.current;
     const source = `${optionsRef.current.sourceId}:detached:${instanceId}`;
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -234,6 +265,10 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
     let unsubscribe = () => {};
     const release = () => {
       disposed = true;
+      if (!mounted.current) {
+        for (const job of jobs.current.values()) releaseJob(job);
+        jobs.current.clear();
+      }
       if (timer) clearTimeout(timer);
       unsubscribe(); detachedWake.current = null;
       store.setPendingWrites(source, 0);
@@ -274,6 +309,11 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
     setView(current => ({ target: targetRef.current, status: jobs.current.has(targetRef.current) ? "waiting" : "idle", error: null }));
   }, [clearTimers]);
   const reset = useCallback(() => {
+    const key = JSON.stringify([ownerRef.current, targetRef.current]);
+    const revision = registry.get(key);
+    if (revision) revision.latest = Symbol();
+    const job = jobs.current.get(targetRef.current);
+    if (job) releaseJob(job);
     generations.current.delete(targetRef.current); const removed = jobs.current.delete(targetRef.current); clearTimers();
     setView({ target: targetRef.current, status: "idle", error: null }); if (removed) refresh(value => value + 1);
   }, [clearTimers]);

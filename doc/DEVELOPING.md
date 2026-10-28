@@ -595,7 +595,9 @@ Writes keep the user's text through an outage:
   or changes run settings waits for a matching server receipt or Cancel: comment
   deduplication alone cannot safely replay those task changes. Cancel returns
   the text for a fresh, intentional send. A new task restored without its staged
-  files is not sent; the dialog asks for the files again. Successful staged-file
+  files is not sent; the dialog asks for the files again. Restored subtasks keep
+  their saved parent and goal defaults even when reopened from the normal New
+  Task action. Successful staged-file
   uploads are identified by content digest as well as metadata, so distinct files
   with identical names, sizes and timestamps are both uploaded. Without browser
   hashing support, uploads proceed without receipt-based deduplication.
@@ -606,7 +608,9 @@ Writes keep the user's text through an outage:
   that verification stays pending. Exhausted attempts show a manual retry action.
   Admitted edits can finish after route navigation unmounts the editor. That
   work waits for recovery events while offline, uses bounded backoff while
-  online, and verifies the current account before each retry.
+  online, and verifies the current account before each retry. The latest admitted
+  save is shared by account and target across editor mounts, so a superseded
+  detached retry cannot overwrite a newer edit after reopening the same task.
   Replayable task-field updates and interaction resolutions bind the original
   account, account generation and operation at dispatch. A sign-out or account
   change cancels that intent before it can send, including after waiting behind

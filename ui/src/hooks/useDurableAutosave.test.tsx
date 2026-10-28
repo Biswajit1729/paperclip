@@ -101,6 +101,25 @@ describe("useDurableAutosave", () => {
     expect(second).toHaveBeenCalledWith("B title");
     expect(store.getSnapshot().pendingWrites).toBe(0);
   });
+  it("never lets an old detached retry overwrite a newer edit after reopening the same target", async () => {
+    let server = "Original";
+    const oldSave = vi.fn().mockRejectedValueOnce(outage()).mockRejectedValueOnce(outage())
+      .mockImplementation(async value => { server = value; });
+    render({ sourceId: "editor-old", targetKey: "task-a:title", save: oldSave });
+    await act(async () => { await current.run("Older title"); });
+    act(() => root.unmount()); root = createRoot(container);
+    await advance(0);
+    expect(oldSave).toHaveBeenCalledTimes(2);
+    const newSave = vi.fn(async value => { server = value; });
+    render({ sourceId: "editor-new", targetKey: "task-a:title", save: newSave });
+    await act(async () => { await current.run("Newer title"); });
+    expect(server).toBe("Newer title");
+    await advance(30_000);
+    expect(server).toBe("Newer title");
+    expect(oldSave).toHaveBeenCalledTimes(2);
+    expect(store.getSnapshot().pendingWrites).toBe(0);
+  });
+
   it("does not send a detached editor's private draft after an account switch", async () => {
     store.setBrowserOnline(false);
     const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } });

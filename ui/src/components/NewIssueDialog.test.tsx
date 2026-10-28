@@ -1691,6 +1691,30 @@ describe("NewIssueDialog", () => {
     act(() => root.unmount());
   });
 
+  it("restores a saved subtask's parent and goal when opened from the normal New Task action", async () => {
+    dialogState.newIssueDefaults = {};
+    mockIssuesApi.create.mockResolvedValue({ id: "issue-1", identifier: "PAP-1", companyId: "company-1" });
+    mockIssuesApi.uploadAttachment.mockResolvedValue({});
+    mockIssuesApi.get.mockResolvedValue({ id: "parent-1", identifier: "PAP-2", title: "Parent", isPrivate: false });
+    localStorage.setItem("paperclip:issue-draft", JSON.stringify({ title: "Saved subtask", description: "", status: "todo", priority: "", projectId: "", assigneeValue: "" }));
+    localStorage.setItem("paperclip:issue-draft:create-awaiting-files:user-1", JSON.stringify({
+      version: 1, key: "paperclip:issue-draft:create-awaiting-files:user-1", idempotencyKey: "subtask-key-123", createdAt: Date.now(),
+      payload: { fingerprint: JSON.stringify({ stagedFiles: ["attachment::spec.pdf:1:1"] }),
+        data: { companyId: "company-1", title: "Saved subtask", parentId: "parent-1", goalId: "goal-1" }, stagedFileNames: ["spec.pdf"] },
+    }));
+    const { root } = renderDialog(container);
+    await flush();
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+    Object.defineProperty(input, "files", { configurable: true, value: [new File(["a"], "spec.pdf", { lastModified: 1 })] });
+    await act(async () => { input.dispatchEvent(new Event("change", { bubbles: true })); });
+    await flush();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="Create sub-task"]')!.click(); });
+    await flush();
+    expect(mockIssuesApi.create).toHaveBeenCalledTimes(1);
+    expect(mockIssuesApi.create.mock.calls[0]?.[1]).toMatchObject({ idempotencyKey: "subtask-key-123", title: "Saved subtask", parentId: "parent-1", goalId: "goal-1" });
+    act(() => root.unmount());
+  });
+
   it("submits Chinese, Japanese, and Hindi issue text without normalization", async () => {
     const title = "验证中文任务";
     const description = [

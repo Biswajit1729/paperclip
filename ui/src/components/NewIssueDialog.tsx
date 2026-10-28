@@ -456,12 +456,20 @@ export function NewIssueDialog() {
   // sent or cancelled, whatever the files and fields look like when resubmitted.
   const createRequestRef = useRef<{ fingerprint: string; idempotencyKey: string; recovering?: boolean; payload?: PendingCreate } | null>(null);
   const draftOwner = useDraftOwner();
+  const [restoredLaunch, setRestoredLaunch] = useState<{ owner: string | undefined; parentId?: string; goalId?: string } | null>(null);
+  const savedLaunch = restoredLaunch?.owner === draftOwner ? restoredLaunch : null;
+  const parentId = savedLaunch ? savedLaunch.parentId : newIssueDefaults.parentId;
+  const goalId = savedLaunch ? savedLaunch.goalId : newIssueDefaults.goalId;
+  const restoreLaunch = (payload: PendingCreate) => setRestoredLaunch({ owner: draftOwner,
+    ...(typeof payload.data.parentId === "string" ? { parentId: payload.data.parentId } : {}),
+    ...(typeof payload.data.goalId === "string" ? { goalId: payload.data.goalId } : {}),
+  });
   const awaitingFilesKey = draftOwner !== undefined ? pendingSendKeyFor(CREATE_AWAITING_FILES_KEY, draftOwner) : null;
 
   const primaryAgent = usePrimaryAgentPresentation(effectiveCompanyId);
-  const isSubIssueMode = Boolean(newIssueDefaults.parentId);
+  const isSubIssueMode = Boolean(parentId);
   const parentIssueLabel =
-    newIssueDefaults.parentIdentifier ?? (newIssueDefaults.parentId ? newIssueDefaults.parentId.slice(0, 8) : "");
+    (newIssueDefaults.parentId === parentId ? newIssueDefaults.parentIdentifier : undefined) ?? (parentId ? parentId.slice(0, 8) : "");
   const parentExecutionWorkspaceId = newIssueDefaults.executionWorkspaceId ?? "";
   const parentExecutionWorkspaceLabel = newIssueDefaults.parentExecutionWorkspaceLabel ?? parentExecutionWorkspaceId;
 
@@ -530,9 +538,9 @@ export function NewIssueDialog() {
   });
 
   const { data: privacyParent, isError: parentPrivacyError, refetch: refetchParentPrivacy } = useQuery({
-    queryKey: queryKeys.issues.detail(newIssueDefaults.parentId ?? ""),
-    queryFn: () => issuesApi.get(newIssueDefaults.parentId!),
-    enabled: newIssueOpen && Boolean(newIssueDefaults.parentId),
+    queryKey: queryKeys.issues.detail(parentId ?? ""),
+    queryFn: () => issuesApi.get(parentId!),
+    enabled: newIssueOpen && Boolean(parentId),
   });
   const parentPrivacyUnresolved = isSubIssueMode && !privacyParent;
   const inheritsPrivateAccess = privacyParent?.visibility === "private" || privacyParent?.project?.visibility === "private";
@@ -635,6 +643,7 @@ export function NewIssueDialog() {
       recovering: true,
       payload: awaiting.payload,
     };
+    restoreLaunch(awaiting.payload);
     const names = awaiting.payload.stagedFileNames;
     if (names?.length) setResendError((current) => current ?? stagedFilesMissingDescription(names));
   }, [awaitingFilesKey]);
@@ -668,6 +677,7 @@ export function NewIssueDialog() {
           recovering: true,
           payload: pending.payload,
         };
+        restoreLaunch(pending.payload);
         if (awaitingFilesKey) writePendingSend(awaitingFilesKey, pending);
       }
       if (pending.idempotencyKey !== firstAttemptKey.current) setResendError(description);
@@ -948,7 +958,7 @@ export function NewIssueDialog() {
   }, []);
 
   function reset() {
-    createRequestRef.current = null;
+    createRequestRef.current = null; setRestoredLaunch(null);
     if (awaitingFilesKey) clearPendingSend(awaitingFilesKey);
     setIssueText("", "");
     setStatus("todo");
@@ -1035,8 +1045,8 @@ export function NewIssueDialog() {
       ...(effectivePrivate ? { visibility: "private" } : {}),
       ...(selectedAssigneeAgentId ? { assigneeAgentId: selectedAssigneeAgentId } : {}),
       ...(selectedAssigneeUserId ? { assigneeUserId: selectedAssigneeUserId } : {}),
-      ...(newIssueDefaults.parentId ? { parentId: newIssueDefaults.parentId } : {}),
-      ...(newIssueDefaults.goalId ? { goalId: newIssueDefaults.goalId } : {}),
+      ...(parentId ? { parentId } : {}),
+      ...(goalId ? { goalId } : {}),
       ...(projectId ? { projectId } : {}),
       ...(requestedProjectWorkspaceId ? { projectWorkspaceId: requestedProjectWorkspaceId } : {}),
       ...(assigneeAdapterOverrides ? { assigneeAdapterOverrides } : {}),
@@ -1448,7 +1458,7 @@ export function NewIssueDialog() {
                             const cancelledKey = durableCreate.pending?.idempotencyKey;
                             const cancelled = durableCreate.cancel();
                             if (cancelled) {
-                              createRequestRef.current = null;
+                              createRequestRef.current = null; setRestoredLaunch(null);
                               if (awaitingFilesKey) clearPendingSend(awaitingFilesKey, cancelledKey);
                               if (cancelledKey) clearCreateUploadReceipts(cancelledKey);
                             }
@@ -1462,7 +1472,7 @@ export function NewIssueDialog() {
                             const key = createRequestRef.current?.idempotencyKey;
                             if (awaitingFilesKey && key) clearPendingSend(awaitingFilesKey, key);
                             if (key) { stagedFilesByKey.current.delete(key); clearCreateUploadReceipts(key); }
-                            createRequestRef.current = null; setResendError(null);
+                            createRequestRef.current = null; setRestoredLaunch(null); setResendError(null);
                           }}>Cancel saved request</Button> : null}
                         </div>
                       ) : null}
