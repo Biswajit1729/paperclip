@@ -855,6 +855,10 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
     const initializationKey = `${draftOwner ?? "unknown"}:${effectiveCompanyId ?? ""}:${JSON.stringify(newIssueDefaults)}`;
     if (initializationKeyRef.current === initializationKey) return;
     initializationKeyRef.current = initializationKey;
+    if (draftTimer.current) {
+      clearTimeout(draftTimer.current);
+      draftTimer.current = null;
+    }
 
     executionWorkspaceDefaultProjectId.current = null;
 

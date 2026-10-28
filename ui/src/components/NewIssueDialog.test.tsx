@@ -1717,6 +1717,32 @@ describe("NewIssueDialog", () => {
     } finally { act(() => root.unmount()); queryClient.clear(); }
   });
 
+  it.each([false, true])("retains a restored task backup after the debounce (session known=%s)", async (sessionKnown) => {
+    if (!sessionKnown) mockAuthApi.getSession.mockReturnValue(new Promise(() => {}));
+    localStorage.setItem("paperclip:issue-draft:user-1", JSON.stringify({
+      title: "", description: "Keep this restored backup", status: "todo", priority: "",
+      assigneeValue: "", reviewerValue: "", approverValue: "", watchdogAgentId: "", watchdogInstructions: "",
+      projectId: "", projectWorkspaceId: "", assigneeModelLane: "primary", assigneeModelOverride: "",
+      assigneeThinkingEffort: "", assigneeChrome: false, executionWorkspaceMode: "shared_workspace",
+      selectedExecutionWorkspaceId: "", workMode: "standard", isPrivate: false, composerSettings: null,
+    }));
+    const { root, queryClient } = renderDialog(container);
+    try {
+      await flush();
+      if (!sessionKnown) queryClient.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+      await waitForAssertion(() => expect(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe a task…"]')?.value).toBe("Keep this restored backup"));
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 850)); });
+      expect(JSON.parse(localStorage.getItem("paperclip:issue-draft:user-1") ?? "null")?.description).toBe("Keep this restored backup");
+      dialogState.newIssueOpen = false;
+      act(() => root.render(<QueryClientProvider client={queryClient}><NewIssueDialog /></QueryClientProvider>));
+      await flush();
+      dialogState.newIssueOpen = true;
+      act(() => root.render(<QueryClientProvider client={queryClient}><NewIssueDialog /></QueryClientProvider>));
+      await flush();
+      expect(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe a task…"]')?.value).toBe("Keep this restored backup");
+    } finally { act(() => root.unmount()); queryClient.clear(); }
+  });
+
   it.each([false, true])("keeps erased task text erased after reopening (session known=%s)", async (sessionKnown) => {
     if (!sessionKnown) mockAuthApi.getSession.mockReturnValue(new Promise(() => {}));
     localStorage.setItem("paperclip:issue-draft:user-1", JSON.stringify({ title: "", description: "Older saved text" }));
